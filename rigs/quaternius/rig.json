@@ -1,0 +1,12 @@
+{
+  "schema": "anim.rig/1",
+  "pack": "Quaternius Universal Animation Library (Standard)",
+  "author": "Quaternius",
+  "url": "https://quaternius.itch.io/universal-animation-library",
+  "license": "CC0-1.0",
+  "license_file": "License.txt",
+  "retrieved": "2026-09-14",
+  "files": {
+    "UAL1_Standard.glb": "69591853d817488edaa8fd9bf8fc1d821eaeaf789f8627b3cd23b41c4ed67997"
+  }
+}

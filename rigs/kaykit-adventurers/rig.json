@@ -1,0 +1,12 @@
+{
+  "schema": "anim.rig/1",
+  "pack": "KayKit Adventurers",
+  "author": "Kay Lousberg",
+  "url": "https://github.com/KayKit-Game-Assets/KayKit-Character-Pack-Adventures-1.0",
+  "license": "CC0-1.0",
+  "license_file": "LICENSE.txt",
+  "retrieved": "2026-09-14",
+  "files": {
+    "Knight.glb": "60428e3abc09ba83e595d256e3af8c5c976b46cdae599f0802fc82b4a3445168"
+  }
+}
