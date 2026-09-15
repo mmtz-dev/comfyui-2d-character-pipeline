@@ -4,6 +4,83 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-15 — the anchor unit gate: first frames through the GPU, and what the ControlNet actually needed
+
+**What.** The GPU image service came up for real (A5000, ComfyUI 0.35.0), the `nunchaku`
+wheel went in, and the knight's `base`, `strike`, `hit`, `death` went through
+`render → post → publish` into game-02: `knight.png` replaced the placeholder and three
+frame groups (4 + 4 + 4) landed with sidecars, audit green (183 assets, 3 frame groups).
+GDUnit4 1413/1413, this suite 208 passed / 1 skipped. Before/after in the running game and
+every experiment below: <http://192.168.1.158:8090/anchor-gate/>.
+
+**The gate, as judged from the frames.** Style passes with notes (bold outline, flat
+shading, reads at 1×; dark steel sits close to the floor value). Proportions: **the
+KayKit chibi rig fails** — the ControlNet does not read its collapsed profile skeleton as a
+body and gives a different knight per cell — and **the Quaternius rig passes**: one knight,
+four poses that follow the skeleton. So the published frames are Quaternius
+(`Idle_Loop` #0, `Sword_Attack`, `Hit_Chest`, `Death01`). The owner's call on what that
+means for the art bible (§3 names KayKit as the motion source, Quaternius as the A/B) and
+for #267 is still open; nothing in the wiki or OpenProject was changed.
+
+**Six workflow fixes, in the order they were found.** Each one was a real blocker, not a
+tuning knob.
+
+1. **`nunchaku` had no wheel for the image's torch.** The mmartial image installs the newest
+   torch on every start (2.13.0); nunchaku publishes per torch minor and stops at 2.12
+   (dev) / 2.11 (v1.2.1). `gpu/compose.yml` now pins `TORCH_LOCK=torch==2.11.0 …` and
+   `gpu/userscripts/10-nunchaku.sh` (mounted at `/userscripts_dir`, run by the init inside
+   the venv) installs `nunchaku-1.2.1+cu12.8torch2.11-cp312-cp312-linux_x86_64.whl`
+   (sha256 `962eaabc…b32d4`) once and verifies on every later start. `piexif` for
+   Image-Saver rides along. Nothing is installed by hand any more.
+2. **The optional LoRA node is a 400, not a no-op.** NOTES.md said `load_lora` returns
+   early at strength 0 — true, but ComfyUI validates `lora_name` against the file list
+   before execution. `comfy.bypass()` removes the node unless `--lora-strength` is given.
+3. **The chroma key leaked into every edge.** `post` flattened onto magenta *before* the
+   downscale, so edge pixels blended with the key and Lospec 2000 has pinks to snap to
+   (a 64-colour palette had hidden this). `imaging.bleed_edges()` pushes the sprite's own
+   colours outward first. While there: pixeloe's `target_size` is not the output height
+   (53 asked → 68 given → nearest-resampled), and pixelfixer "found" an 11.5×8.6 px grid
+   on the base render and squeezed the knight to 23 px wide. **`--downscale box` is the
+   default now** (pixeloe selectable), and a grid repair whose x/y pitches disagree is
+   rejected. Comparison sheet on the gate page.
+4. **The identity pass broke the strip.** Three images in (reference, skeleton, pose pass)
+   → two zoomed figures of the wrong character. Two images (reference as `image1`, pose
+   pass as `image2`, `VAEEncode` off `image2`) keep the layout; that is what `render.py`
+   sends now. But even then Qwen-Image-Edit flattens the poses back toward the standing
+   reference and turns a 2-cell strip into a close-up, so **every published strip is the
+   pose pass** (`anim post --input render/pose_pass.png`). Cross-action identity is
+   therefore prompt + rig + seed only, and it drifts (shield colour, armour tone). That is
+   the gate's main open problem.
+5. **The pose ControlNet was doing nothing — and it was the line width.** A lying-down
+   death skeleton gave four standing knights at 0.7 and helmet close-ups at 1.5; the lite
+   union model, the full union model, a single 512×768 cell — all the same. Canny worked,
+   so the control path was fine. The model card's own pose conditions are DWPose renders
+   with ~2 px sticks; ours had `line_width_for()` scaling limbs to 5–8 px "so the
+   ControlNet can see them", and rtmlib draws each limb as an ellipse twice that. Fat
+   blobs are not a pose. `posekit.LINE_WIDTH = 2`, and the same lunge that was ignored is
+   nailed at strength 1.0. The full union model
+   (`Union-2.1-2602-8steps`, 6.7 GB, 15 layers) was added to `models.lock` during the
+   hunt and kept — the card says lite is "weaker control" — with the lite build left
+   installed for A/B; `relock_models.py` now writes next to itself (run from the repo root
+   it had written `./models.lock` and the downloader never saw the new row) and carries the
+   KNOWN DISCREPANCY note so regeneration stops losing it.
+6. **Sword tips cross cell boundaries.** A 4×1 strip has no wall between cells; the
+   neighbour's blade lands as a floating shard. `imaging.keep_main_blobs()` drops islands
+   under 10 % of the largest before the trim. And `rembg isnet-anime` returns an empty mask
+   for a lying body, so `knight_death` is matted with `--matte chroma`.
+
+**Also learned.** A 608×320 two-cell strip is unreliable (the model drew three figures);
+`knight_hit` was re-picked at 4 with `anim pick -n 4 --force`. The base prompt's "four
+heads tall" does not pull the Quaternius skeleton's ~5 heads down at strength 1.0 — the
+skeleton wins, as §3 of the art bible predicted the other way round. `post` raising
+mid-strip leaves finished frames behind that `publish` will happily ship as a shorter
+group — it did once (a 2-frame death) before the matte fix; worth a guard.
+
+**Verified.** TODO-verify #1, #2, #3, #5, #6, #7 in `gpu/workflows/NOTES.md` are settled
+and moved; #4 (euler vs res_multistep) is the one left. Tests added: the LoRA bypass, the
+two-image identity graph, the constant line width; the letterbox test now subtracts the
+fixed stroke. `work/_exp/` holds every experiment render (gitignored).
+
 ## 2026-09-14 — the rig motion input feature: `anim rig`, the KayKit Knight as the anchor's motion
 
 **What.** A CC0 rigged, animated glTF character is now a motion source on equal footing with

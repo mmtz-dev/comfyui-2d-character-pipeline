@@ -162,6 +162,76 @@ def trim(img: Image.Image) -> Image.Image:
     return rgba if box is None else rgba.crop(box)
 
 
+def keep_main_blobs(img: Image.Image, min_fraction: float = 0.10) -> tuple[Image.Image, int]:
+    """Drop every opaque island smaller than `min_fraction` of the largest one.
+
+    Returns (RGBA, islands dropped). A 4x1 strip has no wall between cells, so
+    a sword tip that crosses the cell boundary lands in the neighbour's cell as
+    a floating shard (knight_strike / knight_death, 2026-09-15). The shard is a
+    separate, tiny connected component; the unit itself - body, held weapon,
+    shield - is one component, because the outline joins them. 10 % keeps a
+    thrown dart or a dropped shield and loses a sliver.
+    """
+    import cv2
+
+    arr = np.asarray(img.convert("RGBA")).copy()
+    mask = (arr[..., 3] > 0).astype(np.uint8)
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if count <= 2:
+        return Image.fromarray(arr, "RGBA"), 0
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    keep = {i + 1 for i, a in enumerate(areas) if a >= areas.max() * min_fraction}
+    dropped = (count - 1) - len(keep)
+    if dropped:
+        arr[..., 3] = np.where(np.isin(labels, list(keep)), arr[..., 3], 0)
+    return Image.fromarray(arr, "RGBA"), dropped
+
+
+def bleed_edges(img: Image.Image, passes: int) -> tuple[Image.Image, Image.Image]:
+    """Push the sprite's edge colours outward into its transparent surround.
+
+    Returns (RGBA with the bleed applied, L mask of every pixel now coloured).
+    The alpha channel is untouched; only the RGB under transparent pixels
+    changes, each taking the mean of its already-coloured 8-neighbours, one
+    ring per pass.
+
+    Why: the post-chain flattens a cell onto the chroma key BEFORE the
+    downscale, and any area-averaging downscale then blends the key into
+    every edge pixel. With a 64-colour palette that blend snapped to something
+    dark and passed unnoticed; with Lospec 2000 it snaps to a real pink, and
+    the first real render (knight_base, 2026-09-15) came out with a magenta
+    fringe the binary mask could not remove, because the mask keeps the pixel
+    and only the colour is wrong. Bleeding first means an edge pixel averages
+    with its own neighbours instead of the key. `passes` should cover at least
+    one output pixel of the downscale factor; twice that is safe.
+    """
+    arr = np.asarray(img.convert("RGBA")).astype(np.float32)
+    height, width = arr.shape[:2]
+    rgb = np.zeros((height + 2, width + 2, 3), np.float32)
+    rgb[1:-1, 1:-1] = arr[..., :3]
+    filled = np.zeros((height + 2, width + 2), bool)
+    filled[1:-1, 1:-1] = arr[..., 3] > 0
+    for _ in range(max(0, passes)):
+        if filled.all():
+            break
+        acc = np.zeros_like(rgb)
+        cnt = np.zeros(filled.shape, np.float32)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                f = np.roll(filled, (dy, dx), (0, 1))
+                acc += np.roll(rgb, (dy, dx), (0, 1)) * f[..., None]
+                cnt += f
+        new = (~filled) & (cnt > 0)
+        rgb[new] = acc[new] / cnt[new][:, None]
+        filled |= new
+    out = np.dstack([rgb[1:-1, 1:-1].round().clip(0, 255).astype(np.uint8),
+                     arr[..., 3].astype(np.uint8)])
+    grown = (filled[1:-1, 1:-1] * 255).astype(np.uint8)
+    return Image.fromarray(out, "RGBA"), Image.fromarray(grown, "L")
+
+
 def scale_to_height(img: Image.Image, height: int) -> Image.Image:
     """Nearest-neighbour scale to a target height, aspect preserved.
 

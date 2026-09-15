@@ -107,39 +107,50 @@ for n in ["ModelPatchLoader","ZImageFunControlnet","TextEncodeQwenImageEditPlus"
 curl -s http://192.168.1.158:8188/object_info/CLIPLoader | python3 -m json.tool | head -30
 ```
 
-### 5. First run only — install the `nunchaku` wheel
+### 5. The `nunchaku` wheel — installed for you, on every start
 
 `ComfyUI-nunchaku` is a thin wrapper; it imports the `nunchaku` Python package,
-which the node pack does not vendor. Until the wheel is installed,
-`NunchakuQwenImageDiTLoader` will be missing from `/object_info` and the
-identity pass cannot load the INT4 weights.
+which the node pack does not vendor. Without it `NunchakuQwenImageDiTLoader` is
+missing from `/object_info` and the identity pass cannot load the INT4 weights.
 
-The wheel must match the container's torch build **and** the card. The A5000 is
-Ampere (sm_86) → the **INT4** kernels, not NVFP4 (Blackwell-only).
+Two things in the repo handle it, and they move together:
+
+- `compose.yml` sets `TORCH_LOCK=torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0`.
+  The image otherwise installs the newest torch on every start (2.13.0 on
+  2026-09-15), and nunchaku publishes wheels per torch minor version — none for
+  2.13. 2.11 is the newest with a stable v1.2.1 wheel, the same version as the
+  pinned node pack.
+- `userscripts/10-nunchaku.sh` is mounted at `/userscripts_dir` and run by the
+  image's init inside the venv. It downloads
+  `nunchaku-1.2.1+cu12.8torch2.11-cp312-cp312-linux_x86_64.whl` (sha256
+  `962eaabc7be74299678d83719e3589e97136c91752d61227ef1f55a3b50b32d4`) into
+  `/comfy/mnt/wheels/` once, verifies it, installs it, and exits in a second on
+  every later start. It also installs `piexif`, the one requirement
+  `ComfyUI-Image-Saver` needs to import.
+
+Confirm after the first start:
 
 ```bash
-# Find the container's torch version first - the wheel is built against it
-docker --context docker-default exec anim-pipeline-comfyui \
-  python3 -c 'import torch,sys;print(torch.__version__, sys.version)'
-
-# Then install the matching wheel from the nunchaku releases into the same venv
-docker --context docker-default exec anim-pipeline-comfyui \
-  bash -lc 'uv pip install <nunchaku wheel URL for that torch + cp version>'
-
-docker --context docker-default compose -f tools/anim-pipeline/gpu/compose.yml restart
+docker --context docker-default logs anim-pipeline-comfyui 2>&1 | grep "== nunchaku"
+# == nunchaku 1.2.1+cu12.8torch2.11 | torch 2.11.0+cu129 | piexif 1.1.3
 ```
 
-Pick the URL from <https://github.com/nunchaku-tech/nunchaku/releases> and record
-the exact wheel filename in `DEVLOG.md` — it is part of the reproducibility pin,
-same as the model SHA256s.
+The A5000 is Ampere (sm_86) → the **INT4** kernels, not NVFP4 (Blackwell-only).
+Moving the pin means changing the wheel name, URL and sha256 in the script, the
+`TORCH_LOCK` line, and this paragraph, together.
 
-### 6. Generate one strip
+### 6. Generate one sprite
 
 ```bash
 # From the CPU pipeline container (it reaches this service via host.docker.internal)
-docker --context desktop-linux compose -f tools/anim-pipeline/compose.yml \
-  run --rm anim anim render --workflow pose_pass --fixture
+cd tools/anim-pipeline
+docker compose run --rm anim base --unit knight \
+  --rig rigs/quaternius/UAL1_Standard.glb --clip Idle_Loop --frame 0 --strength 1.0 \
+  --prompt "a single side-view pixel art character sprite of a plate-armoured knight ..."
 ```
+
+First render is slow (the models page in from disk: ~2.5 min); later ones ~20 s
+per pass.
 
 ### 7. Shut down when done
 
@@ -159,7 +170,8 @@ sudo systemctl stop docker      # TTY again; optional
 |---|---|
 | `compose.yml` | The service. Project name `anim-pipeline-gpu`, image pinned by digest. |
 | `extra_model_paths.yaml` | Exposes the pre-existing checkpoint library read-only so nothing is duplicated. |
-| `models.lock` | **Resolved lockfile** — repo, revision, filename, size, sha256, licence for all 8 weights (35.07 GiB). Regenerate with `relock_models.py`; do not hand-edit. |
+| `models.lock` | **Resolved lockfile** — repo, revision, filename, size, sha256, licence for all 9 weights (41.32 GiB). Regenerate with `relock_models.py` (it writes next to itself, from any CWD); do not hand-edit — the KNOWN DISCREPANCY note is part of the generator. |
+| `userscripts/` | Start-up scripts the image runs inside the venv on every start (`10-nunchaku.sh`). |
 | `relock_models.py` | The only writable source for `models.lock`. Cross-checks two HF endpoints and refuses to write on any disagreement, gated repo, or non-commercial licence. |
 | `download_models.sh` | Downloads the weights **on Docker Desktop** (no GPU needed). Idempotent, resumable, verifies every file against `models.lock`. |
 | `hf_download.py` | Runs inside the throwaway `python:3.12-slim` container that `download_models.sh` starts. |
@@ -177,7 +189,7 @@ sudo systemctl stop docker      # TTY again; optional
 │   │   ├── diffusion_models/        z_image_turbo_int8_convrot, nunchaku qwen-edit int4
 │   │   ├── text_encoders/           qwen_3_4b_fp8_mixed, qwen_2.5_vl_7b_fp8_scaled
 │   │   ├── vae/                     z_image_ae, qwen_image_vae
-│   │   ├── model_patches/           Z-Image Fun ControlNet Union 2.1 lite
+│   │   ├── model_patches/           Z-Image Fun ControlNet Union 2.1 2602 (full) + lite
 │   │   └── loras/                   Qwen-Image-2512 Pixel-Art LoRA
 │   ├── custom_nodes/                ComfyUI-nunchaku, ComfyUI-Image-Saver (pinned)
 │   ├── input/  output/  user/
@@ -197,13 +209,15 @@ in 24 GB; that is the whole reason for the INT4 build.
 
 ## Known issues
 
-**The optional Pixel-Art LoRA does not install.** `prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA`
+**The optional Pixel-Art LoRA does not install.** (And ComfyUI would reject a graph
+that names it while it is missing, even at strength 0 — so `anim render` leaves the
+node out unless `--lora-strength` is given.) `prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA`
 advertises one sha256 through the HF API but serves bytes that hash to another. Verified
 2026-09-13 with two independent fetches; the file itself is a valid, complete Qwen-Image
 LoRA of exactly the advertised size, so this is an upstream registry metadata bug, not a
 corrupt download. `download_models.sh` therefore refuses it and reports
 `sha256 mismatch`. **Nothing is blocked** — the LoRA is optional and
-`identity_pass.json` bypasses it (`strength_model: 0.0`). The full detail, and the two
+`anim render` bypasses the node. The full detail, and the two
 ways to resolve it, are in the KNOWN DISCREPANCY block at the top of `models.lock`.
 The other 7 files (34 GiB) installed and verified clean.
 
@@ -221,7 +235,7 @@ source of truth for what should be there.
 
 ## Licences
 
-All eight weight files are **Apache-2.0** and ungated — checked against the HF
+All nine weight files are **Apache-2.0** and ungated — checked against the HF
 API by `relock_models.py`, which refuses to write a lock row for anything else.
 Both custom node packs are Apache-2.0 / MIT. The container image is MIT.
 

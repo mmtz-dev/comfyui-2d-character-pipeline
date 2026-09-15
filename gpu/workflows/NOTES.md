@@ -46,76 +46,69 @@ for any `clip_type` that is not `FLUX`/`FLUX2`. The official template passes
 **`lumina2`** (Z-Image is a Lumina-architecture model), so that is what
 `pose_pass.json` and `base_sprite.json` pass. Do not "fix" this to `z_image`.
 
-**The zero-strength LoRA slot is a real no-op.** `LoraLoader.load_lora` returns the
-model untouched *before* it resolves the file path:
+**The zero-strength LoRA slot is NOT a no-op — it is a 400.** `LoraLoader.load_lora`
+does return the model untouched at strength 0 before resolving the path, but that code
+never runs: ComfyUI validates every combo input against the loader's file list *before*
+execution, and a `lora_name` not on disk fails with `value_not_in_list`. Found on the
+first identity pass (knight_strike, 2026-09-15). So `anim render` removes the node from
+the graph with `comfy.bypass()` unless `--lora-strength` is given, and the file only has
+to exist when it is actually asked for.
 
-```python
-def load_lora(self, model, clip, lora_name, strength_model, strength_clip):
-    if strength_model == 0 and strength_clip == 0:
-        return (model, clip)
-    lora_path = folder_paths.get_full_path_or_raise("loras", lora_name)
-```
+**The identity pass sends two images, not three.** `image1` = the reference sprite,
+`image2` = the pose-pass strip, no `image3`, and `VAEEncode` takes its pixels from
+`image2`. Measured 2026-09-15 on knight_strike: with the skeleton as `image2` and the
+pose pass as `image3`, Qwen-Image-Edit dropped the strip layout (two zoomed figures,
+wrong character); with the pose pass as `image2` alone it kept all four cells in place.
+The JSON still carries all three `LoadImage` nodes; `render.py` rewires at run time.
+**And the pass is currently unused**: it flattens the poses back toward the reference and
+mangles 2-cell strips, so every published strip came from `anim post --input
+render/pose_pass.png`. See DEVLOG 2026-09-15.
 
-So `identity_pass.json`'s Pixel-Art LoRA node at `strength_model: 0.0` costs nothing
-and does not even require the file to be present. Raise the strength to enable it.
+**The skeleton must be drawn at rtmlib's default 2 px.** Not a workflow key, but the
+finding that made the pose pass work at all: `posekit.LINE_WIDTH`. With 5–8 px limbs the
+Fun ControlNet (full or lite, any strength) treated the skeleton as no pose. See the
+anchor-gate page and DEVLOG 2026-09-15.
+
+**The model patch is the FULL union, not the lite one.**
+`Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors` (15 control layers).
+The lite build stays installed for A/B and is documented in `relock_models.py`.
 
 ---
 
-## TODO-verify — cannot be settled without a running ComfyUI on the GPU
+## Verified on the GPU — 2026-09-15 (was "TODO-verify")
 
-Each of these is a real open question, not a naming guess. Settle them with
-`GET /object_info` and one render, then delete the entry and note it in `DEVLOG.md`.
+Settled with a running service; the numbers refer to the original list.
 
-1. **`UNETLoader` + `z_image_turbo_int8_convrot.safetensors`.** The official
-   template loads `z_image_turbo_bf16.safetensors`. The int8 file is an official
-   Comfy-Org quant living in the same `split_files/diffusion_models/` folder, so
-   core weight-detection is expected to handle it — but this was **not** verified
-   against a load. If it fails, the fallbacks in order are: (a) leave
-   `weight_dtype: default` and check the startup log for a dtype warning;
-   (b) use `NunchakuZImageDiTLoader` (it exists in the pinned ComfyUI-nunchaku at
-   `nodes/models/zimage.py`) with an INT4 Z-Image build instead;
-   (c) fall back to `z_image_turbo_bf16.safetensors` (12.3 GB, fits in 24 GB alone
-   but leaves less headroom).
+1. **`UNETLoader` + `z_image_turbo_int8_convrot.safetensors` — loads.** Startup log:
+   `Found quantization metadata version 1` → `Detected mixed precision quantization` →
+   `Native ops: convrot_w4a4, int8_tensorwise, asym_w4a8_int8`, `model_type FLOW`, no dtype
+   warning. `weight_dtype: default` is right; none of the fallbacks were needed.
+2. **`qwen_3_4b_fp8_mixed.safetensors` — detects as the Z-Image text encoder.** Log:
+   `Requested to load ZImageTEModel_` (5370 MB). The unquantised fallback is not needed.
+3. **`ZImageFunControlnet` vs `QwenImageDiffsynthControlnet` — the same code.** Read from
+   the running install: `ZImageFunControlnet` subclasses the other and overrides only
+   `INPUT_TYPES` (making `image` optional and adding `inpaint_image`); `diffsynth_controlnet`
+   is inherited unchanged. Keeping `ZImageFunControlnet`.
+5. **Strip cell alignment — holds once the ControlNet is actually reading the skeleton**
+   (2 px lines, full union model, strength 1.0): four evenly spaced figures on 1216×320,
+   every time, across strike / hit / death. Two residues: a sword tip that crosses a cell
+   boundary lands in the neighbour cell as a floating shard (`imaging.keep_main_blobs`
+   drops it in `post`), and a **2-cell 608×320 strip is unreliable** — the model drew three
+   figures; `knight_hit` was re-picked at 4. The per-cell fallback was not needed.
+6. **Alpha on the reference sprite — as expected.** White fixtures, `rembg` re-cuts. One
+   addition: `rembg isnet-anime` returns an *empty* mask for a lying-down body (the death
+   strip's cells 3–4), so that job uses `--matte chroma`.
+7. **The `nunchaku` wheel — installed by `gpu/userscripts/10-nunchaku.sh` on every start.**
+   `nunchaku-1.2.1+cu12.8torch2.11-cp312-cp312-linux_x86_64.whl`, sha256
+   `962eaabc7be74299678d83719e3589e97136c91752d61227ef1f55a3b50b32d4`, against torch
+   pinned to 2.11.0 by `TORCH_LOCK` in `gpu/compose.yml` (no wheel exists for the torch
+   2.13 the image would otherwise install). `NunchakuQwenImageDiTLoader` is in
+   `/object_info`.
 
-2. **`qwen_3_4b_fp8_mixed.safetensors` vs the template's `qwen_3_4b.safetensors`.**
-   The auto-detect keys off `TEModel.QWEN3_4B`; the fp8-mixed variant should detect
-   identically, but it was not loaded. If detection fails, the 8.0 GB
-   `qwen_3_4b.safetensors` is the unquantised fallback (add it to
-   `relock_models.py`, do not hand-edit `models.lock`).
+## Still TODO-verify
 
-3. **`ZImageFunControlnet` vs `QwenImageDiffsynthControlnet`.** Both are real and
-   registered, and both route Z-Image correctly (the shared execute branches on
-   `ZImage_Control`). We use `ZImageFunControlnet` because it is the Z-Image-specific
-   node and the plan names it. **But the official *active* template uses
-   `QwenImageDiffsynthControlnet`**; `ZImageFunControlnet` appears only in two
-   *archived* inpainting templates. The only signature difference is that `image` is
-   **required** on the parent and **optional** on the subclass. If
-   `ZImageFunControlnet` misbehaves, swapping the `class_type` string (keeping the
-   same input keys) is a one-line change.
-
-4. **`sampler_name: euler` is a deliberate deviation.** The official Z-Image-Turbo
-   template uses **`res_multistep`** at 8 steps / cfg 1.0 / `simple`. The plan
-   specifies Euler (and explicitly not Euler-ancestral) for reproducibility, so
-   these workflows use `euler`. Worth an A/B on the fixture skeleton once the
-   service is up — `res_multistep` may be visibly better at 8 steps. Whichever wins,
-   pin it and record the choice.
-
-5. **Strip cell alignment.** Nothing in the graph *forces* the model to place
-   exactly four evenly spaced figures across a 1216×320 canvas. The skeleton strip
-   is the only cell-boundary signal. Expect prompt and control-strength tuning here;
-   if cells drift, the fallback is one `/prompt` per cell at 304×320 (slower, still
-   reproducible, and the CPU `strip` stage already knows the cell geometry).
-
-6. **Alpha on the reference sprite.** `LoadImage` returns IMAGE (RGB) and MASK as
-   separate outputs, so the 64×64 sprite's transparency is dropped before
-   `ImageScale`. Intended — the VL encoder wants the pixels, and the post-chain
-   re-cuts alpha with `rembg`. But it means the sprite's background colour becomes
-   visible context; keep fixtures on plain white.
-
-7. **The `nunchaku` wheel.** `NunchakuQwenImageDiTLoader` will be **absent** from
-   `/object_info` until the `nunchaku` Python wheel is installed into the container's
-   venv — the node pack imports it at module load and does not vendor it. See
-   `gpu/README.md` step 5. Until then `identity_pass.json` cannot run at all.
+4. **`sampler_name: euler` vs `res_multistep`.** Not A/B'd at the gate; euler kept for
+   reproducibility. Worth one run on knight_strike with the same seed.
 
 ---
 

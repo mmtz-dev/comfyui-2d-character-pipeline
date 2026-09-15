@@ -33,12 +33,12 @@ def test_rig_for_matches_rtmlibs_own_dispatch():
     assert posekit.rig_for(134) == "openpose134"
 
 
-def test_line_width_scales_with_the_canvas():
-    thin = posekit.line_width_for((128, 128))
-    cell = posekit.line_width_for(config.STRIP_CELL)
-    portrait = posekit.line_width_for(config.BASE_CELL)
-    assert thin < cell < portrait
-    assert cell >= 4, "a hairline rig at 304px is one the ControlNet cannot see"
+def test_line_width_is_rtmlibs_default_at_every_canvas():
+    """Thicker limbs read as blobs, not poses, to the Fun ControlNet (anchor
+    gate, 2026-09-15). The width must not scale with the cell."""
+    assert posekit.line_width_for((128, 128)) == 2
+    assert posekit.line_width_for(config.STRIP_CELL) == 2
+    assert posekit.line_width_for(config.BASE_CELL) == 2
 
 
 def test_normalise_makes_the_same_pose_at_two_distances_identical(keypoints_payload):
@@ -90,7 +90,10 @@ def test_the_renderer_letterboxes_rather_than_stretching(keypoints_payload):
         canvas = posekit.draw(frame["keypoints"], frame["scores"], source, size)
         rows = np.flatnonzero(canvas.any(axis=(1, 2)))
         cols = np.flatnonzero(canvas.any(axis=(0, 2)))
-        return (cols[-1] - cols[0]) / (rows[-1] - rows[0])
+        # The stroke and the joint dots are a fixed pixel size at every canvas
+        # (LINE_WIDTH), so take them off the box before comparing shapes.
+        pad = 2 * posekit.LINE_WIDTH + 4
+        return (cols[-1] - cols[0] - pad) / (rows[-1] - rows[0] - pad)
 
     assert drawn_aspect((304, 320)) == pytest.approx(drawn_aspect((608, 640)),
                                                      rel=0.1)

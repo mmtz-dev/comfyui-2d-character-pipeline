@@ -89,7 +89,7 @@ def test_reachable_is_true_against_the_fake():
         assert comfy.ComfyClient(fake.url).reachable() is True
 
 
-def test_render_runs_two_passes_and_uploads_four_images(striped_job, workflow_dir):
+def test_render_runs_two_passes_and_uploads_three_images(striped_job, workflow_dir):
     with FakeComfy() as fake:
         provenance = render_stage.render(
             striped_job.name, seed=4242,
@@ -100,9 +100,10 @@ def test_render_runs_two_passes_and_uploads_four_images(striped_job, workflow_di
     assert [p["name"] for p in provenance["passes"]] == ["pose_pass",
                                                          "identity_pass"]
     assert len(fake.prompts) == 2
-    # skeleton for the pose pass; reference + skeleton + pose output for identity
+    # skeleton for the pose pass; reference + pose output for identity (the
+    # skeleton is NOT sent to the identity pass - see render() and NOTES.md)
     assert fake.uploads == ["skeleton_strip.png", "reference_512.png",
-                            "skeleton_strip.png", "pose_pass.png"]
+                            "pose_pass.png"]
     assert (striped_job.render_dir / "pose_pass.png").exists()
     assert (striped_job.render_dir / "identity_pass.png").exists()
 
@@ -130,7 +131,44 @@ def test_the_posted_graph_carries_the_patched_values(striped_job, workflow_dir):
     loads = {n["_meta"]["title"]: n["inputs"]["image"]
              for n in identity_graph.values() if n["class_type"] == "LoadImage"}
     assert loads["PATCH image1 - reference sprite (64px)"] == "reference_512.png"
-    assert loads["PATCH image3 - pose-pass strip"] == "pose_pass.png"
+    assert loads["PATCH image2 - skeleton strip"] == "pose_pass.png", \
+        "the pose pass is image2; the skeleton is not sent (2026-09-15)"
+    assert "PATCH image3 - pose-pass strip" not in loads
+    encoders = [n for n in identity_graph.values()
+                if n["class_type"] == "TextEncodeQwenImageEditPlus"]
+    assert encoders and all("image3" not in n["inputs"] for n in encoders)
+    image2_id = next(i for i, n in identity_graph.items()
+                     if n.get("_meta", {}).get("title", "").startswith("PATCH image2"))
+    encode = next(n for n in identity_graph.values() if n["class_type"] == "VAEEncode")
+    assert encode["inputs"]["pixels"] == [image2_id, 0], "latent = the pose pass"
+
+
+def test_the_lora_node_is_bypassed_unless_a_strength_is_asked_for(striped_job,
+                                                                  workflow_dir):
+    """ComfyUI validates a LoRA filename against the files on disk BEFORE it
+    runs the graph, so a missing optional LoRA at strength 0.0 is a 400, not a
+    no-op (knight_strike, 2026-09-15). The node must not be in the graph."""
+    with FakeComfy() as fake:
+        render_stage.render(striped_job.name, client=comfy.ComfyClient(fake.url),
+                            workflow_dir=workflow_dir,
+                            work_dir=striped_job.root.parent)
+    identity_graph = fake.prompts[1]
+    classes = [n["class_type"] for n in identity_graph.values()]
+    assert "LoraLoaderModelOnly" not in classes
+    loader_id = next(i for i, n in identity_graph.items()
+                     if n["class_type"] == "NunchakuQwenImageDiTLoader")
+    shift = next(n for n in identity_graph.values()
+                 if n["class_type"] == "ModelSamplingAuraFlow")
+    assert shift["inputs"]["model"] == [loader_id, 0], "consumer rewired past it"
+
+    with FakeComfy() as fake:
+        render_stage.render(striped_job.name, lora_strength=0.6,
+                            client=comfy.ComfyClient(fake.url),
+                            workflow_dir=workflow_dir,
+                            work_dir=striped_job.root.parent)
+    lora = next(n for n in fake.prompts[1].values()
+                if n["class_type"] == "LoraLoaderModelOnly")
+    assert lora["inputs"]["strength_model"] == 0.6
 
 
 def test_provenance_records_what_it_takes_to_remake_the_frame(striped_job,

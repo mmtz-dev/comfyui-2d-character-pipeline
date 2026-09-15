@@ -122,7 +122,7 @@
         "5",
         0
       ],
-      "prompt": "Redraw the four poses in image3 as the exact character in image1: same palette, same outline weight, same proportions, same armour and silhouette. Keep the four poses in one horizontal strip, aligned to the skeleton in image2. Side view, facing right, full body, flat plain white background, no ground shadow, no floor, no cast shadow.",
+      "prompt": "Redraw image2 so the character looks exactly like the knight in image1: same helmet, same armour, same colours, same outline weight, same proportions, same weapon and shield. Keep image2's layout exactly: the same number of figures, in the same positions, at the same size, in the same poses. Pixel art, side view facing right, flat plain white background, no ground shadow, no floor.",
       "vae": [
         "6",
         0

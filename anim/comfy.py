@@ -237,6 +237,48 @@ def patch(workflow: dict[str, Any], needle: str, **inputs: Any) -> dict[str, Any
     return workflow
 
 
+def bypass(workflow: dict[str, Any], needle: str, passthrough: str) -> dict[str, Any]:
+    """Remove the node whose PATCH title matches and wire every consumer of its
+    output straight to whatever fed its `passthrough` input. Mutates and returns.
+
+    Why this exists: ComfyUI validates every combo input against the loader's
+    file list BEFORE execution, so a `LoraLoaderModelOnly` naming a file that
+    is not on disk is rejected with `value_not_in_list` even at strength 0.0 -
+    the zero-strength early return in `load_lora` never gets to run. NOTES.md
+    had that wrong; found on the first identity pass (knight_strike,
+    2026-09-15). Bypassing the node is exactly what the editor's Ctrl+B does.
+    """
+    node_id = find_node(workflow, needle)
+    source = workflow[node_id].get("inputs", {}).get(passthrough)
+    if not isinstance(source, list):
+        raise KeyError(f"node {node_id} input {passthrough!r} is not a link; "
+                       f"nothing to pass through")
+    for other_id, other in workflow.items():
+        if other_id == node_id:
+            continue
+        for key, value in list((other.get("inputs") or {}).items()):
+            if isinstance(value, list) and len(value) == 2 and value[0] == node_id:
+                other["inputs"][key] = list(source)
+    del workflow[node_id]
+    return workflow
+
+
+def unlink(workflow: dict[str, Any], needle: str) -> dict[str, Any]:
+    """Remove the node whose PATCH title matches and drop every input that
+    pointed at it, leaving those inputs unset (they must be optional on the
+    consumer - `TextEncodeQwenImageEditPlus.image2/3` are). Mutates and returns.
+    """
+    node_id = find_node(workflow, needle)
+    for other_id, other in workflow.items():
+        if other_id == node_id:
+            continue
+        for key, value in list((other.get("inputs") or {}).items()):
+            if isinstance(value, list) and len(value) == 2 and value[0] == node_id:
+                del other["inputs"][key]
+    del workflow[node_id]
+    return workflow
+
+
 def workflow_sha256(workflow: dict[str, Any]) -> str:
     """Hash of the graph AS SENT - the provenance record, not the file on disk."""
     return sha256_bytes(canonical_json(workflow))

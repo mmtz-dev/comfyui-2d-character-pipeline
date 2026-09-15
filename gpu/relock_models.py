@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import pathlib
 import sys
 import urllib.request
 
@@ -35,6 +36,17 @@ WANT = [
     ("Comfy-Org/z_image_turbo",
      "split_files/vae/ae.safetensors",
      "vae", "z_image_ae.safetensors"),  # renamed: see models.lock header
+    # The FULL 2602 union (15 control layers + 2 refiner layers, 6.7 GB) is the
+    # one the workflows use since 2026-09-15. The lite build below it (3 layers,
+    # 2.0 GB) was the first pick and is kept installed for A/B: on the anchor
+    # gate it exerted no pose control at all - a lying-down skeleton produced
+    # standing knights at strength 1.0 and helmet close-ups at 1.5. The model
+    # card says lite = "control applied to fewer layers, resulting in weaker
+    # control"; on a 4x1 strip of ~190 px skeletons, weaker was none.
+    ("alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
+     "Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors",
+     "model_patches",
+     "Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors"),
     ("alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
      "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
      "model_patches",
@@ -149,16 +161,43 @@ def main() -> int:
 # `z_image_ae.safetensors`, because extra_model_paths.yaml also exposes the
 # pre-existing Flux `ae.safetensors` and ComfyUI merges vae folders by filename.
 # The workflows reference the renamed file.
+#
+# KNOWN DISCREPANCY - the Pixel-Art LoRA row is EXPECTED TO FAIL verification.
+#   prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA
+#   Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors
+# The HF API advertises sha256 2a2775ac823b3704eba2f72f3be65d7b0fe3262f1822e971c16818d0c923a4b6
+# (consistently, at both `main` and the pinned revision, via both the ?blobs=true
+# and paths-info endpoints), but the bytes the CDN actually serves hash to
+#   55300e5a970377b831a3f3918a956404b80f29711ad011590c496807eca728d6
+# Confirmed 2026-09-13 by two independent fetches (huggingface_hub and plain
+# curl against the resolve/ URL); the size matches exactly (1179885016) and the
+# file parses as a well-formed Qwen-Image LoRA (1680 tensors, ss_network_dim 64,
+# ss_network_alpha 32). So this is an upstream registry metadata bug - the repo's
+# LFS pointer oid does not match its stored object - NOT a corrupt download.
+#
+# Consequence: this file is NOT installed. The downloader refuses it, correctly.
+# Nothing is blocked: the LoRA is optional and `anim render` drops the LoRA node
+# from the identity pass unless --lora-strength is given. OWNER DECISION NEEDED:
+#   (a) skip it (current state, safe), or
+#   (b) accept the observed hash: add an override in relock_models.py that
+#       replaces this row's sha256 with 55300e5a..., say why, and re-run
+#       download_models.sh.
+# Re-check whether upstream has fixed it with:
+#   curl -s https://huggingface.co/api/models/prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA?blobs=true
 # ======================================================================"""
 
-    with open("models.lock", "w") as fh:
+    # Always next to this script, whatever the CWD: gpu/models.lock is the
+    # file download_models.sh reads. (Run from the repo root on 2026-09-15 it
+    # wrote ./models.lock and the downloader never saw the new row.)
+    lock_path = pathlib.Path(__file__).resolve().parent / "models.lock"
+    with open(lock_path, "w") as fh:
         fh.write(header + "\n")
         for r in rows:
             fh.write("\t".join(str(x) for x in r) + "\n")
 
     for r in rows:
         print(f"  {r[3]}/{r[4]}  {r[5] / 2**30:.2f} GiB  sha256={r[6][:16]}...")
-    print(f"\nwrote models.lock: {len(rows)} files, {total / 2**30:.2f} GiB")
+    print(f"\nwrote {lock_path}: {len(rows)} files, {total / 2**30:.2f} GiB")
     return 0
 
 

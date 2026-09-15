@@ -147,14 +147,29 @@ def render(job_name: str, *, seed: int | None = None, strength: float | None = N
     # --- pass 2: identity --------------------------------------------------
     identity_wf = comfy.load_workflow("identity_pass", workflow_dir)
     comfy.patch(identity_wf, "image1", image=client.upload_image(reference))
-    comfy.patch(identity_wf, "image2", image=client.upload_image(skeleton))
-    comfy.patch(identity_wf, "image3", image=client.upload_image(pose_path))
+    comfy.patch(identity_wf, "image2", image=client.upload_image(pose_path))
+    # Two images, not three. Measured on knight_strike (2026-09-15): with the
+    # skeleton as image2 and the pose pass as image3, Qwen-Image-Edit dropped
+    # the strip layout (two zoomed figures, wrong character); with the pose
+    # pass as image2 and no image3 it kept all four cells in place and
+    # re-skinned them. The skeleton's job was done by the pose pass.
+    pose_node = comfy.find_node(identity_wf, "image2")
+    for node in identity_wf.values():
+        if node["class_type"] == "VAEEncode":
+            node["inputs"]["pixels"] = [pose_node, 0]  # the latent is still the pose pass
+    comfy.unlink(identity_wf, "image3")
     comfy.patch(identity_wf, "seed", seed=seed)
     comfy.patch(identity_wf, "output prefix",
                 filename_prefix=f"anim_pipeline/{job.name}/identity_pass")
-    if lora_strength is not None:
+    if lora_strength:
         comfy.patch(identity_wf, "Pixel-Art LoRA",
                     strength_model=float(lora_strength))
+    else:
+        # The LoRA file is optional and (as of 2026-09-15) not installable -
+        # see gpu/README.md "Known issues" - and ComfyUI rejects a workflow
+        # naming a missing file even at strength 0. So the node is only in
+        # the graph when it is actually asked for.
+        comfy.bypass(identity_wf, "Pixel-Art LoRA", "model")
     if identity_prompt:
         comfy.patch(identity_wf, "positive prompt", prompt=identity_prompt)
     identity_png, identity_run = submit(client, identity_wf, timeout_s=timeout_s)

@@ -56,6 +56,7 @@ alpha, every opaque colour a palette member. A frame that fails is not written.
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Any, Callable
 
@@ -121,6 +122,9 @@ MATTES: dict[str, Callable[[Image.Image], Image.Image]] = {
 # ---------------------------------------------------------------------------
 # The per-cell chain
 # ---------------------------------------------------------------------------
+GRID_ASPECT_TOLERANCE = 0.15
+
+
 def grid_repair(img: Image.Image, target_height: int) -> tuple[Image.Image, str]:
     """pixel-art-fixer's grid detection + reconstruction. Guarded; never fatal.
 
@@ -145,6 +149,16 @@ def grid_repair(img: Image.Image, target_height: int) -> tuple[Image.Image, str]
         return img, (f"rejected ({img.width}x{img.height} -> "
                      f"{out.width}x{out.height}; below the {target_height}px "
                      f"target)")
+    # A grid found with different pitches on the two axes is a grid that was
+    # not there. knight_base's first render (2026-09-15): 413x695 -> 36x81, an
+    # 11.5px x-pitch against an 8.6px y-pitch, and the knight came out 23px
+    # wide. The height guard above cannot see that; the aspect ratio can.
+    aspect_in = img.width / img.height
+    aspect_out = out.width / out.height
+    if abs(aspect_out - aspect_in) > GRID_ASPECT_TOLERANCE * aspect_in:
+        return img, (f"rejected ({img.width}x{img.height} -> "
+                     f"{out.width}x{out.height}; aspect {aspect_out:.2f} vs "
+                     f"{aspect_in:.2f} - unequal x/y pitch)")
     return out, f"{img.width}x{img.height} -> {out.width}x{out.height}"
 
 
@@ -177,6 +191,29 @@ def pixel_downscale(img: Image.Image,
             f"pixeloe patch {patch}")
 
 
+def box_downscale(img: Image.Image, target_height: int) -> tuple[Image.Image, str]:
+    """Plain area-average to exactly `target_height` tall, aspect kept.
+
+    The default since 2026-09-15. On the first real render (knight_base,
+    512x768 Z-Image output with an ~8px block grid) pixeloe's contrast pass
+    produced a noisier sprite than a box filter, and its `target_size` does
+    not mean the output height (53 asked, 68 given), so the chain then
+    nearest-resampled 68 -> 53 and lost rows unevenly. A box filter followed
+    by the palette snap keeps the render's outline and shading reads intact,
+    lands on the target height in one step, and is exactly reproducible.
+    Comparison sheet: game02-anchor-gate.html on the visuals server.
+    """
+    width = max(1, round(img.width * target_height / max(1, img.height)))
+    return img.convert("RGB").resize((width, target_height), Image.BOX), "box"
+
+
+DOWNSCALES: dict[str, Callable[[Image.Image, int], tuple[Image.Image, str]]] = {
+    "box": box_downscale,
+    "pixeloe": pixel_downscale,
+}
+DEFAULT_DOWNSCALE = "box"
+
+
 def palette_snap(img: Image.Image, palette_png: Path) -> Image.Image:
     """`magick -dither None -remap`. RGB in, RGB out, every pixel a member."""
     import tempfile
@@ -193,19 +230,32 @@ def palette_snap(img: Image.Image, palette_png: Path) -> Image.Image:
 
 def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
                  chroma: tuple[int, int, int], use_pixelfixer: bool = True,
-                 canvas: tuple[int, int] = None) -> tuple[Image.Image, list[str]]:
+                 canvas: tuple[int, int] = None,
+                 downscale: str = DEFAULT_DOWNSCALE) -> tuple[Image.Image, list[str]]:
     """One generated cell -> one finished 64x64 frame. Pure; no disk state."""
     canvas = tuple(canvas or config.CANVAS)
+    if downscale not in DOWNSCALES:
+        raise ValueError(f"unknown downscale {downscale!r}; known: "
+                         f"{sorted(DOWNSCALES)}")
     steps: list[str] = []
 
     if imaging.opaque_box(cell) is None:
         raise ValueError("cell is fully transparent after matting - nothing to "
                          "publish. Check the background prompt or --matte.")
+    cell, dropped = imaging.keep_main_blobs(cell)
+    if dropped:
+        steps.append(f"dropped {dropped} stray island(s)")
     trimmed = imaging.trim(cell)
     alpha = trimmed.getchannel("A")
-    flat = Image.new("RGB", trimmed.size, chroma)
-    flat.paste(trimmed.convert("RGB"), (0, 0), trimmed)
     steps.append(f"trim to {trimmed.width}x{trimmed.height}")
+    # Bleed the edge colours outward before flattening, so the downscale
+    # averages an edge pixel with the sprite and not with the chroma key (see
+    # imaging.bleed_edges). The key still fills everything beyond the bleed.
+    passes = 2 * math.ceil(trimmed.height / max(1, target_height)) + 2
+    bled, grown = imaging.bleed_edges(trimmed, passes)
+    flat = Image.new("RGB", trimmed.size, chroma)
+    flat.paste(bled.convert("RGB"), (0, 0), grown)
+    steps.append(f"bleed edges {passes}px")
 
     if use_pixelfixer:
         flat, note = grid_repair(flat, target_height)
@@ -213,7 +263,7 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
     else:
         steps.append("pixelfixer off")
 
-    small, note = pixel_downscale(flat, target_height)
+    small, note = DOWNSCALES[downscale](flat, target_height)
     steps.append(f"{note} -> {small.width}x{small.height} "
                  f"(target {target_height}px tall)")
 
@@ -243,6 +293,7 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
 # ---------------------------------------------------------------------------
 def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
          source: Path | None = None, use_pixelfixer: bool = True,
+         downscale: str = DEFAULT_DOWNSCALE,
          work_dir: Path | None = None) -> dict[str, Any]:
     job = Job.open(job_name, work_dir)
     manifest = job.read_manifest()
@@ -287,7 +338,8 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         cell = cut.crop((x, y, x + width, y + height))
         frame, steps = process_cell(cell, target_height=target_height,
                                     palette_png=palette_png, chroma=chroma,
-                                    use_pixelfixer=use_pixelfixer)
+                                    use_pixelfixer=use_pixelfixer,
+                                    downscale=downscale)
         problems = imaging.verify_frame(frame, colours)
         problems_total += len(problems)
         name = f"{stem}_{cell_meta['index']}.png"
@@ -311,13 +363,15 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         "action": action,
         "source": str(strip_path),
         "matte": matte,
+        "downscale": downscale,
         "target_height": target_height,
         "palette": {"path": str(palette_path), "colours": len(colours),
                     "chroma_key": list(chroma)},
         "tools": {
             "magick": tool_version("magick", "-version"),
             "pixelfixer": tool_version("pixelfixer", "--help"),
-            "pixeloe": "pixeloe.legacy.pixelize (contrast)",
+            "pixeloe": ("pixeloe.legacy.pixelize (contrast)"
+                        if downscale == "pixeloe" else None),
             "rembg_model": REMBG_MODEL if matte == "rembg" else None,
         },
         "frames": records,
@@ -330,7 +384,7 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
                            + "\n  - ".join(bad)
                            + f"\nSee {job.report_path}")
     job.update_manifest(post={"frames": len(records), "palette": str(palette_path),
-                              "matte": matte})
+                              "matte": matte, "downscale": downscale})
     return report
 
 
@@ -351,12 +405,18 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-pixelfixer", dest="pixelfixer",
                         action="store_false",
                         help="skip the grid-repair step")
+    parser.add_argument("--downscale", default=DEFAULT_DOWNSCALE,
+                        choices=sorted(DOWNSCALES),
+                        help="box = area-average straight to the target height "
+                             "(default); pixeloe = contrast-aware pixelize, "
+                             "noisier on real renders (anchor gate, 2026-09-15)")
     parser.set_defaults(pixelfixer=True)
 
 
 def run_stage(args: argparse.Namespace) -> int:
     report = post(args.job, palette=args.palette, matte=args.matte,
-                  source=args.source, use_pixelfixer=args.pixelfixer)
+                  source=args.source, use_pixelfixer=args.pixelfixer,
+                  downscale=args.downscale)
     print(f"post: {len(report['frames'])} frame(s) at "
           f"{config.CANVAS[0]}x{config.CANVAS[1]}, "
           f"{report['palette']['colours']}-colour palette")

@@ -67,6 +67,10 @@ services:
       - "/mnt/private/AI Data/models/Image Models:/shared-models:ro"
       # Repo-owned config, mounted read-only so the repo stays the source of truth.
       - "./extra_model_paths.yaml:/extra_model_paths.yaml:ro"
+      # Repo-owned start-up scripts, run by the init in name order inside the
+      # activated venv on every start (idempotent). 10-nunchaku.sh installs the
+      # pinned `nunchaku` wheel the ComfyUI-nunchaku node pack needs.
+      - "./userscripts:/userscripts_dir:ro"
 
     environment:
       # `uv` instead of pip: much faster container start, recommended upstream.
@@ -83,6 +87,12 @@ services:
       - ALLOW_GIT_URL_INSTALL=false
       - ALLOW_PIP_INSTALL=false
       - USE_NEW_MANAGER=true
+      # Pin torch. The image otherwise installs the newest torch on every start
+      # (2.13.0 on 2026-09-15), and the `nunchaku` wheel is built per torch minor
+      # version - none exists for 2.13. 2.11.0 is the newest with a v1.2.1 wheel,
+      # which is the same version as the pinned node pack. Move this and
+      # userscripts/10-nunchaku.sh together, never one without the other.
+      - TORCH_LOCK=torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
       # --extra-model-paths-config  : pick up the shared read-only checkpoints.

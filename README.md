@@ -33,7 +33,7 @@ extracted from real footage**. Same ComfyUI plumbing, different output contract.
 | Frames per action | 33+, a smooth cycle | 2–6 auto-picked key poses, owner can override |
 | Output | 512px greyscale RGBA sheet, runtime-tinted | 64×64 PNG per frame, palette-snapped, binary alpha, one sidecar per action |
 | Layering | separate cosmetic sheets (hair/eyes/clothes) | none — one sprite per unit |
-| Weights | ~120 GB (Wan 2.2, VACE, SAM3, GGUF) | 35 GiB, all Apache-2.0 (`gpu/models.lock`) |
+| Weights | ~120 GB (Wan 2.2, VACE, SAM3, GGUF) | 41 GiB, all Apache-2.0 (`gpu/models.lock`) |
 | Post-processing | inside ComfyUI (BiRefNet) | deterministic CPU chain outside ComfyUI (rembg → pixeloe → pixel-art-fixer → ImageMagick `-remap`) |
 
 ## The `anim` CLI — the whole flow
@@ -310,8 +310,8 @@ documented; they are the starting point for a later full-cycle animation tier.
 | Path | What it is |
 |---|---|
 | `gpu/` | **The GPU image service feature** — ComfyUI in a pinned container on the native Docker daemon, the only GPU service in the project. Compose file, `models.lock`, pinned custom nodes, the three workflows. Start here: [`gpu/README.md`](gpu/README.md). |
-| `gpu/workflows/pose_pass.json` | Stage 1: Z-Image-Turbo (int8) + Z-Image Fun ControlNet Union 2.1 lite. Skeleton strip → posed strip. No upstream counterpart; upstream had no pose-only stage. |
-| `gpu/workflows/identity_pass.json` | Stage 2: the reworked W1. Re-skins the posed strip onto the unit's reference sprite. |
+| `gpu/workflows/pose_pass.json` | Stage 1: Z-Image-Turbo (int8) + Z-Image Fun ControlNet Union 2.1 (full 2602 8-step; lite was ignoring the pose). Skeleton strip → posed strip, drawn at 2 px. No upstream counterpart; upstream had no pose-only stage. |
+| `gpu/workflows/identity_pass.json` | Stage 2: the reworked W1. Re-skins the posed strip onto the unit's reference sprite. Two images in (reference, pose pass). **Off since the anchor gate** — it flattens poses; `post` takes the pose pass. |
 | `gpu/workflows/base_sprite.json` | Generates a unit's standing sprite from a canned skeleton when no reference sprite exists yet. |
 | `gpu/workflows/NOTES.md` | Which node names and input keys were verified against source, and what is still `TODO-verify`. |
 | `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base`. |

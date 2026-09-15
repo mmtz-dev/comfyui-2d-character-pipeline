@@ -153,15 +153,26 @@ def series_from(payload: dict[str, Any]) -> tuple[list[np.ndarray | None], list[
 # ---------------------------------------------------------------------------
 # Rendering - ALWAYS rtmlib's own DWPose renderer
 # ---------------------------------------------------------------------------
-def line_width_for(size: tuple[int, int]) -> int:
-    """Limb thickness scaled to the canvas.
+LINE_WIDTH = 2  # rtmlib's default: the DWPose renders the ControlNet was trained on
 
-    rtmlib's default is 2 px, tuned for a thumbnail. At the 304x320 generation
-    cell that draws a hairline rig the ControlNet can barely see, and at 512x768
-    it is worse. Roughly 1.6% of the short edge keeps the rig readable at any
-    cell size: 5 px at 304, 8 px at 512.
+
+def line_width_for(size: tuple[int, int]) -> int:
+    """Limb thickness. Always rtmlib's default, whatever the canvas.
+
+    The first cut scaled this with the canvas (1.6% of the short edge: 5 px at
+    304, 8 px at 512) on the theory that a hairline rig is one the ControlNet
+    cannot see. Measured on the anchor gate (2026-09-15) the opposite is true:
+    rtmlib draws each limb as an ellipse whose minor axis is 2 x line_width, so
+    at 5-8 px a 190-700 px figure is a chain of fat blobs, and the Fun ControlNet
+    Union 2.1 (full and lite) treated it as no pose at all - a lying-down
+    skeleton gave standing knights, a lunge gave a guard stance, strength 1.5
+    gave helmet close-ups. The same lunge drawn at 2 px was followed at 0.8 and
+    nailed at 1.0. The model card's own pose conditions are DWPose renders with
+    ~2 px sticks on a 1024 px figure; the thickness is part of the style the
+    ControlNet learned, not geometry we get to choose. `size` is kept in the
+    signature so callers do not change.
     """
-    return max(2, round(min(size) * 0.016))
+    return LINE_WIDTH
 
 
 def draw(keypoints: Sequence[Sequence[float]], scores: Sequence[float],
