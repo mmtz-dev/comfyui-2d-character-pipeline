@@ -1,0 +1,77 @@
+# =============================================================================
+# the 3D-intermediate spike feature - TripoSG on the NATIVE Docker daemon
+# =============================================================================
+# This is the spike's ONLY native-daemon service, and it mirrors
+# ../gpu/compose.yml: same nvidia runtime, same Fedora SELinux label, same
+# manual-start discipline. Everything else in the spike (mixamotoopenpose,
+# render_openpose.py, the post-chain, the comparison page) runs on Docker
+# Desktop, on CPU.
+#
+#   # build - Docker Desktop, no GPU needed to compile the CUDA extension
+#   docker --context desktop-linux compose -f tools/anim-pipeline/spike3d/compose.yml build
+#
+#   # run - owner starts the native daemon first, in a real TTY
+#   sudo systemctl start docker
+#   docker --context docker-default compose -f tools/anim-pipeline/spike3d/compose.yml \
+#     run --rm triposg --image-input /work/in/knight_apose.png --output-path /work/out/knight.glb
+#
+# NEVER `docker context use`. The active context stays `desktop-linux` so a bare
+# `docker ps` keeps showing the normal Docker Desktop stack.
+#
+# Validate without running anything (parses on either engine):
+#   docker --context desktop-linux compose -f tools/anim-pipeline/spike3d/compose.yml config
+#
+# VRAM: TripoSG needs ~8 GB and ComfyUI's identity pass needs ~14-20 GB. On a
+# 24 GB A5000 they fit together only barely and not reliably. Run this service,
+# let it exit (`run --rm` - it is a batch job, not a daemon), THEN bring the
+# ComfyUI service up. The runbook sequences it that way on purpose.
+# =============================================================================
+
+# Explicit project name: a bare `compose -f ...` would otherwise name the project
+# after this directory and call it `spike3d`.
+name: anim-pipeline-spike3d
+
+services:
+  triposg:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: spike3d-triposg:local
+    container_name: spike3d-triposg
+
+    # tini as PID 1 so `docker stop` reaches python instead of orphaning it.
+    init: true
+
+    # The nvidia runtime lives in the native daemon's /etc/docker/daemon.json.
+    # This line is why the service cannot run on Docker Desktop.
+    runtime: nvidia
+
+    # Fedora SELinux: without this the container cannot open the NVIDIA device
+    # nodes and torch comes up CPU-only (TripoSG hard-codes device="cuda", so it
+    # would not degrade gracefully - it would crash).
+    security_opt:
+      - label=type:nvidia_container_t
+
+    volumes:
+      # The spike's own scratch: in/ (reference sprites), out/ (GLB + OBJ),
+      # poses/, work/. Bind-mounting the spike directory keeps run_triposg.py
+      # editable without a rebuild.
+      - .:/work
+      # Model weights, on the big disk next to the ComfyUI ones. ~8 GB.
+      # Created by the runbook; NOT inside the repo (see .gitignore).
+      - "/mnt/private/AI Data/models/3D Models:/weights"
+
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      # Weights and the HF blob cache land on /mnt/private, not in the image and
+      # not in the repo.
+      - HF_HOME=/weights/.hf
+      - TRIPOSG_WEIGHTS=/weights/TripoSG
+      # Ampere (sm_86). Recorded here as well as in the Dockerfile so a rebuild
+      # with a different base cannot quietly lose it.
+      - TORCH_CUDA_ARCH_LIST=8.6
+
+    # A batch job, not a service: always `run --rm`, never `up`. If this ever
+    # comes back on its own it is sitting on 8 GB of VRAM that ComfyUI needs.
+    restart: "no"

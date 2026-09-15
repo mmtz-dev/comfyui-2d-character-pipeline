@@ -1,0 +1,34 @@
+the pose-to-pixel animation pipeline feature
+============================================
+
+This directory is a fork of:
+
+    comfyui-2d-character-pipeline
+    Copyright (c) 2026 Mor Ohana
+    https://github.com/mor-o/comfyui-2d-character-pipeline
+    Licensed under the MIT License - see LICENSE.
+
+Upstream provided the repo layout (`workflows/`, `drivers/`, `docs/`), the
+API-format workflow convention, the `POST /prompt` + poll `/history` driver
+pattern, the strip-cell slicer, the OpenPose/depth render helpers in `tools/`,
+and the `comfyui_vram_helpers` custom nodes. Its W1 (Qwen-Image-Edit + ControlNet
+pose edit) workflow is the direct basis for this fork's `identity_pass.json`.
+
+Upstream's LICENSE is retained unmodified. Modifications made in this fork are
+described in the "Game-Dev fork" section of README.md and are covered by the same
+MIT terms.
+
+Fork: https://github.com/mmtz-dev/comfyui-2d-character-pipeline
+Vendored into the Game-Dev monorepo at tools/anim-pipeline/.
+
+
+Model weights
+-------------
+Every model this fork downloads is Apache-2.0 and ungated; repo, revision,
+filename, size, sha256 and licence for each are recorded in gpu/models.lock.
+Attribution for the weights belongs in game-02-tactical-rpg/CREDITS.md, which is
+generated from asset sidecars - not hand-maintained here.
+
+Container image: mmartial/comfyui-nvidia-docker (MIT).
+Custom nodes: nunchaku-tech/ComfyUI-nunchaku (Apache-2.0),
+alexopus/ComfyUI-Image-Saver (MIT).

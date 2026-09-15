@@ -1,0 +1,58 @@
+# =====================================================================
+# models.lock - the GPU image service feature
+# =====================================================================
+# RESOLVED LOCKFILE, not hand-written. Regenerate with gpu/relock_models.py.
+# Resolved 2026-09-13 from the Hugging Face API; every sha256 and size was
+# read from BOTH /api/models/<repo>?blobs=true and
+# /api/models/<repo>/paths-info/<revision> and the two reads agreed.
+# Every repo below was confirmed ungated and Apache-2.0 via the same API.
+#
+# Consumed by gpu/download_models.sh -> gpu/hf_download.py, which refuses to
+# install a file whose size or sha256 does not match a row here.
+# Verify a file by hand with:  sha256sum <file>
+#
+# Total: 37657732309 bytes = 35.07 GiB (37.66 GB)
+#
+# TAB-separated columns:
+#   repo_id  repo_revision  repo_file  dest_subdir  dest_filename  size_bytes  sha256  license
+#
+# dest_subdir is relative to the basedir's models/ dir, i.e. the container's
+# /basedir/models/<dest_subdir>/<dest_filename>.
+#
+# RENAME: z_image_turbo's vae ships as `ae.safetensors` and is installed as
+# `z_image_ae.safetensors`, because extra_model_paths.yaml also exposes the
+# pre-existing Flux `ae.safetensors` and ComfyUI merges vae folders by filename.
+# The workflows reference the renamed file.
+#
+# KNOWN DISCREPANCY - the Pixel-Art LoRA row is EXPECTED TO FAIL verification.
+#   prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA
+#   Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors
+# The HF API advertises sha256 2a2775ac823b3704eba2f72f3be65d7b0fe3262f1822e971c16818d0c923a4b6
+# (consistently, at both `main` and the pinned revision, via both the ?blobs=true
+# and paths-info endpoints), but the bytes the CDN actually serves hash to
+#   55300e5a970377b831a3f3918a956404b80f29711ad011590c496807eca728d6
+# Confirmed 2026-09-13 by two independent fetches (huggingface_hub and plain
+# curl against the resolve/ URL); the size matches exactly (1179885016) and the
+# file parses as a well-formed Qwen-Image LoRA (1680 tensors, ss_network_dim 64,
+# ss_network_alpha 32). So this is an upstream registry metadata bug - the repo's
+# LFS pointer oid does not match its stored object - NOT a corrupt download.
+#
+# Consequence: this file is NOT installed. The downloader refuses it, correctly.
+# Nothing is blocked: the LoRA is optional and identity_pass.json bypasses it at
+# strength_model 0.0. OWNER DECISION NEEDED - either
+#   (a) skip it (current state, safe), or
+#   (b) accept the observed hash: replace this row's sha256 with 55300e5a...,
+#       leave a comment saying you did and why, and re-run download_models.sh.
+#       relock_models.py WILL overwrite that back to the advertised value, so
+#       (b) also means adding an override there.
+# Re-check whether upstream has fixed it with:
+#   curl -s https://huggingface.co/api/models/prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA?blobs=true
+# ======================================================================
+Comfy-Org/z_image_turbo	08d04455279082882deaabc8d0d09fc914c071e1	split_files/diffusion_models/z_image_turbo_int8_convrot.safetensors	diffusion_models	z_image_turbo_int8_convrot.safetensors	6201001296	be517ebd47c912a5626a588e1aeea43e6be4a43c0cdcd2b48a2a780d9f358635	apache-2.0
+Comfy-Org/z_image_turbo	08d04455279082882deaabc8d0d09fc914c071e1	split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors	text_encoders	qwen_3_4b_fp8_mixed.safetensors	5631994051	72450b19758172c5a7273cf7de729d1c17e7f434a104a00167624cba94f68f15	apache-2.0
+Comfy-Org/z_image_turbo	08d04455279082882deaabc8d0d09fc914c071e1	split_files/vae/ae.safetensors	vae	z_image_ae.safetensors	335304388	afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38	apache-2.0
+alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1	5155fc56d17821007d6f62ac192c09e0f0e72016	Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors	model_patches	Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors	2016627488	3ea098db9bd145be525c7e2366920b6d76c5ffd46b3d7aa8169bbc943fdaee35	apache-2.0
+nunchaku-ai/nunchaku-qwen-image-edit-2509	e93a5fb77403d02a5a73c7cc8707b292c6ebc659	lightning-251115/svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors	diffusion_models	svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors	12654443144	3b438e3e8b76c79734cc9a84dc5e9b7c7c3cce68448dbb8bd9e756f0135b877d	apache-2.0
+Comfy-Org/Qwen-Image_ComfyUI	7beb7b647f04469fbe64ba8adc2bb0d7e5e9f73f	split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors	text_encoders	qwen_2.5_vl_7b_fp8_scaled.safetensors	9384670680	cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4	apache-2.0
+Comfy-Org/Qwen-Image_ComfyUI	7beb7b647f04469fbe64ba8adc2bb0d7e5e9f73f	split_files/vae/qwen_image_vae.safetensors	vae	qwen_image_vae.safetensors	253806246	a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f	apache-2.0
+prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA	e14eea588e8e4a9c753439e52a203d06288769c5	Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors	loras	Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors	1179885016	2a2775ac823b3704eba2f72f3be65d7b0fe3262f1822e971c16818d0c923a4b6	apache-2.0

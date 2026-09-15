@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anim"
+version = "0.1.0"
+description = "CPU stages of the pose-to-pixel animation pipeline feature (game-02)"
+requires-python = ">=3.12"
+# Runtime dependencies are installed from requirements.txt in the Dockerfile,
+# not resolved from here: pixeloe comes from a pinned git ref, which belongs in
+# a requirements file rather than in project.dependencies.
+dependencies = []
+
+[project.scripts]
+anim = "anim.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["anim*"]
+
+# Test config for the pose-to-pixel animation pipeline feature. testpaths keeps
+# collection inside tests/ so pytest never walks work/ (per-job scratch, full of
+# PNGs) or upstream's drivers/ and samples/.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

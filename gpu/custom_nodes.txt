@@ -1,0 +1,48 @@
+# =============================================================================
+# Custom nodes for the GPU image service feature - PINNED COMMITS
+# =============================================================================
+# Format (space-separated):  <name> <git-url> <commit-sha> <licence> <why>
+#
+# These are already PRE-CLONED at these exact commits into
+#   /mnt/private/AI Data/comfyui-basedir/custom_nodes/
+# which the container sees as /basedir/custom_nodes (BASE_DIRECTORY). The
+# container does NOT need to fetch them: compose.yml sets
+# ALLOW_GIT_URL_INSTALL=false / ALLOW_PIP_INSTALL=false so ComfyUI-Manager
+# never pulls code at runtime. Reproducibility is the point - a floating
+# custom-node HEAD silently changes node behaviour between renders.
+#
+# Re-clone / verify them with gpu/install_custom_nodes.sh.
+# Resolved 2026-09-13 via `gh api repos/<repo>/commits`.
+#
+# NOTE: nunchaku-tech/ComfyUI-nunchaku now redirects to nunchux-ai/ComfyUI-nunchaku
+# on GitHub (the org was renamed). Both URLs clone the same repo; the redirect is
+# followed automatically by git.
+# =============================================================================
+
+ComfyUI-nunchaku    https://github.com/nunchaku-tech/ComfyUI-nunchaku.git    b600f879a777fdef1466c362e850f7e8c31bf89a  Apache-2.0  Loads the INT4 (SVDQuant) Qwen-Image-Edit-2509 weights. Node: NunchakuQwenImageDiTLoader. Latest release at pin time: v1.2.1.
+ComfyUI-Image-Saver https://github.com/alexopus/ComfyUI-Image-Saver.git      b4b349e553d0f43713fa6914708b70b296392f73  MIT         Writes model + LoRA names/hashes and the seed into PNG metadata, so a published frame can be traced back to the weights that made it. Node: "Image Saver" (class_type contains spaces). Latest release at pin time: v1.24.1.
+
+# -----------------------------------------------------------------------------
+# Python runtime dependency, NOT a custom node:
+# ComfyUI-nunchaku needs the `nunchaku` wheel importable inside the ComfyUI venv
+# (it does `from nunchaku.utils import ...` at import time). The node pack does
+# not vendor it. On first start the node will fail to import until the wheel is
+# installed into /comfy/mnt's venv - see gpu/README.md step 5.
+# Wheel must match the container's torch + CUDA build and the card's compute
+# capability (A5000 = Ampere, sm_86 -> INT4 kernels, NOT nvfp4).
+# -----------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Deliberately NOT installed (upstream fork's W2/W4/W5 stages are parked):
+#   ComfyUI-GGUF, comfyui_controlnet_aux, ComfyUI-RMBG  - only needed by the
+#   parked Wan 2.2 / VACE / SAM3 stages, ~120 GB of weights we do not download.
+#   comfyui_vram_helpers (vendored in this repo's custom_nodes/) - the two-stage
+#   eviction nodes are for the 2-model-in-one-graph upstream W1. Our chain runs
+#   pose_pass and identity_pass as two SEPARATE /prompt jobs, so ComfyUI's own
+#   model manager evicts between them.
+#
+# NEVER install (licence):
+#   comfy_pixelization        - non-commercial licence
+#   Astropulse/sd-palettize   - no licence at all
+# Palette snapping happens in the CPU post-chain with ImageMagick instead.
+# -----------------------------------------------------------------------------

@@ -1,0 +1,41 @@
+{
+  "schema": "anim.keypoints/1",
+  "rig": "openpose18",
+  "model": "canned",
+  "mode": "canned",
+  "kpt_thr": 0.4,
+  "source_size": [512, 768],
+  "_note": "The canned standing skeleton for `anim base`. SYNTHESISED from joint coordinates, not traced from a photograph, so it carries no licence of any kind. Side view facing right (the art bible's view and facing), feet on row ~702 of a 768-tall portrait cell, roughly four heads tall: head top ~80, neck 230, hip 431, ankle 702 - a 200px torso under a 150px head. The far-side eye and ear score low because in a true profile they are occluded, which is what a real DWPose read of a profile shot looks like. Edit the numbers here to change the base pose; `anim base` renders this through rtmlib's own draw_skeleton, exactly like a filmed frame.",
+  "frames": [
+    {
+      "index": 0,
+      "file": "(canned)",
+      "keypoints": [
+        [300, 155],
+        [248, 230],
+        [252, 240],
+        [258, 340],
+        [262, 440],
+        [238, 242],
+        [236, 342],
+        [234, 442],
+        [250, 430],
+        [252, 570],
+        [254, 700],
+        [238, 432],
+        [240, 572],
+        [242, 702],
+        [285, 145],
+        [278, 145],
+        [240, 150],
+        [236, 150]
+      ],
+      "scores": [
+        0.95, 0.95, 0.93, 0.9, 0.88, 0.86, 0.84, 0.82,
+        0.93, 0.91, 0.89, 0.87, 0.85, 0.83,
+        0.9, 0.45, 0.88, 0.42
+      ],
+      "person": {"score": 0.86}
+    }
+  ]
+}

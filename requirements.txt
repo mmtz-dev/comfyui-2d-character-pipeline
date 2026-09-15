@@ -1,0 +1,64 @@
+# ---------------------------------------------------------------------------
+# CPU pipeline dependencies - the pose-to-pixel animation pipeline feature
+#
+# Installed into the Docker Desktop image (see Dockerfile). NOTHING here is
+# ever installed on the host: the Fedora host runs Python 3.14 with no pip.
+#
+# Licences are noted because game-02 ships commercially - every dependency must
+# be Apache-2.0 / MIT / BSD. Verified 2026-09-13; pygltflib added 2026-09-14.
+#
+# Version floors, not exact pins. After the stages are implemented, capture
+# `pip freeze` into requirements.lock and build from that instead.
+# ---------------------------------------------------------------------------
+
+# --- stage 2, pose extraction ----------------------------------------------
+# DWPose / RTMW whole-body 2D keypoints over onnxruntime. Apache-2.0.
+# Chosen over MediaPipe: MediaPipe has the wrong joint set for OpenPose
+# conditioning and its OpenPose converter is GPL. Chosen over ComfyUI's
+# controlnet_aux: that pack is maintenance-only with open DWPose batch bugs.
+# We must use rtmlib's own draw_skeleton(openpose_skeleton=True) renderer -
+# Z-Image's ControlNet rejects hand-authored rigs.
+rtmlib>=0.0.13
+# CPU execution provider only. The GPU is reserved for ComfyUI on the other
+# Docker engine; do NOT swap this for onnxruntime-gpu. MIT.
+onnxruntime>=1.20
+
+# --- stage 7, post-chain ---------------------------------------------------
+# Background removal. MIT. Used as `rembg -m isnet-anime -dc -ppm` for a
+# BINARY alpha mask (64px sprites need alpha in {0,255}, and ComfyUI's
+# BiRefNet node exposes no threshold - that is why this is on the CPU side).
+rembg>=2.0.60
+# Grid-aware pixel-art downscale. Apache-2.0. MUST come from git: the PyPI
+# release is stale and lacks the contrast-aware downscale we rely on.
+pixeloe @ git+https://github.com/KohakuBlueleaf/PixelOE.git@341aa85048338d4d26c62fba23176e2b70d9f61b
+
+# --- rig motion input (the rig motion input feature) -----------------------
+# glTF 2.0 reader for `anim rig`: KayKit / Quaternius character GLBs -> joint
+# positions per clip. MIT. Pure Python over numpy; no Blender, no trimesh. The
+# sampler (TRS interpolation, node hierarchy, projection) is ours in
+# anim/rigkit.py - pygltflib only parses the container and the accessors.
+pygltflib>=1.16
+
+# --- shared imaging --------------------------------------------------------
+# HPND (permissive). Canvas/pivot work reuses the paste logic from
+# game-02-tactical-rpg/assets_src/extract_barrow_assets.py.
+# NOTE: Pillow's quantize() falls back to octree on RGBA and will not honour a
+# fixed palette - flatten first, and do the actual palette snap with ImageMagick
+# (`magick -dither None -remap palette.png`), not Pillow.
+Pillow>=11.0
+numpy>=2.0
+# Headless: no GUI libs in the image. Apache-2.0.
+opencv-python-headless>=4.10
+
+# --- stage 6, talking to the GPU image service -----------------------------
+# Apache-2.0. POST /prompt, poll /history.
+requests>=2.32
+
+# ---------------------------------------------------------------------------
+# Deliberately absent:
+#   onnxruntime-gpu  - the GPU belongs to ComfyUI on the native daemon
+#   mediapipe        - wrong joint set, GPL OpenPose converter
+#   torch            - nothing on the CPU side needs it; rembg uses onnxruntime
+# ImageMagick and ffmpeg are apt packages, installed in the Dockerfile.
+# pixel-art-fixer is a Rust binary built in the Dockerfile's first stage.
+# ---------------------------------------------------------------------------

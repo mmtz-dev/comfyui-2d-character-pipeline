@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------------------
+# the 3D-intermediate spike feature - generated and licence-restricted files
+# ---------------------------------------------------------------------------
+# The spike itself is NOT committed while it runs (it is a time-boxed experiment
+# inside a fork). This file exists so that if it is ever committed, none of the
+# things below go with it.
+
+# --- Mixamo raw files --------------------------------------------------------
+# Mixamo's terms permit unlimited commercial use of the ANIMATIONS but forbid
+# redistributing the raw files ("you cannot repackage the raw animation or
+# character files as an asset pack"). A git repo is redistribution. The .dae is
+# an input the owner re-downloads; only the derived 18-point joint lists and the
+# final sprites belong in version control.
+*.dae
+*.fbx
+*.bvh
+mixamo/
+
+# --- Meshes ------------------------------------------------------------------
+# Regenerable from the reference sprite + seed, and large.
+*.glb
+*.gltf
+*.obj
+*.mtl
+*.ply
+*.stl
+in/
+out/
+
+# --- Weights -----------------------------------------------------------------
+# TripoSG's ~8 GB lives at /mnt/private/AI Data/models/3D Models, never here.
+# (The parent .gitignore already covers *.safetensors and friends; repeated so
+# this directory is self-contained if it is ever split out.)
+pretrained_weights/
+weights/
+*.safetensors
+*.bin
+
+# --- Scratch -----------------------------------------------------------------
+work/
+__pycache__/
+*.pyc
+.pytest_cache/

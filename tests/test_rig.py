@@ -1,0 +1,266 @@
+"""`anim rig` end to end on the vendored CC0 Knight, then pick and strip unchanged.
+
+The Knight is a legitimate fixture: CC0 by its own LICENSE.txt, vendored with
+its hash in rigs/kaykit-adventurers/rig.json. These tests are the proof that a
+rig job is indistinguishable from a filmed one to every stage after `pose`.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from anim import config
+from anim.job import Job
+from anim.stages import base as base_stage
+from anim.stages import pick as pick_stage
+from anim.stages import rig as rig_stage
+from anim.stages import strip as strip_stage
+from anim.stages.publish import sidecar_for
+from anim.stages.review import ReviewApp
+
+REPO = Path(__file__).resolve().parent.parent
+KNIGHT = REPO / "rigs" / "kaykit-adventurers" / "Knight.glb"
+
+ANCHOR = [
+    # clip, action, the art bible's budget
+    ("Idle", "idle", 2),
+    ("1H_Melee_Attack_Slice_Horizontal", "strike", 4),
+    ("Hit_A", "hit", 2),
+    ("Death_A", "death", 4),
+]
+
+
+@pytest.fixture(scope="module")
+def knight_glb() -> Path:
+    if not KNIGHT.exists():
+        pytest.skip("rigs/kaykit-adventurers/Knight.glb is not vendored")
+    return KNIGHT
+
+
+@pytest.fixture
+def hit_job(knight_glb, work_dir) -> Job:
+    return rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight",
+                         work_dir=work_dir)
+
+
+# ---------------------------------------------------------------------------
+# What the stage writes
+# ---------------------------------------------------------------------------
+def test_rig_writes_exactly_what_extract_and_pose_would(hit_job):
+    manifest = hit_job.read_manifest()
+    assert manifest["schema"] == "anim.job/1"
+    assert manifest["slug"] == "knight" and manifest["action"] == "hit"
+    assert manifest["frames"] == 9 == len(hit_job.frames()) == len(hit_job.skeletons())
+    assert manifest["frame_size"] == list(config.STRIP_CELL)
+    assert manifest["pose"]["model"] == "rig"
+    assert manifest["pose"]["rig"] == "openpose18"
+    assert manifest["pose"]["detected"] == 9
+    payload = json.loads(hit_job.keypoints_path.read_text())
+    assert payload["schema"] == "anim.keypoints/1"
+    assert [f["file"] for f in payload["frames"]] == [p.name for p in hit_job.frames()]
+
+
+def test_the_manifest_names_the_rig_as_the_motion_source(hit_job):
+    src = hit_job.read_manifest()["motion_source"]
+    assert src["kind"] == "rig"
+    assert src["pack"] == "KayKit Adventurers"
+    assert src["clip"] == "Hit_A"
+    assert src["license"] == "CC0-1.0"
+    assert src["url"].startswith("https://github.com/KayKit-Game-Assets/")
+    assert len(src["file_sha256"]) == 64
+    assert src["file_sha256"] == hit_job.read_manifest()["clip_sha256"]
+    assert src["rig_map"] == "kaykit"
+    assert src["forward"] == pytest.approx([0, 0, 1], abs=1e-3)
+    assert src["mirror"] is False
+
+
+def test_the_skeletons_are_drawn_by_the_pose_stages_renderer(hit_job):
+    """Same size, same black ground, same rtmlib colours as `anim pose`."""
+    with Image.open(hit_job.pose_dir / "skel_0001.png") as img:
+        assert img.size == tuple(config.STRIP_CELL)
+        colours = {tuple(px) for px in np.asarray(img.convert("RGB")).reshape(-1, 3)}
+        assert (0, 0, 0) in colours, "black ground"
+        assert len(colours) > 8, "a coloured rig, not a monochrome stick figure"
+
+
+def test_the_previews_are_not_the_conditioning_images(hit_job):
+    with Image.open(hit_job.frames_dir / "0001.png") as img:
+        assert img.size == tuple(config.STRIP_CELL)
+        assert img.getpixel((2, 2)) == rig_stage.PREVIEW_BG, "dark ground, not black"
+
+
+def test_a_rig_without_provenance_is_refused(knight_glb, tmp_path, work_dir):
+    bare = tmp_path / "loose" / "Knight.glb"
+    bare.parent.mkdir()
+    shutil.copy(knight_glb, bare)
+    with pytest.raises(FileNotFoundError, match="rig.json"):
+        rig_stage.rig(bare, clip="Idle", action="idle", slug="knight", work_dir=work_dir)
+
+
+def test_a_rig_whose_hash_moved_is_refused(knight_glb, tmp_path, work_dir):
+    moved = tmp_path / "moved" / "Knight.glb"
+    moved.parent.mkdir()
+    shutil.copy(knight_glb, moved)
+    record = json.loads((knight_glb.parent / "rig.json").read_text())
+    record["files"]["Knight.glb"] = "0" * 64
+    (moved.parent / "rig.json").write_text(json.dumps(record))
+    with pytest.raises(ValueError, match="hashes to"):
+        rig_stage.rig(moved, clip="Idle", action="idle", slug="knight", work_dir=work_dir)
+
+
+def test_an_unknown_clip_is_refused_with_a_hint(knight_glb, work_dir):
+    with pytest.raises(KeyError, match="Did you mean"):
+        rig_stage.rig(knight_glb, clip="hit", action="hit", slug="knight", work_dir=work_dir)
+
+
+def test_list_prints_every_clip_with_a_duration(knight_glb):
+    clips = rig_stage.list_clips(knight_glb)
+    names = {c["name"]: c for c in clips}
+    assert len(clips) == 76
+    assert names["Hit_A"]["duration"] == pytest.approx(0.6667, abs=1e-3)
+    assert names["1H_Melee_Attack_Slice_Horizontal"]["duration"] == pytest.approx(1.0667, abs=1e-3)
+
+
+def test_mirror_is_recorded_and_flips_the_skeleton(knight_glb, work_dir):
+    job = rig_stage.rig(knight_glb, clip="Idle", action="idle", slug="knight",
+                        mirror=True, job_name="knight_idle_left", work_dir=work_dir)
+    manifest = job.read_manifest()
+    assert manifest["motion_source"]["mirror"] is True
+    assert manifest["motion_source"]["forward"] == pytest.approx([0, 0, 1], abs=1e-3), \
+        "the recorded facing is the rig's true facing; mirror is a separate flag"
+    payload = json.loads(job.keypoints_path.read_text())
+    names, pts = payload["names"], payload["frames"][0]["keypoints"]
+    assert pts[names.index("nose")][0] < pts[names.index("neck")][0], "faces left"
+
+
+# ---------------------------------------------------------------------------
+# The stages after it, unchanged
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("clip,action,budget", ANCHOR, ids=[a[1] for a in ANCHOR])
+def test_pick_and_strip_run_unchanged_on_a_rig_job(knight_glb, work_dir,
+                                                   reference_sprite, clip, action,
+                                                   budget):
+    job = rig_stage.rig(knight_glb, clip=clip, action=action, slug="knight",
+                        work_dir=work_dir)
+    record = pick_stage.pick(job.name, work_dir=work_dir)
+    assert record["n"] == budget == config.frames_for_action(action)
+    assert len(record["picks"]) == budget
+    assert record["picks"] == sorted(set(record["picks"]))
+
+    layout = strip_stage.strip(job.name, reference=reference_sprite, work_dir=work_dir)
+    width, height = layout["strip"]["size"]
+    assert (width, height) == (config.STRIP_CELL[0] * budget, config.STRIP_CELL[1])
+    assert width != height, "never square"
+    with Image.open(job.strip_dir / "skeleton_strip.png") as img:
+        assert img.size == (width, height)
+
+
+def test_a_two_pose_reaction_gets_the_flinch_not_rest_twice(knight_glb, work_dir):
+    """Hit_A starts and ends at rest; the two frames must not both be rest."""
+    job = rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight",
+                        work_dir=work_dir)
+    record = pick_stage.pick(job.name, work_dir=work_dir)
+    first, last = record["picks"]
+    deviation = record["signals"]["deviation"]
+    assert last == len(deviation) - 1, "the recovery frame stays"
+    assert first == deviation.index(max(deviation)), "the extreme of the flinch"
+
+
+def test_the_review_page_serves_a_rig_job(hit_job):
+    app = ReviewApp(hit_job)
+    state = app.state()
+    assert len(state["frames"]) == 9
+    assert all(f["skeleton"] for f in state["frames"])
+    assert app.image("frames", "0001.png")[:8] == b"\x89PNG\r\n\x1a\n"
+    assert app.image("skel", "skel_0001.png")[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+# ---------------------------------------------------------------------------
+# `anim base --rig`
+# ---------------------------------------------------------------------------
+def test_base_takes_its_standing_pose_from_a_rig_frame(knight_glb, work_dir):
+    job = base_stage.prepare("knight", rig=knight_glb, clip="Idle", frame=0,
+                             work_dir=work_dir)
+    manifest = job.read_manifest()
+    assert manifest["action"] == ""
+    assert manifest["clip"] == "Knight.glb::Idle#0"
+    assert manifest["motion_source"]["kind"] == "rig"
+    assert manifest["motion_source"]["frame"] == 0
+    assert manifest["pose"]["model"] == "rig"
+    payload = json.loads(job.keypoints_path.read_text())
+    assert len(payload["frames"]) == 1
+    assert payload["source_size"] == list(config.BASE_CELL)
+    with Image.open(job.strip_dir / "skeleton_strip.png") as img:
+        assert img.size == tuple(config.BASE_CELL)
+    layout = json.loads(job.layout_path.read_text())
+    assert layout["strip"]["cells"] == 1
+
+
+def test_base_refuses_a_frame_past_the_end_of_the_clip(knight_glb, work_dir):
+    with pytest.raises(ValueError, match="outside 0"):
+        base_stage.prepare("knight", rig=knight_glb, clip="Idle", frame=99,
+                           work_dir=work_dir)
+
+
+def test_the_canned_base_still_works_without_a_rig(work_dir):
+    job = base_stage.prepare("knight", work_dir=work_dir)
+    assert job.read_manifest()["pose"]["model"] == "canned"
+    assert "motion_source" not in job.read_manifest()
+
+
+# ---------------------------------------------------------------------------
+# `anim publish` carries the rig into the sidecar
+# ---------------------------------------------------------------------------
+def test_the_sidecar_records_the_rig_as_the_motion_source(hit_job):
+    manifest = hit_job.read_manifest()
+    meta = sidecar_for(slug="knight", action="hit", frames=2, manifest=manifest,
+                       provenance={"seed": 7, "models": [],
+                                   "passes": [{"workflow": "identity_pass.json",
+                                               "workflow_sha256": "b" * 64}]},
+                       picks=[3, 8], report=None)
+    motion = meta["generation"]["motion_source"]
+    assert motion == manifest["motion_source"]
+    assert motion["license"] == "CC0-1.0"
+    assert "rig clip" in meta["source"]["author"]
+    assert meta["generation"]["clip"] == "Knight.glb::Hit_A"
+    assert meta["generation"]["seed"] == 7, "the pixel provenance is untouched"
+
+
+def test_a_filmed_job_has_no_motion_source():
+    meta = sidecar_for(slug="knight", action="strike", frames=4,
+                       manifest={"clip_sha256": "a" * 64, "clip": "x.mp4", "fps": 12},
+                       provenance={"seed": 1, "models": [], "passes": []},
+                       picks=[0, 1, 2, 3], report=None)
+    assert meta["generation"]["motion_source"] is None
+    assert "filmed" in meta["source"]["author"]
+
+
+def test_game_02s_audit_accepts_the_extra_generation_key(hit_job, assets_tree,
+                                                         audit_script):
+    """The real audit, on a sidecar carrying motion_source. Not weakened: the
+    same audit still fails without a seed."""
+    units = assets_tree / "assets" / "2d" / "units"
+    for i in range(2):
+        Image.new("RGBA", config.CANVAS, (0, 0, 0, 0)).save(units / f"knight_hit_{i}.png")
+    meta = sidecar_for(slug="knight", action="hit", frames=2,
+                       manifest=hit_job.read_manifest(),
+                       provenance={"seed": 7, "models": [],
+                                   "passes": [{"workflow": "identity_pass.json",
+                                               "workflow_sha256": "b" * 64}]},
+                       picks=[3, 8], report=None)
+    (units / "knight_hit.json").write_text(json.dumps(meta, indent=2))
+    proc = subprocess.run([sys.executable, str(audit_script)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    meta["generation"]["seed"] = None
+    (units / "knight_hit.json").write_text(json.dumps(meta, indent=2))
+    proc = subprocess.run([sys.executable, str(audit_script)], capture_output=True, text=True)
+    assert proc.returncode != 0, "the audit must still demand a seed"

@@ -1,0 +1,100 @@
+# =============================================================================
+# the GPU image service feature - ComfyUI headless on the NATIVE Docker daemon
+# =============================================================================
+# THIS IS THE ONLY THING IN THIS PROJECT THAT RUNS ON THE NATIVE DAEMON.
+# Everything else (the CPU pipeline, the model downloader, the Samba share)
+# runs on Docker Desktop (context `desktop-linux`).
+#
+# The native daemon is the only engine on this host with the nvidia runtime and
+# real GPU access. It is `disabled`/stopped by default and only the owner starts
+# it, from a real TTY:
+#
+#     sudo systemctl start docker
+#     docker --context docker-default compose -f tools/anim-pipeline/gpu/compose.yml up -d
+#
+# NEVER `docker context use` - the active context stays `desktop-linux`, so a
+# bare `docker ps` keeps showing the normal Docker Desktop stack. Always target
+# this file explicitly with `--context docker-default`.
+#
+# Validate the file (parses fine on either engine, does not run):
+#     docker --context desktop-linux compose -f tools/anim-pipeline/gpu/compose.yml config
+# =============================================================================
+
+# Explicit project name: a bare `compose -f ...` would otherwise derive the
+# project from this directory and call it `gpu`.
+name: anim-pipeline-gpu
+
+services:
+  comfyui:
+    # Pinned by digest for reproducibility (recorded alongside the model
+    # SHA256s in models.lock). Resolved 2026-09-13 from Docker Hub:
+    #   mmartial/comfyui-nvidia-docker:latest
+    # MIT licence, non-root (runs as `comfy` remapped to WANTED_UID/GID).
+    # To move the pin: look the tag up again on Docker Hub and replace BOTH
+    # the tag and the digest, then note the change in DEVLOG.md.
+    image: mmartial/comfyui-nvidia-docker:latest@sha256:7a54a28001b65a5b13f8bf46a90a565bb7bb07759ec5b4d033308a5f27908a95
+    container_name: anim-pipeline-comfyui
+
+    # tini as PID 1 so `docker stop` reaches ComfyUI instead of orphaning it.
+    init: true
+
+    # The nvidia runtime lives in the native daemon's /etc/docker/daemon.json.
+    # This line is why the service cannot run on Docker Desktop.
+    runtime: nvidia
+
+    # Fedora SELinux: without this the container cannot open the NVIDIA device
+    # nodes and ComfyUI starts CPU-only (or fails outright).
+    security_opt:
+      - label=type:nvidia_container_t
+
+    # LAN-visible on purpose, like every other service on this host: the CPU
+    # pipeline container runs on the Docker Desktop VM and reaches this service
+    # at host.docker.internal:8188. A 127.0.0.1 bind would be invisible from
+    # that VM, and from the owner's Mac.
+    ports:
+      - "0.0.0.0:8188:8188"
+
+    volumes:
+      # ComfyUI's own code + the python venv. Kept off the container layer so a
+      # recreate does not reinstall torch. Created by the owner before first up.
+      - "/mnt/private/AI Data/comfyui-run:/comfy/mnt"
+      # BASE_DIRECTORY: models, custom_nodes, input, output, user.
+      # Pre-populated by gpu/download_models.sh (models) and by the pinned
+      # clones listed in gpu/custom_nodes.txt (custom_nodes).
+      - "/mnt/private/AI Data/comfyui-basedir:/basedir"
+      # The pre-existing shared checkpoint library, read-only, so nothing is
+      # duplicated. Wired in by extra_model_paths.yaml below.
+      - "/mnt/private/AI Data/models/Image Models:/shared-models:ro"
+      # Repo-owned config, mounted read-only so the repo stays the source of truth.
+      - "./extra_model_paths.yaml:/extra_model_paths.yaml:ro"
+
+    environment:
+      # `uv` instead of pip: much faster container start, recommended upstream.
+      - USE_UV=true
+      # Host user, so every file ComfyUI writes into the basedir is owned by
+      # the owner and editable from the Mac share without a chown dance.
+      # From `id -u` / `id -g` on this host (both 1000).
+      - WANTED_UID=1000
+      - WANTED_GID=1000
+      - BASE_DIRECTORY=/basedir
+      - SECURITY_LEVEL=normal
+      # Custom nodes are pre-cloned at pinned commits (gpu/custom_nodes.txt),
+      # so the Manager never needs to fetch code or pip-install at runtime.
+      - ALLOW_GIT_URL_INSTALL=false
+      - ALLOW_PIP_INSTALL=false
+      - USE_NEW_MANAGER=true
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=all
+      # --extra-model-paths-config  : pick up the shared read-only checkpoints.
+      # --reserve-vram 1            : leave ~1 GB for the display compositor on
+      #                               the 24 GB A5000 (upstream pipeline's rule).
+      # --disable-auto-launch       : headless, never try to open a browser.
+      # The init script appends its own --basedir to this variable.
+      - COMFY_CMDLINE_EXTRA=--extra-model-paths-config /extra_model_paths.yaml --reserve-vram 1 --disable-auto-launch
+      # Ampere (A5000, sm_86) has NO fp8 tensor cores. Do NOT add
+      # `--fast fp8_matrix_mult` here: it is a no-op at best on this card.
+      # The speed path is the INT8/INT4 weights in models.lock.
+
+    # Manual only. This service exists to serve batches of frames; it should not
+    # come back up on boot and sit on 20 GB of VRAM.
+    restart: "no"

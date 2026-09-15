@@ -1,0 +1,98 @@
+# =============================================================================
+# CPU pipeline - the pose-to-pixel animation pipeline feature
+# =============================================================================
+# Runs on DOCKER DESKTOP, the default context. No GPU here by design: the only
+# GPU service is ComfyUI in gpu/compose.yml on the native daemon, which this
+# container reaches over HTTP at $COMFYUI_URL.
+#
+#   docker --context desktop-linux compose -f tools/anim-pipeline/compose.yml build
+#   docker --context desktop-linux compose -f tools/anim-pipeline/compose.yml run --rm anim --help
+#   docker --context desktop-linux compose -f tools/anim-pipeline/compose.yml run --rm anim extract myclip.mp4
+#
+# `run --rm` rather than `up`: every stage is a short-lived command, not a
+# service. The exception is `anim review`, which serves a page - use the
+# `review` service below for that.
+# =============================================================================
+
+name: anim-pipeline
+
+x-anim-common: &anim-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: anim-pipeline:local
+  environment:
+    # ComfyUI lives on the OTHER Docker engine. host.docker.internal is how a
+    # Docker Desktop container reaches a port published on the host, which is
+    # why gpu/compose.yml binds 0.0.0.0:8188 and not 127.0.0.1:8188.
+    - COMFYUI_URL=${COMFYUI_URL:-http://host.docker.internal:8188}
+    - ANIM_CAPTURE_DIR=/work/capture
+    - ANIM_WORK_DIR=/work/work
+    - ANIM_WORKFLOW_DIR=/work/gpu/workflows
+    - ANIM_ASSETS_DIR=/assets
+    - ANIM_GAME02_DIR=/game02
+    # The art bible's winner. IT DOES NOT EXIST YET - the owner has not picked
+    # a palette. Until then, point this at a candidate, e.g.
+    #   ANIM_PALETTE=/assets_src/palette_candidates/grim32/grim32.gpl
+    - ANIM_PALETTE=${ANIM_PALETTE:-/assets_src/palette.gpl}
+    - ANIM_REVIEW_PORT=8710
+    - COMFY_INPUT_DIR=/comfy/input
+    - COMFY_OUTPUT_DIR=/comfy/output
+  volumes:
+    # The repo itself: source (editable install), workflows, capture/, work/.
+    - .:/work
+    # game-02's published assets. Read-write: `publish` writes frames and
+    # sidecars here, and the Mac edits the same bytes over the Samba share.
+    - ../../game-02-tactical-rpg/assets:/assets
+    # The palette chosen in the art bible - the -remap source of truth.
+    - ../../game-02-tactical-rpg/assets_src:/assets_src
+    # The whole game-02 repo, READ ONLY, for one reason: `publish` runs
+    # tools/asset_audit.py here instead of asking the owner to run it on the
+    # host. The audit is stdlib-only and only ever reads. Writes still go
+    # through the read-write /assets mount above, which is the same bytes.
+    - ../../game-02-tactical-rpg:/game02:ro
+    # ComfyUI's input/output, shared with the GPU container's basedir, so a strip
+    # is handed over as a file instead of an HTTP upload. These resolve even when
+    # the GPU service is stopped; they are just directories on /mnt/private.
+    - /mnt/private/AI Data/comfyui-basedir/input:/comfy/input
+    - /mnt/private/AI Data/comfyui-basedir/output:/comfy/output
+  # host.docker.internal is automatic on Docker Desktop; declared explicitly so
+  # the file also works on a plain Linux engine.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+  working_dir: /work
+
+services:
+  # One-shot stage runner. ENTRYPOINT is `anim`, so pass the stage as the command.
+  #
+  #   docker compose run --rm anim run capture/knight_strike.mp4 \
+  #     --unit knight --action strike
+  anim:
+    <<: *anim-common
+    profiles: ["cli"]
+
+  # The test suite. Same image, same mounts, entrypoint swapped because the
+  # image's ENTRYPOINT is the `anim` CLI:
+  #
+  #   docker compose run --rm anim-pipeline pytest
+  anim-pipeline:
+    <<: *anim-common
+    entrypoint: []
+    command: ["pytest"]
+
+  # The click-to-pick page (`anim review`). The owner opens this from the Mac, so
+  # it binds 0.0.0.0 on a LAN port from the project's port table.
+  #
+  # 8710: free on 2026-09-13 (`ss -tlnp` and `docker ps` both checked; the
+  # occupied neighbours are 8700 openproject, 8770 research-digest, 8787
+  # bg3-modded-wiki). Keep this number in step with ANIM_REVIEW_PORT above.
+  #   http://192.168.1.158:8710/
+  #
+  #   docker compose up review          # serves work/<job> named in `command`
+  review:
+    <<: *anim-common
+    # ANIM_JOB=archer_shoot docker compose up review
+    command: ["review", "${ANIM_JOB:-knight_strike}", "--port", "8710"]
+    ports:
+      - "0.0.0.0:8710:8710"
+    restart: "no"

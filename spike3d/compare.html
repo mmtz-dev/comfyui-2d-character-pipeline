@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Knight strike / hit / death — 2D chain vs 3D intermediate</title>
+<style>
+  :root{
+    --bg:#14161a; --panel:#1c1f26; --panel-2:#232732; --line:#2f3542;
+    --ink:#e7eaf0; --dim:#9aa3b2; --2d:#6fb1ff; --3d:#ffc46f; --warn:#ff7b72;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:0 16px 64px;background:var(--bg);color:var(--ink);
+       font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  .wrap{max-width:1180px;margin:0 auto}
+  header{padding:32px 0 20px;border-bottom:1px solid var(--line);margin-bottom:28px}
+  h1{margin:0 0 6px;font-size:26px;letter-spacing:-.01em}
+  .sub{color:var(--dim);font-size:14px}
+  .meta{margin-top:14px;font-family:var(--mono);font-size:12px;color:var(--dim)}
+  .meta b{color:var(--ink);font-weight:600}
+
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:18px 0 0;font-size:13px}
+  .chip{display:inline-flex;align-items:center;gap:7px}
+  .dot{width:10px;height:10px;border-radius:50%}
+  .dot.d2{background:var(--2d)} .dot.d3{background:var(--3d)}
+
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:22px 0 6px}
+  button{background:var(--panel-2);color:var(--ink);border:1px solid var(--line);
+         border-radius:7px;padding:7px 13px;font-size:13px;cursor:pointer}
+  button:hover{border-color:#4a5468}
+  button[aria-pressed="true"]{background:#31384a;border-color:#5a6478}
+  label{color:var(--dim);font-size:13px;display:inline-flex;align-items:center;gap:7px}
+  input[type=range]{accent-color:var(--2d)}
+
+  section.action{margin:34px 0 0;border:1px solid var(--line);border-radius:12px;
+                 background:var(--panel);overflow:hidden}
+  section.action > h2{margin:0;padding:14px 18px;font-size:17px;background:var(--panel-2);
+                      border-bottom:1px solid var(--line);display:flex;gap:12px;align-items:baseline}
+  section.action > h2 .verb{font-family:var(--mono);color:var(--dim);font-size:13px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
+  @media (max-width:760px){.cols{grid-template-columns:1fr}}
+  .col{background:var(--panel);padding:18px}
+  .col h3{margin:0 0 4px;font-size:14px;letter-spacing:.02em;text-transform:uppercase}
+  .col.d2 h3{color:var(--2d)} .col.d3 h3{color:var(--3d)}
+  .col .path{font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:14px;
+             word-break:break-all}
+
+  .stage{margin:16px 0 0}
+  .stage > .label{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em;
+                  margin-bottom:6px}
+  img.art{display:block;max-width:100%;image-rendering:pixelated;border-radius:6px;
+          background:#0d0f13;border:1px solid var(--line)}
+  .frames{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+  .frames figure{margin:0;text-align:center}
+  .frames img{width:128px;height:128px;image-rendering:pixelated;background:#0d0f13;
+              border:1px solid var(--line);border-radius:6px}
+  .frames figcaption{font-family:var(--mono);font-size:11px;color:var(--dim);margin-top:4px}
+  .play{width:192px;height:192px;image-rendering:pixelated;background:#0d0f13;
+        border:1px solid var(--line);border-radius:8px}
+
+  .missing{display:flex;align-items:center;justify-content:center;text-align:center;
+           border:1px dashed #3c4456;border-radius:6px;color:var(--dim);
+           font-family:var(--mono);font-size:11px;padding:14px;min-height:70px;
+           background:repeating-linear-gradient(45deg,#181b21,#181b21 9px,#1b1f27 9px,#1b1f27 18px)}
+
+  .notes{padding:16px 18px;border-top:1px solid var(--line);background:var(--panel-2)}
+  .notes textarea{width:100%;min-height:70px;background:var(--bg);color:var(--ink);
+                  border:1px solid var(--line);border-radius:7px;padding:10px;
+                  font:13px/1.5 var(--mono);resize:vertical}
+
+  .gate{margin:40px 0 0;border:1px solid var(--line);border-radius:12px;background:var(--panel);
+        padding:20px 22px}
+  .gate h2{margin:0 0 10px;font-size:18px}
+  .gate ul{margin:0;padding-left:20px;color:var(--dim)}
+  .gate li{margin:6px 0}
+  .gate b{color:var(--ink)}
+  .caveat{margin-top:18px;padding:13px 15px;border-left:3px solid var(--warn);
+          background:#241a1a;border-radius:0 7px 7px 0;font-size:13.5px}
+  footer{margin-top:34px;color:var(--dim);font-size:12px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Knight — <span style="font-family:var(--mono)">strike</span> /
+      <span style="font-family:var(--mono)">hit</span> /
+      <span style="font-family:var(--mono)">death</span></h1>
+  <div class="sub">The anchor-unit gate, both ways. Same reference sprite, same
+    <code>identity_pass.json</code>, same <code>anim post</code> chain, same palette, same seed.
+    The <em>only</em> variable is where the pose came from.</div>
+  <div class="legend">
+    <span class="chip"><span class="dot d2"></span> 2D chain — DWPose on a filmed clip (Feature 3)</span>
+    <span class="chip"><span class="dot d3"></span> 3D intermediate — TripoSG mesh, Mixamo rig (Feature 9)</span>
+  </div>
+  <div class="meta" id="meta">
+    seed <b id="m-seed">—</b> · palette <b id="m-pal">—</b> · generated <b id="m-date">—</b>
+    · strip <b>1216×320</b> (cell 304×320) · canvas <b>64×64</b>
+  </div>
+</header>
+
+<div class="controls">
+  <button id="play" aria-pressed="false">▶ Play all</button>
+  <label>fps <input id="fps" type="range" min="2" max="16" value="8" style="width:110px">
+    <span id="fpsval" style="font-family:var(--mono)">8</span></label>
+  <button id="toggle-stages" aria-pressed="true">Show intermediate stages</button>
+  <button id="zoom">Zoom ×2</button>
+</div>
+
+<div id="actions"></div>
+
+<div class="gate">
+  <h2>How to judge this</h2>
+  <ul>
+    <li><b>Readability at 64px.</b> Cover the animated preview. Can you tell what the pose is from
+      a single frame, at 1× size, at arm's length? The art bible's whole premise is true 64px
+      detail, not a shrunk illustration.</li>
+    <li><b>Anatomy under load.</b> This is the reason the spike exists — both practitioners' 2D
+      chains held up for walking and fell apart on attack, jump and roll. Count fused limbs,
+      extra fingers-as-blobs, a sword that grows out of the wrong arm, a leg that changes length
+      between frames.</li>
+    <li><b>Silhouette continuity.</b> Flip between frames. Does the unit stay the same character,
+      the same height, the same armour, or does it re-roll identity every frame?</li>
+    <li><b>Palette and alpha.</b> Both arms go through the same <code>anim post</code>, so any
+      difference here is a bug in the chain, not evidence about 2D vs 3D.</li>
+    <li><b>Nudge cost.</b> Which set would take less time to fix by hand in Pixelorama? That is
+      the number that actually decides a 100+ animation rollout.</li>
+  </ul>
+  <div class="caveat">
+    <b>Read this before scoring.</b> The 3D column did not come from the owner's filmed
+    performance. It came from a canned Mixamo clip re-projected through a rig. If it wins here, it
+    wins at <em>pose fidelity</em> and loses at <em>"my motion, my timing"</em> until a
+    video→3D-mocap step is built — and the obvious candidates (WHAM, TRAM, GVHMR, SMPLer-X) are
+    all licence-blocked for a commercial game. The clean follow-up is
+    <code>rtmlib.Wholebody3d</code> (Apache-2.0, already in the container). See
+    <code>RESEARCH.md</code> §2.4 and §5.
+  </div>
+</div>
+
+<footer>
+  the 3D-intermediate spike feature · tools/anim-pipeline/spike3d/ ·
+  regenerate with <code>spike3d/publish_compare.sh</code>
+</footer>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Manifest. publish_compare.sh rewrites the values between the BEGIN/END markers
+// as it copies files in; every path is relative to this page.
+// A missing file renders as a dashed placeholder naming the path it wanted, so
+// the page is useful before a single frame exists.
+// ---------------------------------------------------------------------------
+/* MANIFEST BEGIN */
+const MANIFEST = {
+  seed: "PLACEHOLDER",
+  palette: "PLACEHOLDER",
+  date: "PLACEHOLDER",
+  frameCount: 4,
+  actions: [
+    { id: "strike", verb: "AttackChoreography.Verb.STRIKE" },
+    { id: "hit",    verb: "reaction — hit" },
+    { id: "death",  verb: "reaction — death" }
+  ]
+};
+/* MANIFEST END */
+
+const ARMS = [
+  { key: "2d", cls: "d2", title: "2D chain",
+    note: "filmed clip → rtmlib DWPose → picks → strip",
+    dir: a => `spike3d/2d/${a}` },
+  { key: "3d", cls: "d3", title: "3D intermediate",
+    note: "TripoSG mesh → Mixamo rig → render_openpose.py",
+    dir: a => `spike3d/3d/${a}` }
+];
+
+const STAGES = [
+  { key: "skeleton", label: "Pose conditioning (rtmlib renderer, both arms)", file: "skeleton_strip.png" },
+  { key: "raw",      label: "Raw generation (identity_pass.json)",            file: "raw_strip.png" }
+];
+
+function art(src, alt, cls) {
+  const img = document.createElement("img");
+  img.className = cls || "art";
+  img.alt = alt; img.loading = "lazy"; img.src = src;
+  img.onerror = () => {
+    const ph = document.createElement("div");
+    ph.className = "missing";
+    ph.textContent = "not generated yet — expected " + src;
+    img.replaceWith(ph);
+  };
+  return img;
+}
+
+function buildArm(action, arm) {
+  const col = document.createElement("div");
+  col.className = "col " + arm.cls;
+  col.innerHTML = `<h3>${arm.title}</h3><div class="path">${arm.note}<br>${arm.dir(action.id)}/</div>`;
+
+  const play = document.createElement("div");
+  play.className = "stage";
+  play.innerHTML = `<div class="label">Playback</div>`;
+  const canvasImg = art(`${arm.dir(action.id)}/frame_0.png`, `${action.id} ${arm.key} playback`, "play");
+  canvasImg.dataset.base = arm.dir(action.id);
+  canvasImg.dataset.frames = MANIFEST.frameCount;
+  canvasImg.classList.add("player");
+  play.appendChild(canvasImg);
+  col.appendChild(play);
+
+  const frames = document.createElement("div");
+  frames.className = "stage";
+  frames.innerHTML = `<div class="label">Published 64×64 frames</div>`;
+  const row = document.createElement("div");
+  row.className = "frames";
+  for (let i = 0; i < MANIFEST.frameCount; i++) {
+    const fig = document.createElement("figure");
+    fig.appendChild(art(`${arm.dir(action.id)}/frame_${i}.png`, `${action.id} frame ${i}`));
+    const cap = document.createElement("figcaption");
+    cap.textContent = `_${i}.png`;
+    fig.appendChild(cap);
+    row.appendChild(fig);
+  }
+  frames.appendChild(row);
+  col.appendChild(frames);
+
+  for (const st of STAGES) {
+    const d = document.createElement("div");
+    d.className = "stage stage-intermediate";
+    d.innerHTML = `<div class="label">${st.label}</div>`;
+    d.appendChild(art(`${arm.dir(action.id)}/${st.file}`, `${action.id} ${st.key}`));
+    col.appendChild(d);
+  }
+  return col;
+}
+
+function build() {
+  document.getElementById("m-seed").textContent = MANIFEST.seed;
+  document.getElementById("m-pal").textContent = MANIFEST.palette;
+  document.getElementById("m-date").textContent = MANIFEST.date;
+
+  const host = document.getElementById("actions");
+  for (const action of MANIFEST.actions) {
+    const sec = document.createElement("section");
+    sec.className = "action";
+    sec.innerHTML = `<h2>${action.id}<span class="verb">${action.verb}</span></h2>`;
+    const cols = document.createElement("div");
+    cols.className = "cols";
+    for (const arm of ARMS) cols.appendChild(buildArm(action, arm));
+    sec.appendChild(cols);
+    const notes = document.createElement("div");
+    notes.className = "notes";
+    notes.innerHTML = `<textarea placeholder="Verdict for ${action.id} — which one reads better at 64px, and what would need nudging? (Not saved; paste into DEVLOG.md.)"></textarea>`;
+    sec.appendChild(notes);
+    host.appendChild(sec);
+  }
+}
+
+// --- playback --------------------------------------------------------------
+let timer = null, frame = 0, fps = 8;
+function tick() {
+  frame++;
+  for (const img of document.querySelectorAll("img.player")) {
+    const n = parseInt(img.dataset.frames, 10) || 1;
+    img.src = `${img.dataset.base}/frame_${frame % n}.png`;
+  }
+}
+function setPlaying(on) {
+  const btn = document.getElementById("play");
+  btn.setAttribute("aria-pressed", String(on));
+  btn.textContent = on ? "⏸ Pause" : "▶ Play all";
+  if (timer) { clearInterval(timer); timer = null; }
+  if (on) timer = setInterval(tick, 1000 / fps);
+}
+
+build();
+document.getElementById("play").onclick = e =>
+  setPlaying(e.currentTarget.getAttribute("aria-pressed") !== "true");
+document.getElementById("fps").oninput = e => {
+  fps = +e.target.value;
+  document.getElementById("fpsval").textContent = fps;
+  if (timer) setPlaying(true);
+};
+document.getElementById("toggle-stages").onclick = e => {
+  const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
+  e.currentTarget.setAttribute("aria-pressed", String(on));
+  for (const el of document.querySelectorAll(".stage-intermediate"))
+    el.style.display = on ? "" : "none";
+};
+let zoomed = false;
+document.getElementById("zoom").onclick = e => {
+  zoomed = !zoomed;
+  e.currentTarget.textContent = zoomed ? "Zoom ×1" : "Zoom ×2";
+  for (const img of document.querySelectorAll(".frames img")) {
+    img.style.width = img.style.height = zoomed ? "256px" : "128px";
+  }
+  for (const img of document.querySelectorAll("img.player")) {
+    img.style.width = img.style.height = zoomed ? "384px" : "192px";
+  }
+};
+</script>
+</body>
+</html>

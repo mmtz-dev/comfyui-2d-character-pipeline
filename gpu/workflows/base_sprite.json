@@ -1,0 +1,183 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "z_image_turbo_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "Z-Image-Turbo INT8 (convrot)"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_3_4b_fp8_mixed.safetensors",
+      "type": "lumina2",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "Qwen3-4B text encoder (Z-Image)"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "z_image_ae.safetensors"
+    },
+    "_meta": {
+      "title": "Z-Image VAE"
+    }
+  },
+  "4": {
+    "class_type": "ModelPatchLoader",
+    "inputs": {
+      "name": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors"
+    },
+    "_meta": {
+      "title": "Fun ControlNet Union 2.1 lite (8-step)"
+    }
+  },
+  "5": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "pose_stand.png"
+    },
+    "_meta": {
+      "title": "PATCH standing skeleton"
+    }
+  },
+  "6": {
+    "class_type": "ZImageFunControlnet",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "model_patch": [
+        "4",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
+      "strength": 0.7,
+      "image": [
+        "5",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "PATCH control scale (strength)"
+    }
+  },
+  "7": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "6",
+        0
+      ],
+      "shift": 3
+    },
+    "_meta": {
+      "title": "ModelSamplingAuraFlow shift=3"
+    }
+  },
+  "8": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "a single side-view pixel art character sprite standing at rest, facing right, full body in frame, feet at the bottom edge, chunky readable silhouette, bold dark outline, flat shaded, lit-dungeon palette, plain flat white background, no ground shadow, no floor",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "PATCH positive prompt (unit description)"
+    }
+  },
+  "9": {
+    "class_type": "ConditioningZeroOut",
+    "inputs": {
+      "conditioning": [
+        "8",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Negative (zeroed)"
+    }
+  },
+  "10": {
+    "class_type": "EmptySD3LatentImage",
+    "inputs": {
+      "width": 512,
+      "height": 768,
+      "batch_size": 1
+    },
+    "_meta": {
+      "title": "PATCH cell size (portrait, non-square)"
+    }
+  },
+  "11": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "7",
+        0
+      ],
+      "seed": 20260913,
+      "steps": 8,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": [
+        "8",
+        0
+      ],
+      "negative": [
+        "9",
+        0
+      ],
+      "latent_image": [
+        "10",
+        0
+      ],
+      "denoise": 1.0
+    },
+    "_meta": {
+      "title": "PATCH seed - KSampler 8-step"
+    }
+  },
+  "12": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "11",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Decode"
+    }
+  },
+  "13": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "12",
+        0
+      ],
+      "filename_prefix": "anim_pipeline/base_sprite/base_sprite"
+    },
+    "_meta": {
+      "title": "PATCH output prefix"
+    }
+  }
+}

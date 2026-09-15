@@ -1,0 +1,75 @@
+# pixel-art-fixer: make the Rust CLI build on Linux
+#
+# Upstream (Retro-Diffusion/pixel-art-fixer @ ef376e57e1c272633ca2dbf5f29ec3fcf6596465)
+# implements peak_rss() with the Windows psapi API and calls it unconditionally,
+# with no #[cfg(windows)] guard. `cargo build --release` therefore fails to link
+# on Linux:
+#
+#     rust-lld: error: unable to find library -lkernel32
+#     error: could not compile `pixelfixer` (bin "pixelfixer")
+#
+# There are no prebuilt release binaries for this project, so the Dockerfile has
+# to compile it, which means this has to be fixed here. peak_rss() is used only
+# for a diagnostic print; nothing in the post-chain depends on its value.
+#
+# This patch gates the existing Windows implementation behind #[cfg(windows)] and
+# adds a getrusage(2) implementation for everything else. No algorithm code is
+# touched.
+#
+# Applied by the Dockerfile's builder stage with `git apply`, against the pinned
+# commit above, so it either applies exactly or the build fails loudly.
+#
+# Worth reporting upstream.
+diff --git a/rust/src/main.rs b/rust/src/main.rs
+index b7daccb..fd044b3 100644
+--- a/rust/src/main.rs
++++ b/rust/src/main.rs
+@@ -1,7 +1,9 @@
+ use pixelfixer::{autocorr, core, reconstruct, runlengths, selfsim};
+ 
+ /// Peak working-set size (bytes) of this process, via psapi.
++#[cfg(windows)]
+ fn peak_rss() -> u64 {
++
+     #[repr(C)]
+     struct Pmc {
+         cb: u32,
+@@ -31,6 +33,38 @@ fn peak_rss() -> u64 {
+     }
+ }
+ 
++/// Peak resident set size (bytes) on Linux/macOS, from getrusage(2).
++///
++/// Upstream only implemented the Windows path and called it unconditionally,
++/// so `cargo build` fails to link on Linux with `unable to find library
++/// -lkernel32`. This value is a diagnostic print only; nothing in the image
++/// pipeline depends on it.
++#[cfg(not(windows))]
++fn peak_rss() -> u64 {
++    // ru_maxrss is KiB on Linux, bytes on macOS.
++    #[repr(C)]
++    struct Timeval { sec: i64, usec: i64 }
++    #[repr(C)]
++    struct Rusage {
++        ru_utime: Timeval,
++        ru_stime: Timeval,
++        ru_maxrss: i64,
++        _rest: [i64; 14],
++    }
++    extern "C" {
++        fn getrusage(who: i32, usage: *mut Rusage) -> i32;
++    }
++    unsafe {
++        let mut ru: Rusage = std::mem::zeroed();
++        if getrusage(0 /* RUSAGE_SELF */, &mut ru) == 0 {
++            let kib = ru.ru_maxrss.max(0) as u64;
++            if cfg!(target_os = "macos") { kib } else { kib * 1024 }
++        } else {
++            0
++        }
++    }
++}
++
+ fn main() {
+     let args: Vec<String> = std::env::args().collect();
+     if args.len() < 3 {

@@ -1,0 +1,47 @@
+# =============================================================================
+# ComfyUI extra_model_paths.yaml - the GPU image service feature
+# =============================================================================
+# Mounted read-only into the container at /extra_model_paths.yaml by
+# gpu/compose.yml, and passed to ComfyUI with
+#   --extra-model-paths-config /extra_model_paths.yaml
+#
+# Purpose: expose the checkpoint library that already exists on this host at
+#   /mnt/private/AI Data/models/Image Models/
+# (mounted read-only at /shared-models) so the ~35 GB this pipeline downloads is
+# the ONLY thing duplicated on disk - the pre-existing SDXL / Flux / Chroma /
+# SD1.5 weights stay where they are and are never copied or moved.
+#
+# The pipeline's own weights live in the basedir (/basedir/models/...) and are
+# NOT listed here - ComfyUI finds those through BASE_DIRECTORY automatically.
+#
+# COLLISION RULE: ComfyUI merges every path configured for a folder type into
+# one flat list keyed by FILENAME. Two files with the same basename in two
+# different roots are ambiguous and the loser is picked non-deterministically.
+# That is why models.lock stores Z-Image's `ae.safetensors` as
+# `z_image_ae.safetensors`: /shared-models/vae/ already holds a Flux
+# `ae.safetensors`. Keep that rule in mind before adding anything below.
+#
+# Read-only is enforced by the `:ro` bind in compose.yml, not by this file.
+# =============================================================================
+
+shared_image_models:
+  base_path: /shared-models
+
+  # Existing SDXL / SD1.5 / SD2.1 / Flux / Chroma / Pony checkpoints.
+  checkpoints: checkpoints
+
+  # Note the singular directory names on disk - they are the host's spelling,
+  # not ComfyUI's. The KEY is what ComfyUI calls the folder type; the VALUE is
+  # the real subdirectory under base_path.
+  loras: lora
+  upscale_models: upscalers
+  embeddings: embeddings
+
+  # Currently empty on disk, listed so a future ControlNet dropped in there is
+  # picked up without editing this file.
+  controlnet: controlnet
+
+  # Holds a Flux `ae.safetensors` plus two misfiled text encoders
+  # (clip_l.safetensors, t5xxl_fp16.safetensors). Harmless: this pipeline
+  # references its VAEs by the distinct names in models.lock.
+  vae: vae

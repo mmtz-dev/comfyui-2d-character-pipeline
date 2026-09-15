@@ -27,13 +27,19 @@ Run with (from the repo root):
 only needs `urllib`, no extra dependencies).
 """
 import json
+import os
 import shutil
 import sys
 import time
 import urllib.request
 from pathlib import Path
 
-COMFY_URL = "http://127.0.0.1:8000"
+# Game-Dev fork: the ComfyUI base URL is a config value, not a constant.
+# Default targets the GPU image service feature (tools/anim-pipeline/gpu/), which
+# publishes 0.0.0.0:8188 on the NATIVE Docker daemon. This driver runs in a
+# Docker Desktop container, so it reaches the host through host.docker.internal.
+# Override for a local run:  COMFYUI_URL=http://192.168.1.158:8188
+COMFY_URL = os.environ.get("COMFYUI_URL", "http://host.docker.internal:8188").rstrip("/")
 INPUT_DIR = Path(r"F:/ComfyUI/input")
 OUTPUT_DIR = Path(r"F:/ComfyUI/output")
 WORKFLOW_PATH = Path(__file__).parent.parent / "workflows" / "w5-cosmetic-spritesheet" / "workflow_api.json"

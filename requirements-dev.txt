@@ -1,0 +1,14 @@
+# ---------------------------------------------------------------------------
+# Test-only dependencies - the pose-to-pixel animation pipeline feature
+#
+# Split out of requirements.txt on purpose. requirements.txt resolves torch,
+# onnxruntime and the CUDA wheels - about 3.5 GB and several minutes - and
+# lives in its own Docker layer. Adding pytest there would re-download all of
+# that every time a test dependency moves. This file gets its own, much
+# cheaper, layer after it.
+#
+#   docker compose run --rm anim-pipeline pytest
+# ---------------------------------------------------------------------------
+
+# MIT.
+pytest>=8.0

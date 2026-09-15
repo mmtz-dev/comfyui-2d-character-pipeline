@@ -13,9 +13,9 @@ Any harness that can POST JSON over HTTP can run these workflows.
 ```
 1. Read workflow JSON
 2. Patch the inputs you want to change (file names, prompts, seeds, …)
-3. POST to http://127.0.0.1:8000/prompt with body {"prompt": <workflow>}
+3. POST to $COMFYUI_URL/prompt with body {"prompt": <workflow>}
 4. Receive {"prompt_id": "..."} back
-5. Poll http://127.0.0.1:8000/history/<prompt_id> until the entry exists
+5. Poll $COMFYUI_URL/history/<prompt_id> until the entry exists
 6. Read the output filenames from history[prompt_id].outputs
 ```
 
@@ -29,7 +29,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-COMFY_URL = "http://127.0.0.1:8000"
+COMFY_URL = os.environ.get("COMFYUI_URL", "http://host.docker.internal:8188")  # Game-Dev fork
 
 def run_workflow(workflow_path: Path, patches: dict) -> dict:
     """Load, patch, enqueue, wait, return history entry."""
@@ -73,7 +73,7 @@ To find the right node IDs to patch, open the workflow JSON and look for the `_m
 ```javascript
 import fs from "node:fs";
 
-const COMFY = "http://127.0.0.1:8000";
+const COMFY = process.env.COMFYUI_URL || "http://host.docker.internal:8188"; // Game-Dev fork
 
 async function runWorkflow(workflowPath, patches) {
   const wf = JSON.parse(fs.readFileSync(workflowPath, "utf8"));
@@ -117,7 +117,7 @@ This repo was developed and validated against **[`comfyui-mcp` by artokun](https
 }
 ```
 
-Restart your agent. The MCP picks up `COMFYUI_URL` from env (defaults to `http://127.0.0.1:8000`).
+Restart your agent. The MCP picks up `COMFYUI_URL` from env. **In this fork `COMFYUI_URL` is the single knob for the ComfyUI base URL** and defaults to `http://host.docker.internal:8188` (the GPU image service feature, seen from a Docker Desktop container).
 
 ### Tool surface
 
@@ -157,4 +157,4 @@ Read the Python drivers as the reference: each one is < 300 lines and the commen
 
 ## Talking to a remote ComfyUI
 
-The drivers default to `http://127.0.0.1:8000` (ComfyUI's default). To target a remote server, change `COMFY_URL` at the top of the driver. ComfyUI has no auth out of the box — if you're exposing it over the network, put it behind a VPN, an ssh tunnel, or a reverse proxy with auth.
+The drivers read the `COMFYUI_URL` environment variable and default to `http://host.docker.internal:8188` (this fork's GPU image service feature). To target something else, set `COMFYUI_URL` - do not edit the driver. ComfyUI has no auth out of the box — if you're exposing it over the network, put it behind a VPN, an ssh tunnel, or a reverse proxy with auth.

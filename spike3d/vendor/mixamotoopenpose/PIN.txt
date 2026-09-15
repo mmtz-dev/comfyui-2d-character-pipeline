@@ -1,0 +1,9 @@
+Astropulse/mixamotoopenpose
+MIT License, Copyright (c) 2024 Astropulse
+https://github.com/Astropulse/mixamotoopenpose
+vendored at commit 66ec14dfd01e81f77da3966d314edffd6a61a9e6
+fetched 2026-09-13
+
+Only mixamo_to_openpose.py and LICENSE are vendored. Its renderer is NOT used;
+spike3d/dae_to_joints.py calls convert_dae_to_openpose() for the joint list only,
+and spike3d/render_openpose.py draws it with rtmlib. See RESEARCH.md section 3.

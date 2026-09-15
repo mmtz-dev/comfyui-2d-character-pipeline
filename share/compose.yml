@@ -1,0 +1,70 @@
+# ---------------------------------------------------------------------------
+# The Mac edit share feature
+#
+# Exports game-02-tactical-rpg/assets over SMB so Pixelorama on the Mac can
+# edit the PNGs in place, and this Fedora host sees the edits immediately.
+#
+# Docker Desktop only (context `desktop-linux`, the machine default). Do not
+# run this on the native daemon.
+#
+#   cd /home/workstation/Repos/Game-Dev/tools/anim-pipeline
+#   docker compose -f share/compose.yml up -d
+#
+# Host port 445 is already owned by this host's own smbd (systemd smb.service,
+# exporting Storage / Private / homes), so this container publishes 8445.
+# macOS Finder accepts a port in the URL:
+#   smb://192.168.1.158:8445/game02-assets
+# ---------------------------------------------------------------------------
+
+name: anim-pipeline-share
+
+services:
+  samba:
+    # dockurr/samba — Samba 4.23.10 on Alpine, MIT, actively maintained
+    # (image rebuilt 2026-08-22). Digest-pinned so a rebuild upstream can't
+    # change what runs here without a deliberate edit.
+    image: dockurr/samba@sha256:404f91bdf317d390241a41165579cd25199f34171b44677d877c75dc40184042
+    container_name: anim-pipeline-samba
+    restart: unless-stopped
+
+    environment:
+      # From share/.env (gitignored). Compose picks .env up automatically
+      # because the project directory is share/.
+      USER: ${SMB_USER:?set SMB_USER in share/.env}
+      PASS: ${SMB_PASS:?set SMB_PASS in share/.env}
+
+      # The SMB account and its group are created with the host owner's ids, so
+      # anything written through the share belongs to workstation:workstation.
+      UID: "1000"
+      GID: "1000"
+
+      # Never overwrite our smb.conf with a generated one, and don't append
+      # force-user lines to it — the config is the source of truth.
+      FORCE: "N"
+
+    ports:
+      # LAN-visible, like every other service on this host. Container-side is
+      # always 445; only the host port is unusual.
+      - "0.0.0.0:${SMB_PORT:-8445}:445/tcp"
+
+    volumes:
+      # Paths are relative to this file's directory (share/), so the whole
+      # thing moves with the repo.
+      - ./smb.conf:/etc/samba/smb.conf:ro
+      - ../../../game-02-tactical-rpg/assets:/shares/game02-assets
+      - ../../../game-02-tactical-rpg/assets_src:/shares/game02-assets-src
+
+    # Samba needs to start as root to bind 445 and to switch to the session
+    # user; it drops to uid 1000 for every file operation on the shares.
+    # Nothing else is required, so keep the rest of the container boring.
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      # Real authenticated listing, so a healthy container means the Mac can
+      # actually log in. An anonymous probe would just log ACCESS_DENIED noise.
+      test: ["CMD-SHELL", "smbclient -L 127.0.0.1 -m SMB3 -U \"$$USER%$$PASS\" -g >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s

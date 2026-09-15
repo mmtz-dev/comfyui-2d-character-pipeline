@@ -1,0 +1,61 @@
+# ---------------------------------------------------------------------------
+# Agent / editor state
+# ---------------------------------------------------------------------------
+.claude/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+._.DS_Store
+
+# ---------------------------------------------------------------------------
+# Pipeline working data - large, regenerable, never committed
+# ---------------------------------------------------------------------------
+# Watched drop folder for filmed clips (phone/Mac, profile view).
+capture/
+# Per-job scratch: extracted frames, keypoints.json, skeleton PNGs, picks.json,
+# strips, raw generations, post-chain intermediates.
+work/
+# Anything the review server renders.
+review_out/
+# Model caches the container fills on first use: rtmlib's DWPose ONNX (~300 MB)
+# and rembg's isnet-anime. Bind-mounted here on purpose so they survive a
+# container recreate - but they are downloads, not source.
+.cache/
+
+# ---------------------------------------------------------------------------
+# Model weights - these live in the ComfyUI basedir on /mnt/private, are 35 GiB,
+# and are pinned by repo+revision+sha256 in gpu/models.lock. If any of these
+# ever appear inside the repo, something copied them to the wrong place.
+# ---------------------------------------------------------------------------
+*.safetensors
+*.ckpt
+*.gguf
+*.pt
+*.pth
+*.onnx
+*.bin
+models/
+model_patches/
+diffusion_models/
+text_encoders/
+loras/
+vae/
+checkpoints/
+controlnet/
+unet/
+clip/
+sams/
+BiRefNet/
+# The Hugging Face blob cache, if it is ever pointed here by mistake.
+.hf-cache/
+
+# ---------------------------------------------------------------------------
+# Rust binary fetched by the Dockerfile at build time (pixel-art-fixer)
+# ---------------------------------------------------------------------------
+bin/
+
+# ---------------------------------------------------------------------------
+# Logs
+# ---------------------------------------------------------------------------
+*.log

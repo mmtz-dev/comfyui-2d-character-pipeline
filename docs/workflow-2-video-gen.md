@@ -157,7 +157,7 @@ Wrong VAE. Must be `wan_2.1_vae.safetensors`, **not** `wan2.2_vae.safetensors`. 
 `VRAMUnloadModel` between stages didn't fire (or its cache-invalidation hook broke after a ComfyUI upgrade). Check the log for the `[VRAMUnloadModel] dropping / dropped` lines after stage 1.
 
 - If the lines are missing: the node isn't wired correctly. Verify node IDs 19 and 20 in the workflow are present and that 19's `latent` input comes from stage 1's latent output, and 20's `latent` input comes from stage 2.
-- If the lines are present but OOM still happens: a ComfyUI upgrade may have broken the stack-walking cache hook. Fallback: `POST http://127.0.0.1:8000/free` with `{"unload_models": true, "free_memory": true}` before every enqueue. Every run then starts cold (~+40 s of text-encode + VAE load) but is correct.
+- If the lines are present but OOM still happens: a ComfyUI upgrade may have broken the stack-walking cache hook. Fallback: `POST $COMFYUI_URL/free` with `{"unload_models": true, "free_memory": true}` before every enqueue. Every run then starts cold (~+40 s of text-encode + VAE load) but is correct.
 
 ### `RuntimeError: Tensor.item() cannot be called on meta tensors` on a re-run
 
