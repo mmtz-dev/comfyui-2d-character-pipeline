@@ -41,12 +41,35 @@ so the action still lands where the next state begins.
 
 Deterministic: same keypoints in, same picks out, no randomness anywhere.
 
+THE TIMING SHAPE (the strip timing feature)
+-------------------------------------------
+Picking WHICH poses is half of a strip; how long each one holds is the other
+half, and it is what turns a slideshow into a swing. picks.json therefore also
+records `timing`: `{"weights": [2, 3, 4, 3], "anchor": 2, "source": ...}` -
+one dimensionless weight per frame and the index of the frame whose START lands
+on the choreography's anchor instant (the contact for a strike). `publish`
+copies it into the sidecar's `contract.timing`.
+
+    --timing template   (default) the per-verb shape in config.ACTION_TIMING,
+                        keyed by (action, n); no row -> `timing` is null and the
+                        game plays the strip uniform.
+    --timing clip       the clip's own rhythm: each weight is the number of
+                        clip frames between that pick and the next (the last
+                        frame gets 1). Documented alternative, not the default,
+                        because a filmed or rig clip holds the rest pose for
+                        half a second and that hold dominates the shape - the
+                        knight's Sword_Attack comes out [6, 4, 8, 1].
+
+`timing` and `auto_timing` are written in step, like `picks` and `auto`, so a
+hand edit of the weights or the anchor in an editor is detectable - and at
+publish the hand edit wins over either mode.
+
 NEVER CLOBBERS A HUMAN EDIT
 ---------------------------
 picks.json records both what the picker chose (`auto`) and what is in force
-(`picks`). When they differ, a person changed it - in the review page or in an
-editor - and re-running `pick` would throw that away. So it refuses, and says
-how to override (`--force`).
+(`picks`), and the same pair for the timing shape. When either pair differs, a
+person changed it - in the review page or in an editor - and re-running `pick`
+would throw that away. So it refuses, and says how to override (`--force`).
 """
 
 from __future__ import annotations
@@ -66,6 +89,7 @@ NAME = "pick"
 HELP = "keypoints -> picks.json"
 
 PICKS_SCHEMA = "anim.picks/1"
+TIMING_MODES = ("template", "clip")
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +207,51 @@ def _even_spread(usable: Sequence[int], n: int) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
+# The timing shape
+# ---------------------------------------------------------------------------
+def clip_timing(picks: Sequence[int], total_frames: int) -> list[int]:
+    """One weight per pick: the clip frames from that pick to the next.
+
+    The last pick has no successor, so it gets 1 - the clip's tail after the
+    last key pose is by construction the frames the picker judged not worth a
+    cell, and giving the recovered pose that whole hold would freeze the strip
+    on its least interesting frame. `total_frames` is kept in the signature so
+    a pick past the clip end is caught here rather than as a negative weight.
+    """
+    picks = list(picks)
+    if any(p < 0 or p >= total_frames for p in picks):
+        raise ValueError(f"picks {picks} fall outside the clip's {total_frames} frames")
+    gaps = [max(1, b - a) for a, b in zip(picks, picks[1:])]
+    return gaps + [1]
+
+
+def auto_timing(action: str, picks: Sequence[int], total_frames: int,
+                mode: str = "template") -> dict[str, Any] | None:
+    """The shape `pick` records, or None when template mode has no row.
+
+    Clip mode still takes its anchor from the template row: the gaps say how
+    long each pose holds, not which pose is the contact, and that is the one
+    thing the game must be told. With no row to place the anchor, clip mode is
+    refused rather than guessed.
+    """
+    if mode not in TIMING_MODES:
+        raise ValueError(f"--timing must be one of {TIMING_MODES}, not {mode!r}")
+    template = config.timing_for_action(action, len(picks))
+    if mode == "template":
+        if template is None:
+            return None
+        weights, anchor = template
+        return {"weights": weights, "anchor": anchor, "source": f"template:{action}"}
+    if template is None:
+        raise ValueError(
+            f"--timing clip needs a template row for ({action!r}, {len(picks)}) to "
+            f"place the anchor; add one to config.ACTION_TIMING or hand-edit "
+            f"picks.json")
+    return {"weights": clip_timing(picks, total_frames), "anchor": template[1],
+            "source": "clip"}
+
+
+# ---------------------------------------------------------------------------
 # Stage entry point
 # ---------------------------------------------------------------------------
 def read_picks(path: Path) -> dict[str, Any] | None:
@@ -190,14 +259,18 @@ def read_picks(path: Path) -> dict[str, Any] | None:
 
 
 def was_edited(existing: dict[str, Any] | None) -> bool:
-    """True when a person changed picks.json after the picker wrote it."""
+    """True when a person changed picks.json after the picker wrote it - the
+    picks OR the timing shape; either is work that must not be thrown away."""
     if not existing:
         return False
-    return list(existing.get("picks") or []) != list(existing.get("auto") or [])
+    if list(existing.get("picks") or []) != list(existing.get("auto") or []):
+        return True
+    return existing.get("timing") != existing.get("auto_timing")
 
 
 def new_picks(picks: list[int], auto: list[int], *, n: int, action: str,
-              dedup: float, curves: dict[str, list[float]]) -> dict[str, Any]:
+              dedup: float, curves: dict[str, list[float]],
+              timing: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "schema": PICKS_SCHEMA,
         "n": n,
@@ -205,6 +278,9 @@ def new_picks(picks: list[int], auto: list[int], *, n: int, action: str,
         "dedup": dedup,
         "picks": list(picks),
         "auto": list(auto),
+        # Two copies on purpose, like picks/auto: `was_edited` compares them.
+        "timing": dict(timing) if timing else None,
+        "auto_timing": dict(timing) if timing else None,
         # Kept so the review page can show WHY a frame was chosen instead of
         # presenting the picker as an oracle.
         "signals": {k: [round(v, 4) for v in vs] for k, vs in curves.items()},
@@ -213,7 +289,7 @@ def new_picks(picks: list[int], auto: list[int], *, n: int, action: str,
 
 def pick(job_name: str, *, n: int | None = None, action: str | None = None,
          dedup: float | None = None, force: bool = False,
-         work_dir: Path | None = None) -> dict[str, Any]:
+         timing: str = "template", work_dir: Path | None = None) -> dict[str, Any]:
     job = Job.open(job_name, work_dir)
     manifest = job.read_manifest()
     action = (action or manifest.get("action") or "").strip().lower()
@@ -232,14 +308,19 @@ def pick(job_name: str, *, n: int | None = None, action: str | None = None,
 
     existing = read_picks(job.picks_path)
     if was_edited(existing) and not force:
+        if list(existing.get("picks") or []) != list(existing.get("auto") or []):
+            what = f"picks {existing['picks']} differ from auto {existing['auto']}"
+        else:
+            what = (f"timing {existing.get('timing')} differs from auto_timing "
+                    f"{existing.get('auto_timing')}")
         raise RuntimeError(
-            f"{job.picks_path} was edited by hand (picks {existing['picks']} "
-            f"differ from auto {existing['auto']}). Refusing to overwrite; "
-            f"pass --force to re-pick from scratch.")
+            f"{job.picks_path} was edited by hand ({what}). Refusing to "
+            f"overwrite; pass --force to re-pick from scratch.")
 
     auto = auto_picks(poses, count, dedup)
+    shape = auto_timing(action, auto, len(poses), timing)
     record = new_picks(auto, auto, n=count, action=action, dedup=dedup,
-                       curves=signals(poses))
+                       curves=signals(poses), timing=shape)
     write_json_in_place(job.picks_path, record)
     job.update_manifest(picks=auto)
     return record
@@ -257,13 +338,22 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              f"lengths (default {config.PICK_DEDUP})")
     parser.add_argument("--force", action="store_true",
                         help="overwrite a hand-edited picks.json")
+    parser.add_argument("--timing", choices=TIMING_MODES, default="template",
+                        help="where the timing shape comes from: the per-verb "
+                             "template (default) or the clip's own frame gaps")
 
 
 def run_stage(args: argparse.Namespace) -> int:
     record = pick(args.job, n=args.n, action=args.action, dedup=args.dedup,
-                  force=args.force)
+                  force=args.force, timing=args.timing)
     print(f"pick: {record['n']} key pose(s) for {record['action']}: "
           f"{record['picks']}")
+    shape = record.get("timing")
+    if shape:
+        print(f"  timing: {shape['weights']} anchor {shape['anchor']} ({shape['source']})")
+    else:
+        print("  timing: none (no template row for this action and count; "
+              "the game plays it uniform)")
     return 0
 
 

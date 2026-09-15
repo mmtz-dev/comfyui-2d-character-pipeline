@@ -62,6 +62,10 @@ class ReviewApp:
         return {"schema": PICKS_SCHEMA, "n": 0,
                 "action": self.manifest.get("action", ""),
                 "dedup": config.PICK_DEDUP, "picks": [], "auto": [],
+                # No shape until `pick` or a hand edit gives one; `toggle` and
+                # `set_picks` rewrite the record they read, so a hand `timing`
+                # survives every click.
+                "timing": None, "auto_timing": None,
                 "signals": {}}
 
     def state(self) -> dict[str, Any]:

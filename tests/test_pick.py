@@ -144,3 +144,78 @@ def test_pick_without_keypoints_says_to_run_pose(posed_job):
     posed_job.keypoints_path.unlink()
     with pytest.raises(FileNotFoundError, match="anim pose"):
         pick_stage.pick(posed_job.name, work_dir=posed_job.root.parent)
+
+
+# ---------------------------------------------------------------------------
+# The timing shape (the strip timing feature)
+# ---------------------------------------------------------------------------
+def test_the_template_shape_comes_from_the_art_bible_table():
+    assert config.timing_for_action("strike", 4) == ([2, 3, 4, 3], 2)
+    assert config.timing_for_action("HIT", 4) == ([1, 3, 2, 2], 0), "case does not matter"
+    assert config.timing_for_action("shove", 3) == ([2, 4, 3], 1)
+    assert config.timing_for_action("strike", 3) is None, "no row, no shape"
+    for (action, n), (weights, anchor) in config.ACTION_TIMING.items():
+        assert len(weights) == n and all(w > 0 for w in weights), (action, n)
+        assert 0 <= anchor < n, (action, n)
+
+
+def test_clip_timing_is_the_gap_to_the_next_pick_with_a_tail_of_one():
+    """The knight's Sword_Attack: 19 frames, picks [0, 6, 10, 18]."""
+    assert pick_stage.clip_timing([0, 6, 10, 18], 19) == [6, 4, 8, 1]
+    assert pick_stage.clip_timing([3, 4, 5], 12) == [1, 1, 1]
+    with pytest.raises(ValueError, match="outside"):
+        pick_stage.clip_timing([0, 6, 30], 19)
+
+
+def test_pick_records_the_template_shape_by_default(posed_job):
+    record = pick_stage.pick(posed_job.name, work_dir=posed_job.root.parent)
+    assert record["timing"] == {"weights": [2, 3, 4, 3], "anchor": 2,
+                                "source": "template:strike"}
+    assert record["auto_timing"] == record["timing"]
+    assert record["timing"] is not record["auto_timing"], "two copies, or an edit is invisible"
+    on_disk = json.loads(posed_job.picks_path.read_text())
+    assert on_disk["timing"] == record["timing"]
+
+
+def test_a_count_with_no_template_row_records_no_shape(posed_job):
+    record = pick_stage.pick(posed_job.name, n=3, work_dir=posed_job.root.parent)
+    assert record["timing"] is None and record["auto_timing"] is None
+
+
+def test_clip_mode_takes_the_gaps_and_the_template_anchor(posed_job):
+    record = pick_stage.pick(posed_job.name, timing="clip",
+                             work_dir=posed_job.root.parent)
+    shape = record["timing"]
+    assert shape["source"] == "clip"
+    assert len(shape["weights"]) == 4
+    assert shape["weights"] == pick_stage.clip_timing(record["picks"], 13)
+    assert shape["anchor"] == 2, "the template says which pose is the contact"
+
+
+def test_clip_mode_refuses_without_a_template_row_to_place_the_anchor(posed_job):
+    with pytest.raises(ValueError, match="place the anchor"):
+        pick_stage.pick(posed_job.name, n=3, timing="clip",
+                        work_dir=posed_job.root.parent)
+
+
+def test_a_hand_edited_timing_alone_is_protected_from_the_picker(posed_job):
+    pick_stage.pick(posed_job.name, work_dir=posed_job.root.parent)
+    record = json.loads(posed_job.picks_path.read_text())
+    record["timing"]["weights"] = [1, 2, 6, 3]  # the owner lengthened the contact hold
+    posed_job.picks_path.write_text(json.dumps(record))
+    before = posed_job.picks_path.read_bytes()
+    with pytest.raises(RuntimeError, match="timing"):
+        pick_stage.pick(posed_job.name, work_dir=posed_job.root.parent)
+    assert posed_job.picks_path.read_bytes() == before, "the refusal must not touch the file"
+    fresh = pick_stage.pick(posed_job.name, force=True, work_dir=posed_job.root.parent)
+    assert fresh["timing"]["weights"] == [2, 3, 4, 3]
+
+
+def test_was_edited_sees_a_timing_difference():
+    same = {"picks": [1, 2], "auto": [1, 2],
+            "timing": {"weights": [3, 2], "anchor": 0}, "auto_timing": {"weights": [3, 2], "anchor": 0}}
+    assert not pick_stage.was_edited(same)
+    edited = dict(same, timing={"weights": [4, 2], "anchor": 0})
+    assert pick_stage.was_edited(edited)
+    assert not pick_stage.was_edited({"picks": [1, 2], "auto": [1, 2]}), \
+        "a record from before the feature has no timing keys and is not an edit"

@@ -4,6 +4,54 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-15 — the strip timing feature: the sidecar carries the shape, `publish` writes it
+
+**What.** Every published action now says how long each frame holds and which frame is the
+contact. `picks.json` gains `timing` / `auto_timing` (`{"weights": [2, 3, 4, 3], "anchor": 2,
+"source": "template:strike"}`), the sidecar gains `contract.timing` (weights + anchor only) and
+`generation.timing_source`, and game-02's audit — which `publish` runs — checks the block against
+`contract.frames`. The three knight jobs were re-published from `work/` with no render: same PNG
+bytes, same inodes, sidecars now `strike [2, 3, 4, 3] / 2`, `hit [1, 3, 2, 2] / 0`,
+`death [1, 2, 2, 4] / 0`. pytest: 208 → **223 passed**, 1 skipped.
+
+**Why a template and not a derivation.** With 2–6 poses the roles are fixed by position — a
+4-pose strike is rest / anticipation / contact / recover whatever the weapon — and the craft rule
+is the same everywhere (hold the anticipation and the contact, rush the transit; Stardew's axe
+150/40/40/170/75 ms, FE's `3-3-3-4 | 1-1-1-3-10`). So `config.ACTION_TIMING` is keyed by
+`(action, n)` and tuned at the gate. Deriving the holds from `pick.signals` was considered: the
+deviation peak is not reliably the contact pose (an overhead windup deviates more from rest than
+the forward cut), so that stays UNVERIFIED and is not the default. `knight_hit` is a 4-frame
+strip (picks `[0, 2, 3, 4]`), so the table has a `hit, 4` row beside the bible's `hit, 2`; `shove`
+budgets 3 poses, so it has a `shove, 3` row (`2 4 3 / 1`) as well as the plan's `shove, 4`.
+
+**`--timing clip`, the documented alternative.** Each weight is the clip frames from that pick to
+the next, the last frame gets 1 (the tail after the last key pose is what the picker judged not
+worth a cell), and the anchor still comes from the template row — the gaps say how long, not which
+pose is the contact. Not the default because the half-second rest hold dominates: the knight's
+Sword_Attack comes out `[6, 4, 8, 1]`. Clip mode with no template row is refused rather than
+guessed.
+
+**Precedence at publish, and why uniform writes nothing.** `publish.resolve_timing` takes a hand
+edit (`timing` ≠ `auto_timing`) first, then whatever `pick` recorded, then the template row for
+`(action, n)` when `picks.json` predates the feature (which is how the knight jobs got theirs),
+else *uniform* — and uniform omits the block entirely, because the game already owns the even
+weights and the default-anchor rule (last frame for an actor verb, frame 0 for a reaction) and a
+second copy of that rule in the pipeline would drift. A hand `timing` whose length no longer
+matches the frames (picks toggled in review after it was written) is dropped with a warning and
+the template fills in, so the audit never sees a broken block.
+
+**Weights, not seconds.** The game's `AttackChoreography` scales every duration by the speed
+setting; seconds in a sidecar would fight it. The game turns the weights into per-frame durations
+from its own windows — `game-02-tactical-rpg/DEVLOG.md` has that half, and the sequencing finding
+(the even fit put the *recovered* pose on screen at impact) that made the anchor necessary.
+
+**Also.** `review.py`'s empty record carries `timing: null` so a page opened before `pick` has the
+keys; `toggle`/`set_picks` rewrite the record they read, so a hand shape survives a click (tested).
+`pick.was_edited` now protects the timing pair the way it protects the picks pair. `anim pick` and
+`anim publish` print the resolved shape, so `--dry-run` shows it before anything is written.
+
+---
+
 ## 2026-09-15 — the anchor unit gate: first frames through the GPU, and what the ControlNet actually needed
 
 **What.** The GPU image service came up for real (A5000, ComfyUI 0.35.0), the `nunchaku`

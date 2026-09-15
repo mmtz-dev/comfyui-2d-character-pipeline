@@ -105,6 +105,22 @@ def test_the_page_is_dark_and_pixelated_and_lists_every_frame(app):
     assert "Request regenerate" in page
 
 
+def test_a_hand_timing_survives_a_click(app):
+    """The strip timing feature: the page rewrites the record it read, so the
+    owner's weights are not lost to a pick toggle - and a review started before
+    `pick` ran carries empty timing keys rather than none at all."""
+    record = json.loads(app.job.picks_path.read_text())
+    record["timing"]["weights"] = [1, 2, 6, 3]
+    app.job.picks_path.write_text(json.dumps(record))
+    app.toggle(3)
+    on_disk = json.loads(app.job.picks_path.read_text())
+    assert on_disk["timing"]["weights"] == [1, 2, 6, 3]
+    assert on_disk["auto_timing"]["weights"] == [2, 3, 4, 3]
+    app.job.picks_path.unlink()
+    assert app._picks_record()["timing"] is None
+    assert "auto_timing" in app._picks_record()
+
+
 def test_a_review_without_frames_says_to_run_extract(posed_job):
     for frame in posed_job.frames():
         frame.unlink()

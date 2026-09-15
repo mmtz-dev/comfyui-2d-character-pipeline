@@ -243,3 +243,89 @@ def test_publish_without_finished_frames_says_to_run_post(posed_job,
     with pytest.raises(FileNotFoundError, match="anim post"):
         publish(posed_job.name, assets_dir=assets_tree / "assets",
                 run_audit=False, work_dir=posed_job.root.parent)
+
+
+# ---------------------------------------------------------------------------
+# The timing shape (the strip timing feature)
+# ---------------------------------------------------------------------------
+def test_the_sidecar_carries_the_timing_shape_and_its_source():
+    from anim.stages.publish import sidecar_for
+
+    meta = sidecar_for(slug="knight", action="strike", frames=4, manifest={},
+                       provenance=None, picks=[0, 6, 10, 18], report=None,
+                       timing={"weights": [2, 3, 4, 3], "anchor": 2, "source": "template:strike"},
+                       timing_source="template:strike")
+    assert meta["contract"]["timing"] == {"weights": [2, 3, 4, 3], "anchor": 2}, \
+        "only the two fields the game reads"
+    assert meta["generation"]["timing_source"] == "template:strike"
+
+
+def test_a_uniform_shape_writes_no_block_so_the_game_owns_the_default():
+    from anim.stages.publish import sidecar_for
+
+    meta = sidecar_for(slug="knight", action="idle", frames=2, manifest={},
+                       provenance=None, picks=[], report=None)
+    assert "timing" not in meta["contract"]
+    assert meta["generation"]["timing_source"] == "uniform"
+
+
+def test_timing_precedence_is_hand_then_recorded_then_template_then_uniform():
+    from anim.stages.publish import resolve_timing
+
+    template = {"weights": [2, 3, 4, 3], "anchor": 2, "source": "template:strike"}
+    # A picks.json from before the feature: the template fills in.
+    assert resolve_timing("strike", 4, {"picks": [0, 6, 10, 18]}) == \
+        ({"weights": [2, 3, 4, 3], "anchor": 2}, "template:strike")
+    # What `pick` recorded, untouched: its own source is kept.
+    clip = {"weights": [6, 4, 8, 1], "anchor": 2, "source": "clip"}
+    assert resolve_timing("strike", 4, {"timing": clip, "auto_timing": dict(clip)}) == \
+        ({"weights": [6, 4, 8, 1], "anchor": 2}, "clip")
+    # A hand edit differs from auto_timing and wins over everything.
+    hand = {"weights": [1, 2, 6, 3], "anchor": 2, "source": "template:strike"}
+    assert resolve_timing("strike", 4, {"timing": hand, "auto_timing": template}) == \
+        ({"weights": [1, 2, 6, 3], "anchor": 2}, "hand")
+    # No row and nothing recorded: uniform, no block.
+    assert resolve_timing("strike", 3, None) == (None, "uniform")
+    assert resolve_timing("idle", 2, {"timing": None, "auto_timing": None}) == (None, "uniform")
+
+
+def test_a_hand_timing_that_no_longer_fits_the_frames_is_dropped(capsys):
+    """Picks toggled in review after the shape was written: 5 frames, 4 weights."""
+    from anim.stages.publish import resolve_timing
+
+    stale = {"weights": [2, 3, 4, 3], "anchor": 2, "source": "template:strike"}
+    block, source = resolve_timing("strike", 5, {"timing": stale, "auto_timing": dict(stale)})
+    assert (block, source) == ({"weights": [2, 3, 1, 4, 3], "anchor": 3}, "template:strike")
+    assert "4 weight(s) for 5 frame(s)" in capsys.readouterr().err
+
+
+def test_the_published_sidecar_carries_the_template_shape_and_passes_the_audit(
+        posted_job, assets_tree, audit_script):
+    """End to end: `pick` recorded the strike template, `publish` copies it into
+    contract.timing, and game-02's real audit (which now checks the block
+    against contract.frames) is happy with what was written."""
+    from anim.stages.publish import publish
+
+    result = publish(posted_job.name, assets_dir=assets_tree / "assets",
+                     audit_script=audit_script, work_dir=posted_job.root.parent)
+    meta = json.loads((assets_tree / "assets" / "2d" / "units" / "knight_strike.json")
+                      .read_text())
+    assert meta["contract"]["timing"] == {"weights": [2, 3, 4, 3], "anchor": 2}
+    assert meta["generation"]["timing_source"] == "template:strike"
+    assert result["timing_source"] == "template:strike"
+    assert result["audit"]["exit"] == 0, result["audit"]["output"]
+
+
+def test_a_hand_edited_shape_is_what_gets_published(posted_job, assets_tree,
+                                                    audit_script):
+    from anim.stages.publish import publish
+
+    record = json.loads(posted_job.picks_path.read_text())
+    record["timing"]["weights"] = [1, 2, 6, 3]
+    posted_job.picks_path.write_text(json.dumps(record))
+    publish(posted_job.name, assets_dir=assets_tree / "assets",
+            audit_script=audit_script, work_dir=posted_job.root.parent)
+    meta = json.loads((assets_tree / "assets" / "2d" / "units" / "knight_strike.json")
+                      .read_text())
+    assert meta["contract"]["timing"] == {"weights": [1, 2, 6, 3], "anchor": 2}
+    assert meta["generation"]["timing_source"] == "hand"

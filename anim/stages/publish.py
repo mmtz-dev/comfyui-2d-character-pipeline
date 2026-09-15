@@ -11,6 +11,32 @@ the audit's frame-group spelling: the sidecar covers `<stem>_0.png` through
 by counting up from `_0` (render/unit_sprites.gd `frames_for`), so publishing
 numbered PNGs plus this one file IS the registration step - no .tres, no atlas.
 
+ON `contract.timing` (the strip timing feature)
+-----------------------------------------------
+Beside `canvas` / `frames` / `pivot` the sidecar may carry
+
+    "timing": {"weights": [2, 3, 4, 3], "anchor": 2}
+
+one dimensionless weight per frame - FE-style ticks, NOT seconds, because the
+game's AttackChoreography already scales every duration by the speed setting
+and seconds here would fight it - and the index of the frame whose START lands
+on the plan's anchor instant: impact for a strike, the launch for a shot or a
+cast, frame 0 for a reaction. render/board_fx.gd `schedule` turns the weights
+and the plan's windows into per-frame durations and holds the anchor frame
+through the hit-stop. game-02's audit checks the block against
+`contract.frames` (exactly n positive weights, anchor inside the strip).
+
+Where the shape comes from, in order: a HAND edit of picks.json's `timing`
+(it differs from `auto_timing`), else whatever `anim pick` recorded (the
+per-verb template in config.ACTION_TIMING, or the clip's frame gaps with
+`--timing clip`), else the template row for (action, n) when picks.json
+predates the feature, else UNIFORM - in which case no block is written at all
+and the game supplies both the even weights and the default anchor, so that
+rule has exactly one home. `generation.timing_source` records which:
+"hand", "clip", "template:<action>" or "uniform". A hand `timing` whose length
+no longer matches the frames (picks toggled after it was written) is dropped
+with a warning rather than published broken.
+
 FRAMES ARE COPIED IN PLACE. Never written to a temp name and renamed. Docker
 Desktop's file share caches by inode, so a rename leaves a new inode behind the
 same path and a container holding the old one keeps serving the old bytes -
@@ -75,9 +101,23 @@ FRAME_RE = re.compile(r"^_\d+$")
 def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any],
                 provenance: dict[str, Any] | None, picks: list[int],
                 report: dict[str, Any] | None,
-                retrieved: str | None = None) -> dict[str, Any]:
+                retrieved: str | None = None,
+                timing: dict[str, Any] | None = None,
+                timing_source: str = "uniform") -> dict[str, Any]:
     """Build the sidecar. Pure - takes what the stages wrote, returns the dict."""
     stem = f"{slug}_{action}" if action else slug
+    contract: dict[str, Any] = {
+        "canvas": list(config.CANVAS),
+        "frames": [frames, 1],
+        "pivot": "bottom-center",
+        # True 64px detail authored at 64 (art bible section 1), not a 32px
+        # tile doubled - which is what every placeholder on disk is.
+        "scale_from_source": 1,
+    }
+    if timing:
+        # Only the two fields the game reads; `source` lives in generation.
+        contract["timing"] = {"weights": [w for w in timing["weights"]],
+                              "anchor": int(timing["anchor"])}
     passes = (provenance or {}).get("passes") or []
     final = passes[-1] if passes else {}
     models = (provenance or {}).get("models") or []
@@ -114,14 +154,7 @@ def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any]
             "models": models,
             "retrieved": retrieved or dt.date.today().isoformat(),
         },
-        "contract": {
-            "canvas": list(config.CANVAS),
-            "frames": [frames, 1],
-            "pivot": "bottom-center",
-            # True 64px detail authored at 64 (art bible section 1), not a 32px
-            # tile doubled - which is what every placeholder on disk is.
-            "scale_from_source": 1,
-        },
+        "contract": contract,
         "generation": {
             "seed": (provenance or {}).get("seed"),
             "workflow": final.get("workflow"),
@@ -136,9 +169,36 @@ def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any]
             # from. A rig clip's pack/file/sha256/licence when `anim rig` made
             # the job; null for filmed footage.
             "motion_source": dict(motion) if motion else None,
+            # Where the timing SHAPE came from (see the module docstring).
+            "timing_source": timing_source,
         },
         "postprocess": steps,
     }
+
+
+def resolve_timing(action: str, frames: int,
+                   picks_record: dict[str, Any] | None) -> tuple[dict[str, Any] | None, str]:
+    """(timing block or None, source) - hand > recorded > template > uniform.
+
+    Pure, so the precedence is testable without a job on disk. The block that
+    comes back has only `weights` and `anchor`; the source is the second value.
+    """
+    record = picks_record or {}
+    timing = record.get("timing")
+    if isinstance(timing, dict) and timing.get("weights") is not None:
+        weights = list(timing.get("weights") or [])
+        if len(weights) == frames:
+            block = {"weights": weights, "anchor": timing.get("anchor")}
+            if timing != record.get("auto_timing"):
+                return block, "hand"
+            return block, str(timing.get("source") or "hand")
+        print(f"publish: picks.json timing has {len(weights)} weight(s) for "
+              f"{frames} frame(s) - ignoring it and falling back to the template",
+              file=sys.stderr)
+    template = config.timing_for_action(action, frames) if action else None
+    if template:
+        return {"weights": template[0], "anchor": template[1]}, f"template:{action}"
+    return None, "uniform"
 
 
 def frame_names(stem: str, count: int) -> list[str]:
@@ -197,18 +257,20 @@ def publish(job_name: str, *, assets_dir: Path | None = None,
     report = read_json(job.report_path) if job.report_path.exists() else None
     provenance = (read_json(job.provenance_path)
                   if job.provenance_path.exists() else None)
-    picks = list(read_json(job.picks_path).get("picks") or []) \
-        if job.picks_path.exists() else []
+    picks_record = read_json(job.picks_path) if job.picks_path.exists() else None
+    picks = list((picks_record or {}).get("picks") or [])
+    timing, timing_source = resolve_timing(action, len(frames), picks_record)
 
     base = Path(assets_dir) if assets_dir is not None else config.ASSETS_DIR
     units_dir = base.joinpath(*UNITS_SUBDIR)
     names = frame_names(stem, len(frames))
     meta = sidecar_for(slug=slug, action=action, frames=len(frames),
                        manifest=manifest, provenance=provenance, picks=picks,
-                       report=report)
+                       report=report, timing=timing, timing_source=timing_source)
 
     result: dict[str, Any] = {"stem": stem, "dir": str(units_dir),
                               "frames": names, "sidecar": f"{stem}.json",
+                              "timing": timing, "timing_source": timing_source,
                               "removed": [], "audit": None, "dry_run": dry_run}
     if dry_run:
         return result
@@ -253,6 +315,11 @@ def run_stage(args: argparse.Namespace) -> int:
           f"{result['sidecar']} to {result['dir']}")
     for name in result["frames"]:
         print(f"  {name}")
+    if result["timing"]:
+        print(f"  timing: {result['timing']['weights']} anchor "
+              f"{result['timing']['anchor']} ({result['timing_source']})")
+    else:
+        print("  timing: uniform (no contract.timing written)")
     for name in result["removed"]:
         print(f"  removed stale {name}")
     if result["audit"]:

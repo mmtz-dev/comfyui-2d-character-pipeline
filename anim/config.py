@@ -140,6 +140,52 @@ def frames_for_action(action: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Timing shape per action (the strip timing feature; art bible S7)
+# ---------------------------------------------------------------------------
+# Same frame count, different weight, purely from holds: industry strips hold
+# the anticipation and the contact pose and rush the transit (Stardew's axe is
+# 150/40/40/170/75 ms; a GBA Fire Emblem swing is 3-3-3-4 | 1-1-1-3-10 ticks).
+# Keyed by (action, n) because with 2-6 poses the ROLES are fixed by position -
+# a 4-pose strike is rest / anticipation / contact / recover whatever the weapon,
+# and Stardew's axe and Slynyrd's sword differ only in the hold numbers.
+#
+# `weights` are dimensionless ticks, one per frame, never seconds: the game's
+# AttackChoreography already scales every duration by the speed setting, and
+# seconds in a sidecar would fight it. `anchor` is the frame whose START lands
+# on the plan's anchor instant - impact for a strike, the launch for a shot,
+# frame 0 for a reaction - and the game holds it through the hit-stop.
+#
+# A template rather than something derived from pick.signals: the deviation
+# peak is not reliably the contact pose (an overhead windup deviates more from
+# rest than the forward cut), so deriving is UNVERIFIED and hand edits in
+# picks.json win instead. Tuned at the anchor gate; an (action, n) with no row
+# publishes no `contract.timing` and the game plays it uniform.
+ACTION_TIMING: dict[tuple[str, int], tuple[list[int], int]] = {
+    # rest, anticipation, contact, recover
+    ("strike", 4): ([2, 3, 4, 3], 2),
+    ("shove", 4): ([2, 3, 4, 3], 2),
+    # rest, push, recover (ACTION_FRAMES gives shove 3)
+    ("shove", 3): ([2, 4, 3], 1),
+    # rest, anticipation, smear, contact, recover - the smear slot (deferred)
+    ("strike", 5): ([2, 3, 1, 4, 3], 3),
+    # rest, draw, release, (recover)
+    ("shoot", 3): ([2, 4, 3], 2), ("shoot", 4): ([2, 4, 3, 2], 2),
+    ("cast", 3): ([2, 4, 3], 2), ("cast", 4): ([2, 4, 3, 2], 2),
+    ("throw", 3): ([2, 4, 3], 2), ("throw", 4): ([2, 4, 3, 2], 2),
+    # flinch, recover / rest, flinch, ease, recover
+    ("hit", 2): ([3, 2], 0), ("hit", 4): ([1, 3, 2, 2], 0),
+    # standing, struck, falling, lying
+    ("death", 4): ([1, 2, 2, 4], 0),
+}
+
+
+def timing_for_action(action: str, n: int) -> tuple[list[int], int] | None:
+    """The template shape for `n` poses of one action, or None when there is no row."""
+    row = ACTION_TIMING.get((action.strip().lower(), int(n)))
+    return (list(row[0]), row[1]) if row else None
+
+
+# ---------------------------------------------------------------------------
 # The scale ladder (art bible S3) - sprite height inside the 64px canvas
 # ---------------------------------------------------------------------------
 # `post` scales each unit to its band before the bottom-center recanvas, which
