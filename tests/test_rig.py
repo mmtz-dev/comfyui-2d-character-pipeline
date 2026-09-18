@@ -331,7 +331,7 @@ def test_rig_writes_one_depth_frame_per_sampled_frame(hit_job):
         "depth/%04d.png indexes exactly as frames/%04d.png"
     manifest = hit_job.read_manifest()
     src = manifest["motion_source"]
-    assert src["depth"] is True
+    assert src["depth"] is True and src["depth_mode"] == "full"
     far, near = src["depth_range"]
     assert far < near
     assert src["depth_far_grey"] == 48
@@ -349,21 +349,13 @@ def test_no_depth_skips_the_directory_and_says_so(knight_glb, work_dir):
                         depth=False, work_dir=work_dir)
     assert job.depths() == []
     src = job.read_manifest()["motion_source"]
-    assert src["depth"] is False and "depth_range" not in src
+    assert src["depth"] is False and src["depth_mode"] == "none" and "depth_range" not in src
     # And a re-run with depth on fills it; a re-run with it off clears it.
     rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight", work_dir=work_dir)
     assert len(job.depths()) == len(job.frames())
     rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight",
                   depth=False, work_dir=work_dir)
     assert job.depths() == []
-
-
-def test_the_depth_flag_is_parsed():
-    import argparse
-    parser = argparse.ArgumentParser()
-    rig_stage.add_arguments(parser)
-    assert parser.parse_args(["x.glb"]).depth is True
-    assert parser.parse_args(["x.glb", "--no-depth"]).depth is False
 
 
 def test_the_props_show_up_in_depth_not_just_as_outlines(work_dir):
@@ -401,3 +393,37 @@ def test_base_from_a_rig_writes_its_one_depth_frame(knight_glb, work_dir):
 def test_the_canned_base_writes_no_depth(work_dir):
     job = base_stage.prepare("knight", work_dir=work_dir)
     assert job.depths() == []
+
+
+def test_depth_props_writes_the_kit_only_and_records_the_mode(work_dir):
+    ual = REPO / "rigs" / "quaternius" / "UAL1_Standard.glb"
+    if not ual.exists():
+        pytest.skip("rigs/quaternius/UAL1_Standard.glb is not vendored")
+    job = rig_stage.rig(ual, clip="Hit_Chest", action="hit", slug="knight",
+                        depth="props", work_dir=work_dir)
+    src = job.read_manifest()["motion_source"]
+    assert src["depth"] is True and src["depth_mode"] == "props"
+    assert len(job.depths()) == len(job.frames())
+    with Image.open(job.depths()[0]) as img:
+        arr = np.asarray(img)
+    assert 0 < (arr > 0).sum() < 6000, "two props (a kite is ~3k px), no ~12k-px body"
+    full = rig_stage.rig(ual, clip="Hit_Chest", action="hit", slug="knight",
+                         work_dir=work_dir, job_name="full")
+    assert full.read_manifest()["motion_source"]["depth_mode"] == "full"
+    assert full.read_manifest()["motion_source"]["depth_range"] == src["depth_range"]
+    # A unit with no kit has nothing to draw in props mode: no depth at all.
+    bare = rig_stage.rig(ual, clip="Hit_Chest", action="hit", slug="knight",
+                         props=(), depth="props", work_dir=work_dir, job_name="bare")
+    assert bare.depths() == []
+    assert bare.read_manifest()["motion_source"]["depth_mode"] == "none"
+
+
+def test_the_depth_mode_flag_and_its_alias():
+    import argparse
+    parser = argparse.ArgumentParser()
+    rig_stage.add_arguments(parser)
+    assert parser.parse_args(["x.glb"]).depth == "full"
+    assert parser.parse_args(["x.glb", "--depth", "props"]).depth == "props"
+    assert parser.parse_args(["x.glb", "--no-depth"]).depth == "none"
+    with pytest.raises(SystemExit):
+        parser.parse_args(["x.glb", "--depth", "halberd"])

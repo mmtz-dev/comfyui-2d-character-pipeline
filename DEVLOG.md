@@ -79,6 +79,34 @@ but is wrong for the open-sided prop solids as drawn, so it was not done. Whethe
 depth are fed to Fun-Control stacked or as one control type is the clip render feature's
 question, not this one's.
 
+**Same day, later — `--depth props`.** The clip render feature ran these frames through Wan
+2.2 Fun-Control and reported back: full-strength body depth makes the model paint the
+*mannequin* (thinner, painterly, the death loses its helm); at control gain 0.35 the knight
+survives and the props land, but the death still loses the helm. It asked for a props-only
+depth — the channel saying nothing but "what the hand holds". So `--depth` is now a mode,
+`full | props | none` (`--no-depth` stays as an alias of `none`), recorded as
+`job.json.motion_source.depth_mode`; `depth` stays the bool it was, so a reader of the first
+cut still works. Same files, same contract. Two decisions inside it:
+
+- *One grey mapping for both modes.* The range is still read off body + props, so a `props`
+  frame is the `full` frame with the body blanked, pixel for pixel — the clip route can
+  switch modes, or blend them, without the props changing brightness. `depth_range` is
+  identical between `knightq_strike_depth` and `knightq_strike_depthprops`.
+- *The body still occludes.* A first cut drew the prop solids alone and the kite strapped on
+  the far forearm showed through the torso — which would tell the model there is a shield
+  *in front of* the chest, the opposite of the truth. So `props` mode rasterises the full
+  scene and keeps a pixel only where a prop is the nearest surface. A hidden shield stays
+  hidden, as in the skeleton PNGs (where the outline is drawn but the body is not, this is
+  the stricter of the two).
+
+*Default stays `full`.* The finding is one run at one gain on one action; `props` is
+untested on the model at the time of writing, and `full` at gain 0.35 already passes strike
+and hit. The clip render gate decides which mode the route ships with; flipping the default
+then is a one-line change plus a README row. `anim base --rig` takes the same mode.
+`props` on a unit with no kit writes no depth (there is nothing to draw) and records
+`depth_mode: none`. Props-only strike and death are on the evidence page under the full
+renders. Suite 261 passed / 1 skipped, +4.
+
 ---
 
 ## 2026-09-16 — the skeleton props feature: the ControlNet is told which hand is the sword hand

@@ -631,3 +631,56 @@ def test_the_sword_shows_in_depth_only_when_the_unit_carries_it(ual):
     window = (slice(y - 2, y + 3), slice(x - 2, x + 3))     # on the blade, near the tip
     assert with_sword[window].max() > 0
     assert bare[window].max() == 0
+
+
+def test_depth_modes_are_normalised_from_flag_or_bool():
+    assert rigkit.depth_mode(None) == rigkit.depth_mode(True) == "full"
+    assert rigkit.depth_mode(False) == rigkit.depth_mode("none") == "none"
+    assert rigkit.depth_mode(" Props ") == "props"
+    with pytest.raises(ValueError, match="halberd"):
+        rigkit.depth_mode("halberd")
+    with pytest.raises(ValueError, match="none"):
+        rigkit.clip_depth(rigkit.load_rig(UAL), "Idle_Loop", fps=12, cell=CELL,
+                          frame=rigkit.reference_frame(rigkit.load_rig(UAL)), mode="none")
+
+
+def test_props_only_depth_is_the_full_frame_minus_the_body(ual):
+    """Same greys where the props are (one range for both modes, read off
+    body + props), nothing where the body was, and the body still occludes."""
+    frame = rigkit.reference_frame(ual, props=("sword", "shield"))
+    kp = rigkit.clip_keypoints(ual, "Sword_Attack", fps=12, cell=CELL, frame=frame)
+    full = rigkit.clip_depth(ual, "Sword_Attack", fps=12, cell=CELL, frame=frame)
+    props = rigkit.clip_depth(ual, "Sword_Attack", fps=12, cell=CELL, frame=frame,
+                              mode="props")
+    assert props.mode == "props" and full.mode == "full"
+    assert (props.far, props.near) == (full.far, full.near), "one range, both modes"
+    entry = kp["frames"][10]
+    x, y = _probe_on_the_blade(np.asarray(entry["props"][0]["polygons"][0], dtype=float))
+    f10, p10 = full.frames()[10], props.frames()[10]
+    assert p10[y, x] > 0 and p10[y, x] == f10[y, x], "the blade, same grey"
+    hip = np.asarray(entry["keypoints"][kp["names"].index("right_hip")]).astype(int)
+    assert f10[hip[1], hip[0]] > 0 and p10[hip[1], hip[0]] == 0, "the body is gone"
+    assert 0 < (p10 > 0).sum() < 0.25 * (f10 > 0).sum()
+    # Occluded by the body: every props pixel is a full-frame pixel of the
+    # same grey, and on the rest frame the kite behind the torso is mostly
+    # hidden - fewer pixels than the kite's own solid would cover.
+    assert np.array_equal(p10[p10 > 0], f10[p10 > 0])
+    f0, p0 = full.frames()[0], props.frames()[0]
+    assert np.array_equal(p0[p0 > 0], f0[p0 > 0])
+    unoccluded = rigkit.rasterize_depth(
+        *_props_2d(ual, "Sword_Attack", 0.0, frame), CELL)
+    assert (p0 > 0).sum() < 0.8 * np.isfinite(unoccluded).sum(), "the body hides part of the kite"
+
+
+def _props_2d(rig, clip_name, t, frame):
+    proj = rigkit.Projection.for_rig(frame, CELL)
+    world = rig.pose_at(rig.clip(clip_name), t)
+    joints = rigkit.openpose_points(rig, world, frame)
+    pv, pt = rigkit.posed_mesh(rig, world, frame, body=False)
+    return proj.to_2d(pv, anchor=proj.anchor_for(joints)), proj.depth_of(pv), pt
+
+
+def test_props_only_depth_on_a_bare_unit_draws_nothing(ual):
+    dc = rigkit.clip_depth(ual, "Idle_Loop", fps=12, cell=CELL,
+                           frame=rigkit.reference_frame(ual), mode="props", times=[0.0])
+    assert dc.frames()[0].max() == 0

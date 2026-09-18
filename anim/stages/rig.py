@@ -6,7 +6,7 @@ Knight, first) is the motion source instead of a filmed clip:
     anim rig rigs/kaykit-adventurers/Knight.glb --list
     anim rig rigs/kaykit-adventurers/Knight.glb --clip Hit_A \\
         --unit knight --action hit [--fps 12] [--job knight_hit] [--mirror] \\
-        [--props sword,shield | --props none] [--no-depth]
+        [--props sword,shield | --props none] [--depth full|props|none]
 
 It writes exactly what `anim extract` followed by `anim pose` would have:
 
@@ -21,9 +21,11 @@ plus one thing a filmed clip never has (the rig props feature):
                                      props, same index and cell as skel_%04d.png;
                                      near = 255, far = DEPTH_FAR_GREY, background 0;
                                      one range per clip, in job.json.motion_source
-                                     .depth_range = [far, near]. See anim.rigkit
-                                     (DEPTH). `anim clip` reads it as a control
-                                     channel; every other stage ignores it.
+                                     .depth_range = [far, near]; `--depth props`
+                                     draws the prop solids only (motion_source
+                                     .depth_mode). See anim.rigkit (DEPTH).
+                                     `anim clip` reads it as a control channel;
+                                     every other stage ignores it.
 
 so `anim pick`, `anim review`, `anim strip` and everything after them run
 unchanged and never learn where the motion came from - except through the
@@ -113,7 +115,8 @@ def motion_source(glb: Path, provenance: dict[str, Any], clip: rigkit.Clip,
                   ) -> dict[str, Any]:
     record = provenance["record"]
     motion = payload["motion"]
-    depth_block = {"depth": depth is not None}
+    depth_block: dict[str, Any] = {"depth": depth is not None,
+                                   "depth_mode": depth.mode if depth is not None else "none"}
     if depth is not None:
         depth_block["depth_range"] = [round(depth.far, 4), round(depth.near, 4)]
         depth_block["depth_far_grey"] = rigkit.DEPTH_FAR_GREY
@@ -210,13 +213,14 @@ def write_previews(payload: dict[str, Any], frames_dir: Path) -> list[Path]:
 def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
         mirror: bool = False, job_name: str | None = None,
         cell: tuple[int, int] | None = None,
-        props: Sequence[str] | None = None, depth: bool = True,
+        props: Sequence[str] | None = None, depth: str | bool = "full",
         work_dir: Path | None = None) -> Job:
     """Sample one clip into work/<job>/ as if extract + pose had run.
 
     `props` None means the unit's kit from `config.UNIT_PROPS`; pass () for none.
-    `depth` writes depth/%04d.png when the rig has a skinned mesh; a bare
-    animation library writes none either way.
+    `depth` is a `rigkit.DEPTH_MODES` value (or the older bool): `full` writes
+    depth/%04d.png of body + props when the rig has a skinned mesh, `props`
+    the prop solids alone, `none` nothing.
     """
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
@@ -230,8 +234,10 @@ def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
     payload = rigkit.clip_keypoints(loaded, clip, fps=fps, cell=cell,
                                     mirror=mirror, frame=frame)
     clip_obj = loaded.clip(clip)
-    depth_clip = rigkit.clip_depth(loaded, clip, fps=fps, cell=cell, frame=frame) \
-        if depth and loaded.skinned else None
+    mode = rigkit.depth_mode(depth)
+    wants_depth = mode == "props" and bool(props) or mode == "full" and loaded.skinned
+    depth_clip = rigkit.clip_depth(loaded, clip, fps=fps, cell=cell, frame=frame,
+                                   mode=mode) if wants_depth else None
 
     job = Job.open(job_name or f"{slug}_{action}", work_dir)
     job.root.mkdir(parents=True, exist_ok=True)
@@ -301,9 +307,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="props drawn onto the skeleton, comma-separated "
                              f"from {list(rigkit.PROP_KINDS)}, or 'none' "
                              "(default: the unit's kit in config.UNIT_PROPS)")
-    parser.add_argument("--no-depth", dest="depth", action="store_false",
-                        help="skip depth/%%04d.png (the rig props feature); the "
-                             "default renders the posed mesh + props as depth")
+    parser.add_argument("--depth", choices=rigkit.DEPTH_MODES, default="full",
+                        help="depth/%%04d.png (the rig props feature): 'full' = "
+                             "the posed mesh + props (default), 'props' = the "
+                             "prop solids only, 'none' = skip it")
+    parser.add_argument("--no-depth", dest="depth", action="store_const", const="none",
+                        help="alias of --depth none")
     parser.add_argument("--width", type=int, default=config.STRIP_CELL[0],
                         help="skeleton cell width; must match the strip cell")
     parser.add_argument("--height", type=int, default=config.STRIP_CELL[1])
@@ -336,8 +345,8 @@ def run_stage(args: argparse.Namespace) -> int:
           f"{manifest['pose']['cell'][0]}x{manifest['pose']['cell'][1]} -> "
           f"{job.pose_dir}")
     if src.get("depth"):
-        print(f"  {len(job.depths())} depth frame(s), range {src['depth_range']} "
-              f"-> {job.depth_dir}")
+        print(f"  {len(job.depths())} depth frame(s) ({src['depth_mode']}), range "
+              f"{src['depth_range']} -> {job.depth_dir}")
     print(f"  next: anim pick {job.name} && anim strip {job.name}")
     return 0
 

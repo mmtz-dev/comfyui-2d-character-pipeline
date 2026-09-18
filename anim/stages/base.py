@@ -62,12 +62,12 @@ def stand_payload(path: Path | None = None) -> dict[str, Any]:
 
 def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
                 fps: int | None = None, mirror: bool = False,
-                props: Sequence[str] = (), depth: bool = True
+                props: Sequence[str] = (), depth: str | bool = "full"
                 ) -> tuple[dict[str, Any], dict[str, Any], rigkit.DepthClip | None]:
     """One frame of a rig clip as a one-frame keypoints payload, its
     motion_source block, and its depth frame (None for a bare rig or
-    `depth=False`). Same facing detection, per-rig scale and props as
-    `anim rig`, at the portrait cell."""
+    `depth="none"`; a `rigkit.DEPTH_MODES` value). Same facing detection,
+    per-rig scale and props as `anim rig`, at the portrait cell."""
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
     provenance = rig_stage.rig_provenance(glb)
@@ -84,9 +84,11 @@ def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
     payload["frames"][0]["file"] = "(rig)"
     payload["_note"] = (f"Frame {frame} of {clip} from {glb.name}, projected at "
                         f"the portrait cell by anim.rigkit - see anim rig.")
+    mode = rigkit.depth_mode(depth)
+    wants_depth = mode == "props" and bool(props) or mode == "full" and loaded.skinned
     depth_clip = rigkit.clip_depth(loaded, clip, fps=fps, cell=cell, frame=ref,
-                                   times=[float(times[frame])]) \
-        if depth and loaded.skinned else None
+                                   times=[float(times[frame])], mode=mode) \
+        if wants_depth else None
     source = rig_stage.motion_source(glb, provenance, clip_obj, payload, jmap,
                                      mirror, depth=depth_clip)
     source["frame"] = frame
@@ -96,7 +98,7 @@ def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
 def prepare(slug: str, *, cell: tuple[int, int] | None = None,
             pose_path: Path | None = None, rig: Path | None = None,
             clip: str = "Idle", frame: int = 0, mirror: bool = False,
-            props: Sequence[str] | None = None, depth: bool = True,
+            props: Sequence[str] | None = None, depth: str | bool = "full",
             work_dir: Path | None = None) -> Job:
     """Lay out work/<slug>_base/ so `post` and `publish` can be re-used verbatim.
 

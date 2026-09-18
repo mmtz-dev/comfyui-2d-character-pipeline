@@ -140,6 +140,13 @@ The depth format, which `anim clip` reads and nothing else may change:
                                 over every frame of the clip - so a sword
                                 thrust toward the camera brightens, and a
                                 still body does not flicker.
+    mode                        `depth_mode` in job.json: `full` (body +
+                                props) or `props` (the prop solids only, for
+                                a model that paints the mannequin when given
+                                the body; still occluded by the body, so a
+                                hidden shield stays hidden). Same files, same
+                                greys: the range is read off body + props in
+                                both modes.
 
 The viewer stands on the character's RIGHT (the profile that puts forward on
 +x with up on +y has its camera axis at forward x up), so the sword hand is
@@ -213,6 +220,26 @@ PROP_SIZES: dict[str, dict[str, float]] = {
 # The depth image's grey for the farthest surface of the clip. Not 0: the
 # far side of the body must stay a surface, not background.
 DEPTH_FAR_GREY = 48
+# What the depth frame draws. `full`: the skinned body + the props. `props`:
+# the prop solids only - the channel then says nothing but "what the hand
+# holds", for a model that would otherwise paint the mannequin - but still
+# OCCLUDED by the body, so a shield behind the torso stays hidden. `none`: no
+# depth at all. Both drawing modes share ONE grey mapping (the range is read
+# off body + props alike), so a props-only frame is the full frame with the
+# body pixels blanked, pixel for pixel.
+DEPTH_MODES: tuple[str, ...] = ("full", "props", "none")
+
+
+def depth_mode(value: str | bool | None) -> str:
+    """Normalise a `--depth` value (or the older bool) to one of DEPTH_MODES."""
+    if value is None or value is True:
+        return "full"
+    if value is False:
+        return "none"
+    mode = str(value).strip().lower()
+    if mode not in DEPTH_MODES:
+        raise ValueError(f"unknown depth mode {value!r}; one of {list(DEPTH_MODES)}")
+    return mode
 # Which OpenPose joint's bone each prop rides. Both are single bones in every
 # map (the midpoint joints are the neck only).
 PROP_JOINT: dict[str, str] = {"sword": "right_wrist", "shield": "left_elbow"}
@@ -986,12 +1013,13 @@ def prop_meshes(rig: Rig, world: np.ndarray, frame: RigFrame
     return out
 
 
-def posed_mesh(rig: Rig, world: np.ndarray, frame: RigFrame
-               ) -> tuple[np.ndarray, np.ndarray]:
-    """The whole thing to draw for one pose: skinned parts + props, merged.
-    (verts (N, 3) world space, tris (T, 3)). Empty arrays for a bare rig."""
+def posed_mesh(rig: Rig, world: np.ndarray, frame: RigFrame, *,
+               body: bool = True) -> tuple[np.ndarray, np.ndarray]:
+    """The whole thing to draw for one pose: skinned parts (unless `body` is
+    off) + props, merged. (verts (N, 3) world space, tris (T, 3)). Empty
+    arrays for a bare rig with no props."""
     verts_list, tris_list, offset = [], [], 0
-    for part in rig.parts:
+    for part in rig.parts if body else ():
         verts_list.append(skin_part(part, world))
         tris_list.append(part.triangles + offset)
         offset += len(part.positions)
@@ -1172,16 +1200,23 @@ class DepthClip:
     zbufs: list[np.ndarray]      # (H, W) float each, -inf where empty
     far: float                   # rig units along the viewing axis
     near: float
+    mode: str = "full"           # DEPTH_MODES minus "none"
 
     def frames(self) -> list[np.ndarray]:
         return [depth_to_grey(z, self.far, self.near) for z in self.zbufs]
 
 
 def clip_depth(rig: Rig, clip_name: str, *, fps: int, cell: tuple[int, int],
-               frame: RigFrame, times: Sequence[float] | None = None) -> DepthClip:
+               frame: RigFrame, times: Sequence[float] | None = None,
+               mode: str = "full") -> DepthClip:
     """Pose the mesh and props at the same times `clip_keypoints` samples and
     z-buffer each under the same projection, anchored on the JOINTS' centre so
-    depth and skeleton align. The range is measured over the whole clip."""
+    depth and skeleton align. The range is measured over the whole clip - and
+    over body + props whatever `mode` draws, so `props` frames carry the same
+    greys the `full` frames would."""
+    mode = depth_mode(mode)
+    if mode == "none":
+        raise ValueError("clip_depth: mode 'none' renders nothing - do not call it")
     clip = rig.clip(clip_name)
     proj = Projection.for_rig(frame, cell)
     ts = np.asarray(times, dtype=float) if times is not None \
@@ -1192,16 +1227,25 @@ def clip_depth(rig: Rig, clip_name: str, *, fps: int, cell: tuple[int, int],
         world = rig.pose_at(clip, float(t))
         joints = openpose_points(rig, world, frame)
         verts, tris = posed_mesh(rig, world, frame)
-        if len(verts):
-            pts2d = proj.to_2d(verts, anchor=proj.anchor_for(joints))
-            depth = proj.depth_of(verts)
-            far, near = min(far, float(depth.min())), max(near, float(depth.max()))
-            zbufs.append(rasterize_depth(pts2d, depth, tris, cell))
-        else:
+        if not len(verts):
             zbufs.append(np.full((int(cell[1]), int(cell[0])), -np.inf))
+            continue
+        depth = proj.depth_of(verts)
+        far, near = min(far, float(depth.min())), max(near, float(depth.max()))
+        anchor = proj.anchor_for(joints)
+        zbuf = rasterize_depth(proj.to_2d(verts, anchor=anchor), depth, tris, cell)
+        if mode == "props":
+            # The full frame with the body blanked: a prop pixel survives only
+            # where the prop IS the nearest surface, so a shield behind the
+            # torso stays hidden instead of reading as one in front of it.
+            pv, pt = posed_mesh(rig, world, frame, body=False)
+            only = rasterize_depth(proj.to_2d(pv, anchor=anchor), proj.depth_of(pv), pt, cell) \
+                if len(pv) else np.full_like(zbuf, -np.inf)
+            zbuf = np.where(only >= zbuf - 1e-9, zbuf, -np.inf)
+        zbufs.append(zbuf)
     if not np.isfinite(far):
         far, near = 0.0, 1.0
-    return DepthClip(zbufs=zbufs, far=far, near=near)
+    return DepthClip(zbufs=zbufs, far=far, near=near, mode=mode)
 
 
 # ---------------------------------------------------------------------------

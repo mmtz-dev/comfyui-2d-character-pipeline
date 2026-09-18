@@ -92,7 +92,7 @@ docker compose run --rm anim publish knight_strike --dry-run
 |---|---|---|---|
 | `extract <clip>` | a filmed clip | `frames/%04d.png`, `job.json` | fps is a **cap**, not a target; a 10 fps clip stays at 10. Rotation is honoured by never passing `-noautorotate`. `--crop` (off by default) crops every frame to **one** person-centred box — use it when the figure sits small in the frame, because the skeleton is letterboxed into the cell and headroom is wasted resolution. |
 | `pose <job>` | frames | `pose/keypoints.json`, `pose/skel_%04d.png` | rtmlib DWPose over onnxruntime, CPU. Inference happens **once per clip** and is cached; `pick`, `review` and `strip` re-read it. Rendered with rtmlib's own `draw_skeleton(openpose_skeleton=True)` at the cell size, line width scaled to the canvas. |
-| `rig <glb> --clip <name>` | a rig clip | `job.json`, `frames/%04d.png`, `pose/keypoints.json`, `pose/skel_%04d.png`, `depth/%04d.png` | **replaces `extract` + `pose`** when the motion is a rig clip. Samples the clip at the extract fps, maps the bones to OpenPose-18, projects in profile **facing right by detection**, one scale per rig; the skeleton PNGs go through the very same `posekit.draw`, with the unit's props (sword, shield) drawn on as white outlines. Also writes a **depth frame** per sample — the skinned mesh plus the props as solids, z-buffered under the same projection (the rig props feature; `--no-depth` skips it). `--list` prints the clips, `--props` overrides the kit. See "Rig input mode". |
+| `rig <glb> --clip <name>` | a rig clip | `job.json`, `frames/%04d.png`, `pose/keypoints.json`, `pose/skel_%04d.png`, `depth/%04d.png` | **replaces `extract` + `pose`** when the motion is a rig clip. Samples the clip at the extract fps, maps the bones to OpenPose-18, projects in profile **facing right by detection**, one scale per rig; the skeleton PNGs go through the very same `posekit.draw`, with the unit's props (sword, shield) drawn on as white outlines. Also writes a **depth frame** per sample — the skinned mesh plus the props as solids, z-buffered under the same projection (the rig props feature); `--depth props` draws the prop solids only, body-occluded, for a model that paints the mannequin when given the body; `--depth none` / `--no-depth` skips it. `--list` prints the clips, `--props` overrides the kit. See "Rig input mode". |
 | `pick <job>` | keypoints | `picks.json` | peaks of deviation-from-rest + reversals + both endpoints, de-duplicated in torso lengths. Also records the **timing shape** (`timing`: one weight per frame + the anchor frame — the strip timing feature): the per-verb template in `config.ACTION_TIMING` by default, or the clip's own frame gaps with `--timing clip`. **Refuses to overwrite a hand-edited `picks.json`** (picks *or* timing) unless `--force`. |
 | `review <job>` | frames + picks | rewrites `picks.json` | the click-to-pick page — see below. |
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
@@ -184,7 +184,10 @@ What `anim rig` writes is byte-for-byte the layout `extract` + `pose` leave behi
   the near hand and the shield the far one. The Quaternius mannequin is one skinned mesh with
   no props (parsed 2026-09-16), which is why the props are added rather than read; the KayKit
   Knight's static helmet and its four shields and three swords sitting on the hand slots are
-  skipped, and only its skinned body renders. `--no-depth` skips the whole thing.
+  skipped, and only its skinned body renders. `--depth props` draws the prop solids alone —
+  still occluded by the body, so a kite strapped behind the torso stays hidden — for a video
+  model that paints the mannequin when it is shown the body (the clip render feature found
+  exactly that); `--depth none` (alias `--no-depth`) skips the whole thing.
 
   **The depth contract** — what `anim clip` reads, and what nothing else may change:
 
@@ -194,8 +197,9 @@ What `anim rig` writes is byte-for-byte the layout `extract` + `pose` leave behi
   | format | 8-bit grayscale (`L`) |
   | values | **near = 255, far = 48** (`rigkit.DEPTH_FAR_GREY`, never 0), **background = 0** — the MiDaS / ControlNet-depth convention |
   | range | one per **clip**, not per frame: `job.json.motion_source.depth_range = [far, near]` in rig units along the viewing axis, measured over every frame, so a still body does not flicker and a thrust toward the camera brightens |
-  | manifest | `motion_source.depth` (bool), `depth_range`, `depth_far_grey` |
-  | optional | a bare animation library, a filmed clip, or `--no-depth` writes none; `job.depths()` is then `[]` |
+  | mode | `full` (body + props, default) or `props` (prop solids only, body-occluded). One grey mapping for both — the range is read off body + props either way — so a `props` frame is the `full` frame with the body pixels blanked |
+  | manifest | `motion_source.depth` (bool), `depth_mode` (`full` / `props` / `none`), `depth_range`, `depth_far_grey` |
+  | optional | a bare animation library, a filmed clip, `--depth none`, or `--depth props` on a unit with no kit writes none; `job.depths()` is then `[]` |
 
   `anim base --rig` writes the same one frame as `depth/0001.png` at the portrait cell.
 
