@@ -4,6 +4,68 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-17 — the second gate: strike / hit / death through the clip route, three control variants
+
+**What.** The three features merged (`5ed567d`, 312 passed / 4 skipped) and run end to end
+on the Quaternius knight: `rig → clip → pick → post --input clip [--parts]` for `Sword_Attack`,
+`Hit_Chest`, `Death01`, three control variants each — (a) pose-only, (b) skeleton over
+full-body depth at gain 0.35, (c) skeleton over props-only depth at gain 1.0 — one seed
+(`3139000483690707`) for all nine clips, strike picks hand-set to `[0, 5, 10, 18]` (the
+contact, 2026-09-16), hit/death auto. Sheet, per-frame verdicts and per-part tables:
+<http://192.168.1.158:8090/second-gate/>. Nothing published; nothing in OpenProject changed;
+**the ruling is the owner's.** No code changed for the run — the merge held on real data.
+
+**The three checks, honestly.**
+
+| | (a) pose | (b) full depth 0.35 | (c) props depth 1.0 |
+|---|---|---|---|
+| 1 · one knight per frame | 10/10 | 10/10 | 10/10 |
+| 2 · part colours across actions | by construction where found; drift 3–88 px/part | same; drift 0–128 | same; drift 1–151 |
+| 3 · one sword, sword hand, every strike frame | 2/4 — frame 0 grows a second blade behind the legs, frame 10 shows a hilt and no blade | **4/4** | 2/4 — frame 0 second blade behind the legs, frame 5 a blade on the shield arm |
+| seconds strike / hit / death | 20.1 / 9.5 / 51.7 | 19.9 / 9.0 / 51.0 | 21.0 / 8.9 / 51.7 |
+
+**(b) is the variant to put in front of the owner**: the only one with one sword in the sword
+hand on every strike frame, one knight everywhere, and the shield lands on the raised arm on
+the contact frame and over the head on the recovery. (c), the props-only depth the rig props
+follow-up added, did not beat it: the depth solids put the shield in front at rest (frame 18
+is the best rest frame of the nine) but the model re-grew a blade on the shield arm mid-swing.
+Gain 0.5 for (c) was not tried — the brief's trigger (grey props or a broken knight at 1.0)
+did not fire.
+
+**What check 2 actually measures now.** After the lock every colour a part has is a member of
+that part's palette — true by construction wherever SAM found the part, so the table's
+informative numbers are `drift` (pixels the lock had to move) and the "not found" cells. The
+tolerance rule applied: exact set membership, no colour distance. A real tolerance (Oklab
+distance, or a per-part drift ceiling) is still to be chosen.
+
+**Two findings outside the checks.**
+
+- **Identity holds at the rest poses and drifts at the extremes, in every variant.** Every rest
+  frame is the base render's knight — silver plate, dark cloak, gold hands — and across actions
+  those rest frames agree with each other, which the anchor gate's strips did not. The strike's
+  frames 5 and 10 turn dark and painterly (a thin silhouette, the kite shield a cloak-like
+  shape). Same character, a different rendering; the part lock trims the colours but cannot
+  redraw a silhouette.
+- **`rembg isnet-anime` still drops lying bodies** (death frames 2–3 matted to nothing, as on
+  2026-09-15) and SAM on those empty mattes labelled the whole body "helmet" (1083 px). The
+  death rows on the sheet are `--matte chroma`, which the clip frames' flat white background
+  supports; with it the parts separate again. Mask quality follows matte quality.
+
+**The part-palette stopgap.** The accepted base predates the skeleton props feature: its
+keypoints carry no prop polygons, so SAM gets no sword/shield prompt and the base extract
+(`work/knight_base_gate/post/parts.json`, on a copy of the job) has no palette for either.
+`work/gate_parts.json` = that extract + the sword palette from strike (b) frame 0 (64 px, SAM
+score 1.0) + the shield palette from strike (b) frame 2 (82 px, score 1.0) — highest score,
+then most pixels, across the three strike variants. Gate-only. **Proper fix, owner's call:**
+re-render the base with props/depth (`anim base --rig … --depth`), re-accept it,
+`anim post knight_base --parts`, publish — then every action locks to the sprite's own sidecar.
+
+**Left to the owner.** The ruling on the three checks; whether (b)'s mid-swing rendering is
+acceptable or needs a next lever (a second reference at the contact pose, a per-unit LoRA —
+Q8 allowed it, or A14B); the KayKit/Quaternius art-bible ruling (Q20); the base re-render.
+
+---
+
 ## 2026-09-17 — the rig props feature: the posed mannequin and its kit, as depth
 
 **What.** `anim rig` now writes `depth/%04d.png` beside the skeleton PNGs: the rig's skinned
