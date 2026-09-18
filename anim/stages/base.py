@@ -217,12 +217,16 @@ def base(slug: str, *, prompt: str | None = None, seed: int | None = None,
          audit_script: Path | None = None, use_pixelfixer: bool = True,
          rig: Path | None = None, clip: str = "Idle", frame: int = 0,
          mirror: bool = False, props: Sequence[str] | None = None,
+         parts: bool | None = None,
          work_dir: Path | None = None) -> dict[str, Any]:
     job = prepare(slug, rig=rig, clip=clip, frame=frame, mirror=mirror,
                   props=props, work_dir=work_dir)
     render_base(job, prompt=prompt, seed=seed, strength=strength, client=client)
+    # `parts` on a base job EXTRACTS the unit's part palettes (there is no
+    # action to lock to); publish then carries them in the sprite's sidecar.
     post_stage.post(job.name, palette=palette, matte=matte,
-                    use_pixelfixer=use_pixelfixer, work_dir=work_dir)
+                    use_pixelfixer=use_pixelfixer, parts=parts,
+                    assets_dir=assets_dir, work_dir=work_dir)
     return publish_stage.publish(job.name, assets_dir=assets_dir,
                                  run_audit=run_audit, audit_script=audit_script,
                                  work_dir=work_dir)
@@ -256,6 +260,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--props", default=None,
                         help="props drawn onto the rig skeleton (see anim rig "
                              "--props); default: the unit's kit")
+    parser.add_argument("--parts", dest="parts", action="store_true",
+                        default=None,
+                        help="extract the unit's part palettes from the "
+                             "finished sprite (the part palette lock feature) "
+                             "and publish them in its sidecar")
     parser.set_defaults(audit=True, pixelfixer=True)
 
 
@@ -275,7 +284,7 @@ def run_stage(args: argparse.Namespace) -> int:
                   client=client, run_audit=args.audit,
                   use_pixelfixer=args.pixelfixer, rig=rig_path, clip=args.clip,
                   frame=args.frame, mirror=args.mirror,
-                  props=rig_stage.parse_props(args.props))
+                  props=rig_stage.parse_props(args.props), parts=args.parts)
     print(f"base: wrote {', '.join(result['frames'])} + {result['sidecar']} "
           f"to {result['dir']}")
     return 0

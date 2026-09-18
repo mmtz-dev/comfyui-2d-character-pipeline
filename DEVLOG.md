@@ -4,6 +4,91 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-17 — the part palette lock feature: parts keep their colours, and the masks come from the rig
+
+**What.** `anim post --parts` ([#270](http://192.168.1.158:8700/work_packages/270)). Each HD
+cell is masked into the unit's parts — `config.UNIT_PARTS`, for the knight `sword, shield,
+helmet, arms, torso, legs` in priority order — by **SAM 2.1 hiera-small on the CPU**, the masks
+ride the same trim and downscale as the pixels (by coverage, so a one-pixel blade survives),
+and after the unit-level `-remap` every pixel of a part is re-snapped to *that part's* palette.
+The palettes come from the accepted base sprite: `post --parts` on a **base** job is the EXTRACT
+mode and writes `post/parts.json`; `publish` carries it into the sprite's sidecar as
+`generation.parts`; every action job then LOCKS to it (precedence: `--parts-from FILE` > the
+published `<slug>.json` > `work/<slug>_base/post/parts.json`). `report.json` and the action's
+sidecar record, per frame and per part: pixels, colours, `found`, and **`drift`** — how many
+pixels were outside the part's palette before the lock — which is the measurable half of the
+second gate. **Off by default**, and with it off `post` writes the 2026-09-15 bytes exactly
+(opt-in `ANIM_POST_REGRESSION=1` re-runs `knight_hit` and `knight_death` and compares with
+`/assets`; passed). Evidence: <http://192.168.1.158:8090/part-palette-lock/>.
+Tests: 272 passed, 4 skipped (was 238 / 1); the four skips are opt-ins (rtmlib smoke, SAM 2.1
+smoke, the two regression rows).
+
+**Why SAM 2.1 with rig prompts, not SAM 3 with text.** SAM 3 is gated on the Hub (manual
+approval) and `license: other` — it fails the repo's ungated / Apache-2.0 rule, checked
+2026-09-17. SAM 2.1 is Apache-2.0 and ungated, takes points and boxes, and the pipeline already
+knows where every part is: `pose/keypoints.json` carries the joints the ControlNet was driven
+with and, since the skeleton props feature, the sword and shield outlines in the same pixels.
+A part is therefore joints (and points along bones — the crown of the helmet is neck→nose at
+1.35) or a prop kind whose polygon centroid is the point. Same prompts for the base and every
+action, which is what makes the palettes comparable. `posekit.letterbox()` is now the one
+transform from keypoint pixels to a cell, used by `draw` and by the prompts.
+
+**What the prompts needed, measured on the knight base and `knight_strike`.**
+
+- **Negatives collapse SAM 2.** Feeding the other parts' points as negative prompts gave
+  predicted IoU 0.000 and a few hundred pixels for every part. So SAM gets the positives only,
+  in multimask mode, and the negatives are used to **choose** among its three candidates
+  (sub-part / part / whole): eligible = at least half the positives inside and at most one in
+  four negatives inside (the occlusion budget — a raised shield covers the helmet's points in
+  profile), and among the eligible SAM's own IoU picks. Nothing eligible → the part is "not
+  found" for that frame and the report says so; nothing is locked to a guess.
+- **A box from the prop outline hurts.** It pinned the raised shield to the kite's footprint
+  and SAM returned the visor-sized blob inside it (864 px) instead of the shield (8,046 px);
+  on the sword it collapsed one cell to nothing. `Part.box` exists and is off.
+- **Contamination weighs double** in the fallback ranking: the base's rest-pose sword polygon
+  put one of its two points on the torso, and at equal weight "torso and sword" beat "sword".
+- **A base part under 8 px is not a palette.** The accepted base predates the props feature,
+  so its shield prompt lands on the chest and finds 3 px of "shield"; locking the strike's
+  raised shield to those three colours flattened it. `PART_MIN_PALETTE_PIXELS` rejects it (kept
+  in `parts.json` under `rejected`, with the reason) and the actions leave the shield alone
+  and say "no palette for this part".
+
+**Colour space.** The unit-level snap stays ImageMagick `-remap` (sRGB). The within-part snap
+is Oklab, in numpy: "which of the shield's greys is this pixel" is a question about how it
+looks, and Oklab distances are perceptually uniform where sRGB's are not. Candidates are
+palette members already, so the frame stays inside the unit palette whatever the metric.
+
+**Where it stands.** The mechanism runs end to end and every locked part's colours are a subset
+of its base palette. Mask quality tracks how well the render followed the rig: on strike cells
+1–2 (props drawn, the model followed them) the sword and the raised shield are found cleanly;
+on rest cells and on the 2026-09-15 renders (no props drawn) the sword prompt lands where the
+rig holds the sword, not where the model painted it. The base palettes are the weak link today
+— the knight base has to be re-run with `anim base --parts` once it is rendered with props /
+depth (the clip route re-bases anyway), or `parts.json` hand-edited and passed with
+`--parts-from`. Cost: SAM 2.1-small ≈ 1–1.5 s per HD frame on the CPU after a ~5 s one-time
+load; a four-frame action went from 25 s to 31 s wall.
+
+**Where it lives.** `anim/partkit.py` (Part, prompts, the SAM wrapper, candidate choice,
+resolution, coverage downscale, Oklab, lock); `config.UNIT_PARTS` / `parts_for_unit()`,
+`PART_LOCK_DEFAULT`, `PART_MIN_SCORE`, `PART_MIN_PALETTE_PIXELS`, `SAM2_WEIGHTS` (repo,
+revision, file, size, sha256 read from the Hub API — `partkit.ensure_weights` refuses a
+checkpoint that does not hash to it; lands in `.cache/sam2/`); `post.process_cell(part_masks=,
+part_palettes=, parts_out=)`, `post.post(parts=, parts_from=, segmenter=)`, `post/parts/` HD
+overlays and 64 px label maps; `anim base --parts`; `publish` → `generation.parts` and the
+SAM row appended to `models`. The image gains `sam2==1.1.0` in its own Dockerfile step
+(`--no-build-isolation`, `SAM2_BUILD_CUDA=0`; the sdist's setup.py imports torch, which pixeloe
+already brought). Why no separate `anim parts` command: the extraction IS `post` on the base
+job — same matte, same snap, same verification — and a second command would have been a
+second copy of that chain.
+
+**Open.** Frames rendered without props will keep mis-locating the props; the clip render
+feature's depth-conditioned frames are the intended input. A rig-aware occlusion order (from
+the rig props feature's depth) could replace the one-in-four occlusion budget. Arms and torso
+split on the knight's pauldrons inconsistently between frames; a per-unit prompt tune is a
+config edit, not code. `hound` has no humanoid part table.
+
+---
+
 ## 2026-09-16 — the skeleton props feature: the ControlNet is told which hand is the sword hand
 
 **What.** `anim rig` now draws the unit's kit onto the skeleton. A knight's stick figure

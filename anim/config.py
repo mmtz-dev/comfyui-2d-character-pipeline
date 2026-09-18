@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # The GPU image service feature
@@ -227,6 +228,89 @@ UNIT_PROPS: dict[str, tuple[str, ...]] = {
 def props_for_unit(slug: str) -> tuple[str, ...]:
     return UNIT_PROPS.get(slug.strip().lower(), ())
 
+
+# ---------------------------------------------------------------------------
+# The part palette lock feature - what each unit is made of, and where it is
+# ---------------------------------------------------------------------------
+# `anim post --parts` masks each finished frame into these parts (SAM 2.1,
+# prompted from the rig's joints and prop outlines - anim.partkit) and snaps
+# every pixel of a part to the colours that part has on the unit's accepted
+# base sprite. Order is priority: an overlap goes to the earlier row, so props
+# come first. Joint names are OpenPose-18; `mids` are (from, to, t) points
+# along a bone, t past 1 extrapolating (the crown of the helmet). Only units
+# whose kit is settled are listed; a unit with no row cannot be locked.
+from anim.partkit import Part  # noqa: E402  (a frozen dataclass; no cycle)
+
+UNIT_PARTS: dict[str, tuple[Part, ...]] = {
+    "knight": (
+        Part("sword", prop="sword"),
+        Part("shield", prop="shield"),
+        Part("helmet", joints=("nose", "right_eye", "left_eye", "right_ear",
+                               "left_ear"),
+             mids=(("neck", "nose", 1.35),)),
+        Part("arms", joints=("right_elbow", "left_elbow"),
+             mids=(("right_shoulder", "right_elbow", 0.5),
+                   ("right_elbow", "right_wrist", 0.5),
+                   ("left_shoulder", "left_elbow", 0.5),
+                   ("left_elbow", "left_wrist", 0.5))),
+        Part("torso", joints=("neck",),
+             mids=(("neck", "right_hip", 0.5), ("neck", "left_hip", 0.5),
+                   ("neck", "right_hip", 0.8), ("neck", "left_hip", 0.8))),
+        Part("legs", joints=("right_knee", "left_knee"),
+             mids=(("right_hip", "right_knee", 0.5),
+                   ("right_knee", "right_ankle", 0.5),
+                   ("left_hip", "left_knee", 0.5),
+                   ("left_knee", "left_ankle", 0.5),
+                   ("right_knee", "right_ankle", 0.95),
+                   ("left_knee", "left_ankle", 0.95))),
+    ),
+}
+
+
+def parts_for_unit(slug: str) -> tuple[Part, ...]:
+    return UNIT_PARTS.get(slug.strip().lower(), ())
+
+
+# Off by default for every unit: `post` with the lock off must reproduce the
+# bytes it produced before the feature existed. Turn it on per unit here once
+# its base sprite has part palettes, or per run with `anim post --parts`.
+PART_LOCK_DEFAULT: dict[str, bool] = {}
+
+
+def part_lock_default(slug: str) -> bool:
+    return PART_LOCK_DEFAULT.get(slug.strip().lower(), False)
+
+
+# A part whose chosen mask scores below this CONSISTENCY (its positive prompt
+# points inside minus twice the other parts' points inside; anim.partkit
+# .choose_candidate, which returns a negative value when no candidate held
+# the prompt) is "not found": skipped for that frame, said so in the report,
+# never locked to a guess. 0 = "a candidate that fit the prompt existed".
+PART_MIN_SCORE = float(os.environ.get("ANIM_PART_MIN_SCORE", "0"))
+
+# A part with fewer opaque pixels than this on the base sprite yields no
+# palette (recorded as rejected in parts.json) - so an action never locks a
+# whole shield to the three pixels of shield the standing pose happens to show.
+PART_MIN_PALETTE_PIXELS = int(os.environ.get("ANIM_PART_MIN_PALETTE_PIXELS", "8"))
+
+# SAM 2.1 hiera-small: Apache-2.0, ungated. Pinned like gpu/models.lock pins
+# the GPU weights - repo, revision, file, size, sha256 read from the Hub API on
+# 2026-09-17 (both ?blobs=true and the revision's paths-info agreed) - and
+# verified by anim.partkit.ensure_weights before it is ever loaded. The
+# checkpoint lands on the bind-mounted cache like rtmlib's and rembg's.
+SAM2_WEIGHTS: dict[str, Any] = {
+    "repo": "facebook/sam2.1-hiera-small",
+    "revision": "ee5bba1d82bb8749febdf90f45e84b687142ba03",
+    "repo_file": "sam2.1_hiera_small.pt",
+    "file": "sam2.1_hiera_small.pt",
+    "size": 184416285,
+    "sha256": "6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
+    "license": "apache-2.0",
+    # The hydra config name inside the `sam2` package that matches the file.
+    "config": "configs/sam2.1/sam2.1_hiera_s.yaml",
+}
+SAM2_CACHE_DIR = Path(os.environ.get(
+    "ANIM_SAM2_CACHE", str(Path(os.environ.get("XDG_CACHE_HOME", "/work/.cache")) / "sam2")))
 
 # ---------------------------------------------------------------------------
 # Pose extraction

@@ -39,6 +39,19 @@ pixeloe @ git+https://github.com/KohakuBlueleaf/PixelOE.git@341aa85048338d4d26c6
 # anim/rigkit.py - pygltflib only parses the container and the accessors.
 pygltflib>=1.16
 
+# --- the part palette lock feature -----------------------------------------
+# SAM 2.1 image segmentation, prompted with points/boxes derived from the rig
+# (anim/partkit.py). Apache-2.0. NOT listed as a plain requirement on purpose:
+# the sdist's setup.py imports torch at build time, so under pip's default
+# build isolation it would pull a second torch into the isolated env. The
+# Dockerfile installs it in its own step with --no-build-isolation and
+# SAM2_BUILD_CUDA=0 (the CUDA extension is optional and this image has no
+# CUDA toolchain):
+#   sam2==1.1.0   sdist sha256 7e0ea252d43c10d853e3acfce0b5770ac683c30481bd6de311300e9d44f45b74
+# It brings hydra-core, iopath, omegaconf (all MIT / Apache-2.0). torch itself
+# is already in the image via pixeloe. SAM3 was ruled out on 2026-09-17: gated
+# on the Hub and `license: other`, which fails the ungated/Apache-2.0 rule.
+
 # --- shared imaging --------------------------------------------------------
 # HPND (permissive). Canvas/pivot work reuses the paste logic from
 # game-02-tactical-rpg/assets_src/extract_barrow_assets.py.
@@ -58,7 +71,8 @@ requests>=2.32
 # Deliberately absent:
 #   onnxruntime-gpu  - the GPU belongs to ComfyUI on the native daemon
 #   mediapipe        - wrong joint set, GPL OpenPose converter
-#   torch            - nothing on the CPU side needs it; rembg uses onnxruntime
+#   torch            - not listed, but pixeloe pulls it in; the part palette
+#                      lock's SAM 2.1 runs on that same CPU torch. Never the GPU.
 # ImageMagick and ffmpeg are apt packages, installed in the Dockerfile.
 # pixel-art-fixer is a Rust binary built in the Dockerfile's first stage.
 # ---------------------------------------------------------------------------

@@ -188,6 +188,21 @@ def line_width_for(size: tuple[int, int]) -> int:
 PROP_COLOUR = (255, 255, 255)
 
 
+def letterbox(source_size: tuple[int, int],
+              out_size: tuple[int, int]) -> tuple[float, float, float]:
+    """(scale, off_x, off_y) that fits `source_size` inside `out_size`, centred.
+
+    The one transform between keypoints.json pixels and a rendered cell. `draw`
+    uses it for the skeleton and the prop outlines; the part palette lock
+    feature uses it to put its SAM prompts on the generated figure - so a
+    prompt lands exactly where the stick it was derived from was drawn.
+    """
+    src_w, src_h = source_size
+    out_w, out_h = out_size
+    scale = min(out_w / src_w, out_h / src_h)
+    return scale, (out_w - src_w * scale) / 2.0, (out_h - src_h * scale) / 2.0
+
+
 def draw(keypoints: Sequence[Sequence[float]], scores: Sequence[float],
          source_size: tuple[int, int], out_size: tuple[int, int],
          kpt_thr: float = 0.4,
@@ -211,11 +226,8 @@ def draw(keypoints: Sequence[Sequence[float]], scores: Sequence[float],
     import cv2
     from rtmlib import draw_skeleton
 
-    src_w, src_h = source_size
     out_w, out_h = out_size
-    scale = min(out_w / src_w, out_h / src_h)
-    off_x = (out_w - src_w * scale) / 2.0
-    off_y = (out_h - src_h * scale) / 2.0
+    scale, off_x, off_y = letterbox(source_size, out_size)
 
     kp = np.asarray(keypoints, dtype=float)
     placed = np.empty_like(kp)
