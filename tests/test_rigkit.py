@@ -440,3 +440,194 @@ def test_the_blade_follows_the_swing(ual):
     entry = kp["frames"][10]
     tip_x = entry["props"][0]["polygons"][0][2][0]
     assert tip_x > entry["keypoints"][wrist][0] + 40
+
+
+# ---------------------------------------------------------------------------
+# Depth - the rig props feature
+# ---------------------------------------------------------------------------
+def _two_bone_world(toes_at: np.ndarray) -> np.ndarray:
+    """World matrices for a two-node rig: node 0 at the origin, node 1 at `toes_at`."""
+    world = np.stack([np.eye(4), np.eye(4)])
+    world[1, :3, 3] = toes_at
+    return world
+
+
+def test_skinning_is_glTFs_joint_times_inverse_bind():
+    """A vertex bound wholly to node 1 rides that node: rest at its origin,
+    posed at its origin. Half-and-half lands halfway. The mesh node's own
+    transform never enters."""
+    rest = _two_bone_world(np.array([0.0, 0.0, 1.0]))
+    ibm = np.linalg.inv(rest)
+    part = rigkit.MeshPart(
+        name="t", positions=np.array([[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]]),
+        triangles=np.array([[0, 1, 2]]),
+        joints=np.array([[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 0, 0]]),
+        weights=np.array([[1.0, 0, 0, 0], [0.5, 0.5, 0, 0], [1.0, 0, 0, 0]]),
+        skin_joints=(0, 1), ibm=ibm)
+    assert rigkit.skin_part(part, rest) == pytest.approx(part.positions)
+    posed = _two_bone_world(np.array([4.0, 0.0, 0.0]))
+    out = rigkit.skin_part(part, posed)
+    assert out[0] == pytest.approx([4.0, 0.0, 0.0])
+    assert out[1] == pytest.approx([2.0, 0.0, 0.5]), "half on node 0 (fixed), half on node 1"
+    assert out[2] == pytest.approx([0.0, 0.0, 0.0])
+
+
+def test_the_zbuffer_keeps_the_nearest_surface_and_leaves_the_rest_empty():
+    """Two triangles over the same pixels: the nearer (larger depth) wins;
+    pixels nobody covers stay -inf; a pixel centre exactly on an edge counts."""
+    pts = np.array([[0.0, 0.0], [8.0, 0.0], [0.0, 8.0],     # near, z = 2
+                    [0.0, 0.0], [8.0, 0.0], [0.0, 8.0]])    # far, z = 1
+    tris = np.array([[3, 4, 5], [0, 1, 2]])                 # far drawn first
+    z = np.array([2.0, 2.0, 2.0, 1.0, 1.0, 1.0])
+    zbuf = rigkit.rasterize_depth(pts, z, tris, cell=(10, 10))
+    assert zbuf[0, 0] == 2.0
+    assert zbuf[3, 3] == 2.0
+    assert np.isinf(zbuf[9, 9]) and zbuf[9, 9] < 0
+    assert np.isinf(zbuf[0, 9])
+    assert np.isfinite(zbuf).sum() == 36, "the lower-left half of an 8x8 square"
+
+
+def test_the_zbuffer_interpolates_depth_across_a_triangle():
+    pts = np.array([[0.0, 0.0], [10.0, 0.0], [0.0, 10.0]])
+    z = np.array([0.0, 10.0, 0.0])
+    zbuf = rigkit.rasterize_depth(pts, z, np.array([[0, 1, 2]]), cell=(12, 12))
+    assert zbuf[0, 4] == pytest.approx(4.5), "depth follows x at the centre of pixel 4"
+
+
+def test_a_big_triangle_takes_the_slow_path_and_still_fills():
+    pts = np.array([[0.0, 0.0], [300.0, 0.0], [0.0, 300.0]])
+    zbuf = rigkit.rasterize_depth(pts, np.ones(3), np.array([[0, 1, 2]]), cell=(304, 320))
+    assert np.isfinite(zbuf).sum() > 44000
+
+
+def test_the_grey_mapping_is_near_bright_far_dark_background_black():
+    zbuf = np.array([[-np.inf, 0.0], [0.5, 1.0]])
+    grey = rigkit.depth_to_grey(zbuf, far=0.0, near=1.0)
+    assert grey.dtype == np.uint8
+    assert grey[0, 0] == 0, "background"
+    assert grey[0, 1] == rigkit.DEPTH_FAR_GREY, "the farthest surface is not black"
+    assert grey[1, 1] == 255, "the nearest is white"
+    assert grey[0, 1] < grey[1, 0] < grey[1, 1]
+
+
+def test_extrusion_makes_a_closed_solid_around_the_outline():
+    square = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
+    verts, tris = rigkit.extrude_polygon(square, thickness=0.2)
+    assert verts.shape == (8, 3) and tris.shape == (2 * 2 + 4 * 2, 3)
+    assert verts[:, 1].min() == pytest.approx(-0.1) and verts[:, 1].max() == pytest.approx(0.1)
+    assert verts.mean(axis=0) == pytest.approx(square.mean(axis=0)), "centred on the outline"
+
+
+def test_the_viewer_stands_on_the_characters_right(ual):
+    """With forward on +x and up on +y the camera axis is forward x up: the
+    sword hand is the near hand, the shield hand the far one. `mirror` swaps."""
+    frame = rigkit.reference_frame(ual)
+    proj = rigkit.Projection.for_rig(frame, CELL)
+    assert proj.near == pytest.approx(np.cross(frame.forward, [0, 1, 0]))
+    world = ual.rest_world()
+    hand_r = world[ual.index("hand_r")][:3, 3]
+    hand_l = world[ual.index("hand_l")][:3, 3]
+    assert proj.depth_of(hand_r[None])[0] > proj.depth_of(hand_l[None])[0]
+    mirrored = rigkit.Projection.for_rig(rigkit.reference_frame(ual, mirror=True), CELL)
+    assert mirrored.depth_of(hand_r[None])[0] < mirrored.depth_of(hand_l[None])[0]
+
+
+def test_the_quaternius_mannequin_loads_as_skinned_parts(ual, knight):
+    assert ual.skinned
+    assert [p.name for p in ual.parts] == ["Mannequin#0", "Mannequin#1"]
+    for part in ual.parts:
+        assert part.joints.max() < len(part.skin_joints) == 65
+        assert part.weights.sum(axis=1) == pytest.approx(np.ones(len(part.weights)), abs=1e-3)
+        assert part.triangles.max() < len(part.positions)
+        assert part.ibm.shape == (65, 4, 4)
+        assert part.ibm[:, 3, :] == pytest.approx(np.tile([0, 0, 0, 1], (65, 1))), \
+            "row-major after the column-major read"
+    assert knight.skinned, "the KayKit body is skinned too"
+    assert len(knight.parts) == 6, "six skinned body parts; the static helmet, cape, shields and swords are not parts"
+
+
+def test_a_bare_rig_has_no_parts_and_renders_no_depth(synthetic):
+    """The two-bone rig has no mesh and no joint map, so a hand-made frame
+    with no props stands in: nothing to skin, nothing to draw."""
+    assert not synthetic.skinned
+    bare = rigkit.RigFrame(map=rigkit.KAYKIT, forward=np.array([0, 0, 1.0]),
+                           mirror=False, floor_y=0.0, top_y=1.0, head_length=1.0,
+                           head_forward_local=np.array([0, 0, 1.0]),
+                           head_up_local=np.array([0, 1.0, 0]))
+    verts, tris = rigkit.posed_mesh(synthetic, synthetic.rest_world(), bare)
+    assert len(verts) == 0 and len(tris) == 0
+
+
+def test_the_skinned_rest_pose_matches_the_files_own_extent(ual):
+    """In the bind pose joint x inverse-bind is the identity, so the skinned
+    vertices ARE the file's vertices - the extent `mesh_bounds` read."""
+    world = ual.rest_world()
+    verts = np.concatenate([rigkit.skin_part(p, world) for p in ual.parts])
+    lo, hi = ual.mesh_bounds
+    assert verts.min(axis=0) == pytest.approx(lo, abs=1e-4)
+    assert verts.max(axis=0) == pytest.approx(hi, abs=1e-4)
+
+
+def test_the_guards_depth_centroid_lands_on_the_wrist_keypoint(ual):
+    """The sword's crossguard is centred on the hand, so the pixels its depth
+    solid covers must centre on the right-wrist keypoint in every frame of
+    the swing - the proof that depth and skeleton share one projection."""
+    frame = rigkit.reference_frame(ual, props=("sword",))
+    kp = rigkit.clip_keypoints(ual, "Sword_Attack", fps=12, cell=CELL, frame=frame)
+    proj = rigkit.Projection.for_rig(frame, CELL)
+    wrist = kp["names"].index("right_wrist")
+    for entry, t in zip(kp["frames"], rigkit.sample_times(ual.clip("Sword_Attack").duration, 12)):
+        world = ual.pose_at(ual.clip("Sword_Attack"), float(t))
+        joints = rigkit.openpose_points(ual, world, frame)
+        (kind, verts, tris), = rigkit.prop_meshes(ual, world, frame)
+        assert kind == "sword"
+        guard_verts = verts[10:18]                        # outline 2 of 2, extruded: 8 verts
+        guard_tris = tris[(tris >= 10).all(axis=1)] - 10
+        zbuf = rigkit.rasterize_depth(proj.to_2d(guard_verts, anchor=proj.anchor_for(joints)),
+                                      proj.depth_of(guard_verts), guard_tris, CELL)
+        ys, xs = np.nonzero(np.isfinite(zbuf))
+        assert len(xs) > 0
+        centroid = [xs.mean() + 0.5, ys.mean() + 0.5]
+        assert centroid == pytest.approx(entry["keypoints"][wrist], abs=1.5)
+
+
+def test_clip_depth_is_one_frame_per_sample_with_one_range(ual):
+    frame = rigkit.reference_frame(ual, props=("sword", "shield"))
+    dc = rigkit.clip_depth(ual, "Sword_Attack", fps=12, cell=CELL, frame=frame)
+    n = len(rigkit.sample_times(ual.clip("Sword_Attack").duration, 12))
+    assert len(dc.zbufs) == n
+    assert dc.far < dc.near
+    frames = dc.frames()
+    assert all(f.shape == (CELL[1], CELL[0]) and f.dtype == np.uint8 for f in frames)
+    drawn = np.concatenate([f[f > 0] for f in frames])
+    assert drawn.min() <= rigkit.DEPTH_FAR_GREY + 2 and drawn.max() >= 253, \
+        "the clip's range spans far..near (pixel centres, so within a step of each)"
+    body = frames[0][frames[0] > 0]
+    assert body.min() > rigkit.DEPTH_FAR_GREY + 10 and body.max() < 255, \
+        "at rest neither extreme is reached: the swing sets the range, not the frame"
+
+
+def _probe_on_the_blade(blade: np.ndarray, back: float = 40.0) -> tuple[int, int]:
+    """A cell pixel on the blade `back` px short of the tip - the tip itself
+    may leave the cell on a big swing."""
+    axis = blade[2] - (blade[0] + blade[4]) / 2
+    x, y = blade[2] - back * axis / np.linalg.norm(axis)
+    return int(x), int(y)
+
+
+def test_the_sword_shows_in_depth_only_when_the_unit_carries_it(ual):
+    """Pixels at the blade tip (on the recovery, where the blade is out in
+    front of the body) are drawn with the sword, empty without."""
+    armed = rigkit.reference_frame(ual, props=("sword",))
+    kp = rigkit.clip_keypoints(ual, "Sword_Attack", fps=12, cell=CELL, frame=armed)
+    entry = kp["frames"][10]                                 # recovery: blade out front
+    blade = np.asarray(entry["props"][0]["polygons"][0], dtype=float)
+    x, y = _probe_on_the_blade(blade)
+    t = entry["time"]
+    with_sword = rigkit.clip_depth(ual, "Sword_Attack", fps=12, cell=CELL, frame=armed,
+                                   times=[t]).frames()[0]
+    bare = rigkit.clip_depth(ual, "Sword_Attack", fps=12, cell=CELL,
+                             frame=rigkit.reference_frame(ual), times=[t]).frames()[0]
+    window = (slice(y - 2, y + 3), slice(x - 2, x + 3))     # on the blade, near the tip
+    assert with_sword[window].max() > 0
+    assert bare[window].max() == 0

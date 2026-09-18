@@ -113,6 +113,43 @@ per clip. `prop_polygons()` returns the outlines in world space; `clip_keypoints
 writes them per frame as `props: [{kind, polygons: [[[x, y], ...], ...]}]` in
 cell pixels, and `anim.posekit.draw` strokes them. A job without props writes
 no `props` key and renders exactly as before.
+
+DEPTH - the rig props feature
+-----------------------------
+An outline tells the pose ControlNet which stick is the sword arm; a video
+model conditioned on depth needs the same fact as a SURFACE. So the rig's
+skinned mesh is posed per frame in numpy - linear-blend skinning from the
+GLB's own `JOINTS_0` / `WEIGHTS_0` and inverse bind matrices, which is the
+one transform glTF defines for a skinned vertex - the props become thin
+solids (each `prop_polygons` outline extruded along its plane normal by
+`PROP_SIZES[kind]["thickness"]` x the standing height), and the lot goes
+through a software z-buffer under the SAME `Projection` the joints use, so a
+depth frame and its skeleton PNG align pixel for pixel.
+
+The depth format, which `anim clip` reads and nothing else may change:
+
+    work/<job>/depth/%04d.png   8-bit grayscale, one per sampled frame, the
+                                same index as frames/%04d.png and
+                                pose/skel_%04d.png, the same cell size.
+    near = bright, far = dark   MiDaS / ControlNet-depth convention. The
+                                nearest surface in the CLIP is 255, the
+                                farthest is DEPTH_FAR_GREY (never 0), and
+                                the background is 0.
+    one range per clip          `depth_range` in job.json is [far, near] in
+                                rig units along the viewing axis, measured
+                                over every frame of the clip - so a sword
+                                thrust toward the camera brightens, and a
+                                still body does not flicker.
+
+The viewer stands on the character's RIGHT (the profile that puts forward on
++x with up on +y has its camera axis at forward x up), so the sword hand is
+the near hand and the shield the far one, exactly as the published knight
+reads. `--mirror` flips both the projection and the viewing side.
+
+Only SKINNED primitives are posed. A static mesh parented to a bone (the
+KayKit Knight's helmet, and its four shields and three swords all sitting
+visible on the hand slots) is skipped: which of those a unit carries is what
+`config.UNIT_PROPS` says, and the generated props say it for every rig alike.
 """
 
 from __future__ import annotations
@@ -165,12 +202,17 @@ HEAD_LENGTH_FALLBACK = 1.5
 # 0.85 m blade; a chibi gets one that fits a chibi)
 # ---------------------------------------------------------------------------
 PROP_SIZES: dict[str, dict[str, float]] = {
+    # `thickness` is the depth render's extrusion of each outline (the rig
+    # props feature); the outlines themselves are flat.
     "sword": {"blade": 0.465, "pommel": 0.066, "guard": 0.120,
-              "blade_width": 0.027, "guard_width": 0.019},
+              "blade_width": 0.027, "guard_width": 0.019, "thickness": 0.010},
     # A kite: flat top toward the elbow, point toward the hand, standing a
     # little off the back of the forearm.
-    "shield": {"length": 0.44, "width": 0.23, "offset": 0.055},
+    "shield": {"length": 0.44, "width": 0.23, "offset": 0.055, "thickness": 0.018},
 }
+# The depth image's grey for the farthest surface of the clip. Not 0: the
+# far side of the body must stay a surface, not background.
+DEPTH_FAR_GREY = 48
 # Which OpenPose joint's bone each prop rides. Both are single bones in every
 # map (the midpoint joints are the neck only).
 PROP_JOINT: dict[str, str] = {"sword": "right_wrist", "shield": "left_elbow"}
@@ -408,6 +450,24 @@ class Clip:
         return {c.node for c in self.channels}
 
 
+@dataclass(frozen=True)
+class MeshPart:
+    """One skinned primitive: rest-pose vertices, triangles and the skin.
+
+    `joints` are per-vertex indices into `skin_joints` (node indices), and
+    `ibm` the matching inverse bind matrices, so a posed vertex is
+    sum_k weights[v, k] * world[skin_joints[joints[v, k]]] @ ibm[joints[v, k]] @ p.
+    """
+
+    name: str
+    positions: np.ndarray        # (V, 3) rest pose, bind space
+    triangles: np.ndarray        # (T, 3) int
+    joints: np.ndarray           # (V, 4) int
+    weights: np.ndarray          # (V, 4)
+    skin_joints: tuple[int, ...]  # skin joint index -> node index
+    ibm: np.ndarray              # (J, 4, 4)
+
+
 @dataclass
 class Rig:
     path: Path
@@ -421,6 +481,13 @@ class Rig:
     # None when the file has no mesh at all.
     mesh_bounds: tuple[np.ndarray, np.ndarray] | None = None
     generator: str = ""
+    # The skinned primitives, for the depth render. Empty for a bare
+    # animation library or a rig whose meshes are all static.
+    parts: tuple[MeshPart, ...] = ()
+
+    @property
+    def skinned(self) -> bool:
+        return bool(self.parts)
 
     def index(self, name: str) -> int:
         try:
@@ -610,7 +677,60 @@ def load_rig(path: Path) -> Rig:
               order=_topological_order(parents), clips=clips,
               generator=(gltf.asset.generator or "") if gltf.asset else "")
     rig.mesh_bounds = _mesh_bounds(gltf, path, rig, buffers)
+    rig.parts = _mesh_parts(gltf, path, buffers)
     return rig
+
+
+def _mesh_parts(gltf: Any, path: Path, buffers: dict[int, bytes]) -> tuple[MeshPart, ...]:
+    """Every skinned triangle primitive, with its skin. Static meshes and
+    non-triangle modes are left out (module docstring, DEPTH)."""
+    parts: list[MeshPart] = []
+    for node in gltf.nodes:
+        if node.mesh is None or node.skin is None:
+            continue
+        skin = gltf.skins[node.skin]
+        if skin.inverseBindMatrices is None:
+            continue
+        ibm = read_accessor(gltf, path, skin.inverseBindMatrices, buffers)
+        ibm = ibm.reshape(-1, 4, 4).transpose(0, 2, 1)   # column-major -> row-major
+        mesh = gltf.meshes[node.mesh]
+        for k, prim in enumerate(mesh.primitives):
+            attrs = prim.attributes
+            pos_i = getattr(attrs, "POSITION", None)
+            jnt_i = getattr(attrs, "JOINTS_0", None)
+            wgt_i = getattr(attrs, "WEIGHTS_0", None)
+            if pos_i is None or jnt_i is None or wgt_i is None:
+                continue
+            if prim.mode not in (None, 4):
+                continue
+            positions = read_accessor(gltf, path, pos_i, buffers)[:, :3]
+            joints = read_accessor(gltf, path, jnt_i, buffers).astype(int)
+            weights = read_accessor(gltf, path, wgt_i, buffers)
+            if prim.indices is None:
+                index = np.arange(len(positions))
+            else:
+                index = read_accessor(gltf, path, prim.indices, buffers)[:, 0].astype(int)
+            triangles = index[: len(index) - len(index) % 3].reshape(-1, 3)
+            parts.append(MeshPart(
+                name=f"{mesh.name or node.name or 'mesh'}#{k}",
+                positions=positions, triangles=triangles, joints=joints,
+                weights=weights, skin_joints=tuple(int(j) for j in skin.joints),
+                ibm=ibm))
+    return tuple(parts)
+
+
+def skin_part(part: MeshPart, world: np.ndarray) -> np.ndarray:
+    """Linear-blend skinning: the part's vertices in world space for one pose.
+
+    glTF's definition, and nothing else: the mesh node's own transform is
+    ignored, only the joint matrices (world[joint] @ inverse_bind) move a
+    skinned vertex.
+    """
+    joint_world = world[list(part.skin_joints)]            # (J, 4, 4)
+    skin_mats = joint_world @ part.ibm                      # (J, 4, 4)
+    per_vertex = np.einsum("vk,vkij->vij", part.weights, skin_mats[part.joints])
+    hom = np.concatenate([part.positions, np.ones((len(part.positions), 1))], axis=1)
+    return np.einsum("vij,vj->vi", per_vertex, hom)[:, :3]
 
 
 def _mesh_bounds(gltf: Any, path: Path, rig: Rig,
@@ -821,6 +941,69 @@ def prop_polygons(rig: Rig, world: np.ndarray, frame: RigFrame
     return out
 
 
+def extrude_polygon(poly: np.ndarray, thickness: float
+                    ) -> tuple[np.ndarray, np.ndarray]:
+    """A planar convex outline -> a thin closed solid: (verts (2N, 3), tris (T, 3)).
+
+    Extruded symmetrically along the polygon's own plane normal (from its first
+    three points), so an outline drawn on the forearm's back stays centred on it.
+    """
+    poly = np.asarray(poly, dtype=float)
+    n = len(poly)
+    normal = np.cross(poly[1] - poly[0], poly[2] - poly[0])
+    norm = float(np.linalg.norm(normal))
+    normal = normal / norm if norm > 1e-12 else np.array([0.0, 1.0, 0.0])
+    half = normal * (thickness / 2.0)
+    verts = np.concatenate([poly + half, poly - half])
+    tris: list[tuple[int, int, int]] = []
+    for i in range(1, n - 1):                       # caps, as fans
+        tris.append((0, i, i + 1))
+        tris.append((n, n + i + 1, n + i))
+    for i in range(n):                              # sides
+        j = (i + 1) % n
+        tris.append((i, j, n + j))
+        tris.append((i, n + j, n + i))
+    return verts, np.asarray(tris, dtype=int)
+
+
+def prop_meshes(rig: Rig, world: np.ndarray, frame: RigFrame
+                ) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """[(kind, verts (N, 3), tris (T, 3)), ...] - the props as thin solids.
+
+    Each `prop_polygons` outline, extruded by `PROP_SIZES[kind]["thickness"]`
+    x the standing height; one mesh per prop, all its outlines merged.
+    """
+    out: list[tuple[str, np.ndarray, np.ndarray]] = []
+    for kind, polys in prop_polygons(rig, world, frame):
+        thickness = PROP_SIZES[kind]["thickness"] * frame.height
+        verts_list, tris_list, offset = [], [], 0
+        for poly in polys:
+            v, t = extrude_polygon(poly, thickness)
+            verts_list.append(v)
+            tris_list.append(t + offset)
+            offset += len(v)
+        out.append((kind, np.concatenate(verts_list), np.concatenate(tris_list)))
+    return out
+
+
+def posed_mesh(rig: Rig, world: np.ndarray, frame: RigFrame
+               ) -> tuple[np.ndarray, np.ndarray]:
+    """The whole thing to draw for one pose: skinned parts + props, merged.
+    (verts (N, 3) world space, tris (T, 3)). Empty arrays for a bare rig."""
+    verts_list, tris_list, offset = [], [], 0
+    for part in rig.parts:
+        verts_list.append(skin_part(part, world))
+        tris_list.append(part.triangles + offset)
+        offset += len(part.positions)
+    for _kind, v, t in prop_meshes(rig, world, frame):
+        verts_list.append(v)
+        tris_list.append(t + offset)
+        offset += len(v)
+    if not verts_list:
+        return np.zeros((0, 3)), np.zeros((0, 3), dtype=int)
+    return np.concatenate(verts_list), np.concatenate(tris_list)
+
+
 # ---------------------------------------------------------------------------
 # 3D joints -> 2D cell
 # ---------------------------------------------------------------------------
@@ -869,6 +1052,18 @@ class Projection:
                    cell=(int(width), int(height)),
                    baseline=baseline_fraction * height)
 
+    @property
+    def near(self) -> np.ndarray:
+        """Unit vector toward the viewer: forward x up. With forward on +x
+        and up on +y that is the camera axis of a right-handed view - the
+        character's RIGHT side, so the sword hand is the near hand."""
+        return np.cross(self.forward, np.array([0.0, 1.0, 0.0]))
+
+    def depth_of(self, points: np.ndarray) -> np.ndarray:
+        """(K, 3) world -> (K,) distance toward the viewer, rig units.
+        Larger is nearer. Unscaled: `depth_to_grey` maps a clip's range."""
+        return np.asarray(points, dtype=float) @ self.near
+
     def anchor_for(self, points: np.ndarray) -> np.ndarray:
         """The world point `to_2d` would centre these points on - so props can
         be projected with the JOINTS' centre, not their own."""
@@ -889,6 +1084,124 @@ class Projection:
         x = (along - centre) * self.scale + self.cell[0] / 2.0
         y = self.baseline - (pts[:, 1] - self.floor_y) * self.scale
         return np.stack([x, y], axis=1)
+
+
+# ---------------------------------------------------------------------------
+# The z-buffer
+# ---------------------------------------------------------------------------
+# Triangles are rasterised in buckets by bounding-box size so the whole
+# bucket is one numpy pass; only the few larger than the last bucket (a
+# shield face, a body triangle seen flat) take the per-triangle path.
+_BUCKETS = (2, 4, 8, 16, 32)
+
+
+def rasterize_depth(pts2d: np.ndarray, depth: np.ndarray, tris: np.ndarray,
+                    cell: tuple[int, int]) -> np.ndarray:
+    """Software z-buffer. (H, W) float, the NEAREST depth per pixel (larger is
+    nearer), -inf where nothing was drawn. Pixel centres sampled; edges
+    inclusive, so shared edges leave no pinholes."""
+    width, height = int(cell[0]), int(cell[1])
+    zbuf = np.full((height, width), -np.inf)
+    if len(tris) == 0:
+        return zbuf
+    pts2d = np.asarray(pts2d, dtype=float)
+    depth = np.asarray(depth, dtype=float)
+    tri_xy = pts2d[tris]                                   # (T, 3, 2)
+    tri_z = depth[tris]                                    # (T, 3)
+    x0 = np.floor(tri_xy[:, :, 0].min(axis=1)).astype(int)
+    x1 = np.floor(tri_xy[:, :, 0].max(axis=1)).astype(int)
+    y0 = np.floor(tri_xy[:, :, 1].min(axis=1)).astype(int)
+    y1 = np.floor(tri_xy[:, :, 1].max(axis=1)).astype(int)
+    # Signed double area; a degenerate triangle covers nothing.
+    a, b, c = tri_xy[:, 0], tri_xy[:, 1], tri_xy[:, 2]
+    area = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (b[:, 1] - a[:, 1]) * (c[:, 0] - a[:, 0])
+    keep = (np.abs(area) > 1e-12) & (x1 >= 0) & (y1 >= 0) & (x0 < width) & (y0 < height)
+    size = np.maximum(x1 - x0, y1 - y0) + 1
+
+    def fill(sel: np.ndarray, k: int) -> None:
+        if not sel.any():
+            return
+        ox, oy = x0[sel], y0[sel]
+        grid = np.arange(k)
+        px = ox[:, None, None] + grid[None, None, :]            # (S, 1, k)
+        py = oy[:, None, None] + grid[None, :, None]            # (S, k, 1)
+        px = np.broadcast_to(px, (len(ox), k, k)).astype(float) + 0.5
+        py = np.broadcast_to(py, (len(ox), k, k)).astype(float) + 0.5
+        ta, tb, tc = a[sel], b[sel], c[sel]
+        ar = area[sel]
+
+        def edge(p, q):
+            return ((q[:, 0, None, None] - p[:, 0, None, None]) * (py - p[:, 1, None, None])
+                    - (q[:, 1, None, None] - p[:, 1, None, None]) * (px - p[:, 0, None, None]))
+
+        w0 = edge(tb, tc)              # weight of a
+        w1 = edge(tc, ta)              # weight of b
+        w2 = edge(ta, tb)              # weight of c
+        sign = np.sign(ar)[:, None, None]
+        inside = (w0 * sign >= 0) & (w1 * sign >= 0) & (w2 * sign >= 0)
+        inside &= (px >= 0) & (px < width) & (py >= 0) & (py < height)
+        z = tri_z[sel]
+        zi = (w0 * z[:, 0, None, None] + w1 * z[:, 1, None, None]
+              + w2 * z[:, 2, None, None]) / ar[:, None, None]
+        flat = (py[inside].astype(int) * width + px[inside].astype(int))
+        np.maximum.at(zbuf.reshape(-1), flat, zi[inside])
+
+    lower = 0
+    for k in _BUCKETS:
+        fill(keep & (size > lower) & (size <= k), k)
+        lower = k
+    for t in np.nonzero(keep & (size > lower))[0]:
+        fill(np.arange(len(tris)) == t, int(size[t]))
+    return zbuf
+
+
+def depth_to_grey(zbuf: np.ndarray, far: float, near: float,
+                  far_grey: int = DEPTH_FAR_GREY) -> np.ndarray:
+    """(H, W) z-buffer -> uint8: near -> 255, far -> `far_grey`, empty -> 0."""
+    drawn = np.isfinite(zbuf)
+    span = max(near - far, 1e-9)
+    grey = far_grey + (np.clip(zbuf, far, near) - far) / span * (255 - far_grey)
+    out = np.where(drawn, np.rint(grey), 0.0)
+    return out.astype(np.uint8)
+
+
+@dataclass
+class DepthClip:
+    """One clip's depth frames, before the grey mapping."""
+
+    zbufs: list[np.ndarray]      # (H, W) float each, -inf where empty
+    far: float                   # rig units along the viewing axis
+    near: float
+
+    def frames(self) -> list[np.ndarray]:
+        return [depth_to_grey(z, self.far, self.near) for z in self.zbufs]
+
+
+def clip_depth(rig: Rig, clip_name: str, *, fps: int, cell: tuple[int, int],
+               frame: RigFrame, times: Sequence[float] | None = None) -> DepthClip:
+    """Pose the mesh and props at the same times `clip_keypoints` samples and
+    z-buffer each under the same projection, anchored on the JOINTS' centre so
+    depth and skeleton align. The range is measured over the whole clip."""
+    clip = rig.clip(clip_name)
+    proj = Projection.for_rig(frame, cell)
+    ts = np.asarray(times, dtype=float) if times is not None \
+        else sample_times(clip.duration, fps)
+    zbufs: list[np.ndarray] = []
+    far, near = np.inf, -np.inf
+    for t in ts:
+        world = rig.pose_at(clip, float(t))
+        joints = openpose_points(rig, world, frame)
+        verts, tris = posed_mesh(rig, world, frame)
+        if len(verts):
+            pts2d = proj.to_2d(verts, anchor=proj.anchor_for(joints))
+            depth = proj.depth_of(verts)
+            far, near = min(far, float(depth.min())), max(near, float(depth.max()))
+            zbufs.append(rasterize_depth(pts2d, depth, tris, cell))
+        else:
+            zbufs.append(np.full((int(cell[1]), int(cell[0])), -np.inf))
+    if not np.isfinite(far):
+        far, near = 0.0, 1.0
+    return DepthClip(zbufs=zbufs, far=far, near=near)
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ Knight, first) is the motion source instead of a filmed clip:
     anim rig rigs/kaykit-adventurers/Knight.glb --list
     anim rig rigs/kaykit-adventurers/Knight.glb --clip Hit_A \\
         --unit knight --action hit [--fps 12] [--job knight_hit] [--mirror] \\
-        [--props sword,shield | --props none]
+        [--props sword,shield | --props none] [--no-depth]
 
 It writes exactly what `anim extract` followed by `anim pose` would have:
 
@@ -14,6 +14,16 @@ It writes exactly what `anim extract` followed by `anim pose` would have:
     work/<job>/frames/%04d.png       a dark-ground preview of each sampled pose
     work/<job>/pose/keypoints.json   the same anim.keypoints/1 schema `pose` writes
     work/<job>/pose/skel_%04d.png    drawn by the SAME renderer `pose` uses
+
+plus one thing a filmed clip never has (the rig props feature):
+
+    work/<job>/depth/%04d.png        8-bit grayscale depth of the posed mesh +
+                                     props, same index and cell as skel_%04d.png;
+                                     near = 255, far = DEPTH_FAR_GREY, background 0;
+                                     one range per clip, in job.json.motion_source
+                                     .depth_range = [far, near]. See anim.rigkit
+                                     (DEPTH). `anim clip` reads it as a control
+                                     channel; every other stage ignores it.
 
 so `anim pick`, `anim review`, `anim strip` and everything after them run
 unchanged and never learn where the motion came from - except through the
@@ -49,6 +59,7 @@ import datetime as dt
 from pathlib import Path
 from typing import Any, Sequence
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 from anim import config, rigkit
@@ -98,9 +109,14 @@ def rig_provenance(glb: Path) -> dict[str, Any]:
 
 def motion_source(glb: Path, provenance: dict[str, Any], clip: rigkit.Clip,
                   payload: dict[str, Any], jmap: rigkit.JointMap,
-                  mirror: bool) -> dict[str, Any]:
+                  mirror: bool, depth: rigkit.DepthClip | None = None
+                  ) -> dict[str, Any]:
     record = provenance["record"]
     motion = payload["motion"]
+    depth_block = {"depth": depth is not None}
+    if depth is not None:
+        depth_block["depth_range"] = [round(depth.far, 4), round(depth.near, 4)]
+        depth_block["depth_far_grey"] = rigkit.DEPTH_FAR_GREY
     return {
         "kind": "rig",
         "pack": record["pack"],
@@ -118,7 +134,28 @@ def motion_source(glb: Path, provenance: dict[str, Any], clip: rigkit.Clip,
         "height": motion["height"],
         "scale_px_per_unit": motion["scale_px_per_unit"],
         "props": list(motion.get("props") or []),
+        **depth_block,
     }
+
+
+# ---------------------------------------------------------------------------
+# The depth frames (the rig props feature)
+# ---------------------------------------------------------------------------
+def write_depths(depth: rigkit.DepthClip, depth_dir: Path,
+                 files: Sequence[str] | None = None) -> list[Path]:
+    """One depth/%04d.png per frame, grey-mapped over the clip's range.
+    Stale PNGs are cleared first, like frames/ and pose/."""
+    depth_dir = Path(depth_dir)
+    depth_dir.mkdir(parents=True, exist_ok=True)
+    for stale in depth_dir.glob("*.png"):
+        stale.unlink()
+    written: list[Path] = []
+    for index, grey in enumerate(depth.frames()):
+        name = files[index] if files else f"{index + 1:04d}.png"
+        path = depth_dir / name
+        Image.fromarray(np.asarray(grey, dtype=np.uint8), mode="L").save(path)
+        written.append(path)
+    return written
 
 
 # ---------------------------------------------------------------------------
@@ -173,11 +210,13 @@ def write_previews(payload: dict[str, Any], frames_dir: Path) -> list[Path]:
 def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
         mirror: bool = False, job_name: str | None = None,
         cell: tuple[int, int] | None = None,
-        props: Sequence[str] | None = None,
+        props: Sequence[str] | None = None, depth: bool = True,
         work_dir: Path | None = None) -> Job:
     """Sample one clip into work/<job>/ as if extract + pose had run.
 
     `props` None means the unit's kit from `config.UNIT_PROPS`; pass () for none.
+    `depth` writes depth/%04d.png when the rig has a skinned mesh; a bare
+    animation library writes none either way.
     """
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
@@ -191,6 +230,8 @@ def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
     payload = rigkit.clip_keypoints(loaded, clip, fps=fps, cell=cell,
                                     mirror=mirror, frame=frame)
     clip_obj = loaded.clip(clip)
+    depth_clip = rigkit.clip_depth(loaded, clip, fps=fps, cell=cell, frame=frame) \
+        if depth and loaded.skinned else None
 
     job = Job.open(job_name or f"{slug}_{action}", work_dir)
     job.root.mkdir(parents=True, exist_ok=True)
@@ -198,6 +239,11 @@ def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
     job.pose_dir.mkdir(parents=True, exist_ok=True)
     write_json_in_place(job.keypoints_path, payload)
     skeletons = pose_stage.render_skeletons(payload, job.pose_dir, cell)
+    if depth_clip is not None:
+        write_depths(depth_clip, job.depth_dir)
+    elif job.depth_dir.is_dir():
+        for stale in job.depth_dir.glob("*.png"):
+            stale.unlink()
 
     manifest = new_manifest(
         clip=f"{glb.name}::{clip_obj.name}", clip_sha256=provenance["sha256"],
@@ -205,7 +251,7 @@ def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
         frame_size=list(cell), crop=None, source_fps=None,
         created=dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"))
     manifest["motion_source"] = motion_source(glb, provenance, clip_obj, payload,
-                                              jmap, mirror)
+                                              jmap, mirror, depth=depth_clip)
     manifest["pose"] = {"rig": payload["rig"], "model": "rig",
                         "mode": jmap.name, "cell": list(cell),
                         "detected": len(skeletons)}
@@ -255,6 +301,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="props drawn onto the skeleton, comma-separated "
                              f"from {list(rigkit.PROP_KINDS)}, or 'none' "
                              "(default: the unit's kit in config.UNIT_PROPS)")
+    parser.add_argument("--no-depth", dest="depth", action="store_false",
+                        help="skip depth/%%04d.png (the rig props feature); the "
+                             "default renders the posed mesh + props as depth")
     parser.add_argument("--width", type=int, default=config.STRIP_CELL[0],
                         help="skeleton cell width; must match the strip cell")
     parser.add_argument("--height", type=int, default=config.STRIP_CELL[1])
@@ -275,7 +324,7 @@ def run_stage(args: argparse.Namespace) -> int:
         raise SystemExit(f"anim rig: {', '.join(missing)} required (or --list)")
     job = rig(Path(args.glb), clip=args.clip, action=args.action, slug=args.slug,
               fps=args.fps, mirror=args.mirror, job_name=args.job,
-              props=parse_props(args.props),
+              props=parse_props(args.props), depth=args.depth,
               cell=(args.width, args.height))
     manifest = job.read_manifest()
     src = manifest["motion_source"]
@@ -286,6 +335,9 @@ def run_stage(args: argparse.Namespace) -> int:
     print(f"  {manifest['pose']['detected']} skeleton(s) at "
           f"{manifest['pose']['cell'][0]}x{manifest['pose']['cell'][1]} -> "
           f"{job.pose_dir}")
+    if src.get("depth"):
+        print(f"  {len(job.depths())} depth frame(s), range {src['depth_range']} "
+              f"-> {job.depth_dir}")
     print(f"  next: anim pick {job.name} && anim strip {job.name}")
     return 0
 

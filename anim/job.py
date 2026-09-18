@@ -61,6 +61,12 @@ class Job:
     def post_dir(self) -> Path:
         return self.root / "post"
 
+    @property
+    def depth_dir(self) -> Path:
+        # The rig props feature: depth/%04d.png, one per frame, same index as
+        # frames/ and pose/skel_. Optional - only a rig job writes it.
+        return self.root / "depth"
+
     # --- files -------------------------------------------------------------
     @property
     def manifest_path(self) -> Path:
@@ -97,6 +103,11 @@ class Job:
         if not self.pose_dir.is_dir():
             return []
         return sorted(self.pose_dir.glob("skel_*.png"))
+
+    def depths(self) -> list[Path]:
+        if not self.depth_dir.is_dir():
+            return []
+        return sorted(self.depth_dir.glob("[0-9][0-9][0-9][0-9].png"))
 
     def post_frames(self) -> list[Path]:
         if not self.post_dir.is_dir():

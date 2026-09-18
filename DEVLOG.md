@@ -4,6 +4,83 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-17 — the rig props feature: the posed mannequin and its kit, as depth
+
+**What.** `anim rig` now writes `depth/%04d.png` beside the skeleton PNGs: the rig's skinned
+mesh posed per frame, plus the unit's props as thin solids on the hand bones, z-buffered in the
+same orthographic profile as the joints. One 8-bit grayscale frame per sample, near = 255,
+far = 48, background 0, one range per clip. `anim base --rig` writes its one frame the same
+way; `--no-depth` skips it. Filed as [#269](http://192.168.1.158:8700/work_packages/269); the
+consumer is the clip render feature ([#268](http://192.168.1.158:8700/work_packages/268)),
+built in parallel on its own branch against the contract in `rigkit`'s DEPTH section and
+README "Rig input mode". Four Quaternius clips rendered, skeleton | depth side by side:
+<http://192.168.1.158:8090/rig-props/>. Suite 257 passed / 1 skipped (was 238), +19.
+
+**Why depth, when the outlines already fixed the recovery cell.** The outlines (2026-09-16,
+below) work on the pose ControlNet because it reads white strokes as canny. The clip route's
+video model (Wan 2.2 Fun-Control) is conditioned on pose *and* depth, and depth is the only
+surveyed conditioning that says what a hand *holds* as a surface rather than a hint
+(`ai-sprite-sheet-generators-research.md` §4.2). The owner chose the stronger route (Q15): make
+which hand holds what a fact of the rig, carried by a channel the model was trained on.
+
+**Skinning route: numpy, not Blender.** The CPU container has no `bpy` (cp311/cp313 wheels
+only; the image is 3.12) and the GLB already carries everything glTF defines for a skinned
+vertex — `JOINTS_0`, `WEIGHTS_0`, `inverseBindMatrices` — so linear-blend skinning is
+`sum_k w_k · world[joint_k] @ ibm_k @ p`, one `einsum` per part. `load_rig` already evaluated
+the joint world matrices per frame for the keypoints; `_mesh_parts` reads the primitives with
+the same accessor reader (`ibm` transposed after the column-major read — the test pins the
+bottom row to `[0 0 0 1]`). Proof it is right: in the bind pose the skinned vertices equal
+`mesh_bounds`' extent to 1e-4, and a hand-built two-node part lands where glTF says.
+
+**The z-buffer.** A software rasteriser over triangle *buckets*: triangles are grouped by
+bounding-box size (2/4/8/16/32 px) and each bucket is one numpy pass — edge functions at pixel
+centres, `np.maximum.at` for the nearest-wins scatter; the few larger triangles (a shield face,
+a body triangle seen flat) take a per-triangle path. The mannequin's 13.7k triangles render
+a 19-frame `Sword_Attack` in 0.33 s; a headless renderer would have cost a dependency for
+nothing. Edges are inclusive so shared edges leave no pinholes.
+
+**Conventions, and why.**
+
+- *Viewer on the character's right.* The profile puts forward on +x and up on +y; a
+  right-handed camera's axis is then forward × up — the character's right side. So the sword
+  hand is the near hand, the shield the far one, which is how the published knight reads.
+  `--mirror` flips projection and viewing side together. `Projection.near` / `depth_of()`.
+- *Near = bright, far = 48, background 0.* MiDaS / ControlNet-depth convention. The far grey
+  is not 0 so the far side of the body stays a surface, not background.
+- *One range per clip.* Measured over every frame's vertices (mesh + props), recorded as
+  `depth_range = [far, near]` in `job.json.motion_source`. A still body therefore does not
+  flicker, and the range is what the clip actually needs: `Sword_Attack` spans [-1.31, 0.89]
+  rig units because the sweep crosses the body, `Idle_Loop` only [-0.50, 0.34]. The price is
+  that a still frame of a big-sweep clip uses the middle of the greys (119–192 on the rest
+  frame of the strike) — visible in the evidence page; a per-*rig* range was considered and
+  set aside until the clip render gate says whether contrast matters.
+- *Props as extruded outlines.* `prop_polygons` already gives planar convex outlines in 3D;
+  `extrude_polygon` makes each a closed solid along its plane normal, `PROP_SIZES[kind]
+  ["thickness"]` × the standing height (sword 0.010, shield 0.018). So the depth and the
+  drawn outline come from one geometry and cannot disagree. The shield edge-on is still a
+  sliver (2026-09-16 "Open"), now a 4-px-thick one.
+- *Only skinned primitives.* The KayKit Knight has its helmet, cape, four shields and three
+  swords as static meshes on the head and hand-slot bones, all visible at once; rendering
+  them would put every shield in the frame. Which kit a unit carries is `config.UNIT_PROPS`,
+  and the generated props say it for every rig alike. So static meshes are skipped (the
+  Knight renders as a bald body — it failed the gate anyway), `mesh_bounds` still reads
+  them for the scale.
+
+**Where it lives.** `rigkit`: `MeshPart`, `Rig.parts` / `.skinned`, `_mesh_parts`,
+`skin_part`, `extrude_polygon`, `prop_meshes`, `posed_mesh`, `Projection.near` /
+`depth_of`, `rasterize_depth`, `depth_to_grey`, `DepthClip`, `clip_depth`,
+`DEPTH_FAR_GREY`. `stages/rig.py`: `write_depths`, `--no-depth`, `motion_source(...,
+depth=)`. `stages/base.py`: `rig_payload` returns the depth frame too; `prepare` writes it.
+`job.py`: `depth_dir`, `depths()`. Schema `anim.keypoints/1` untouched; the skeleton PNGs
+are byte-identical to before.
+
+**Open.** A per-rig depth range (above). Back-face culling would halve the triangle count
+but is wrong for the open-sided prop solids as drawn, so it was not done. Whether pose and
+depth are fed to Fun-Control stacked or as one control type is the clip render feature's
+question, not this one's.
+
+---
+
 ## 2026-09-16 — the skeleton props feature: the ControlNet is told which hand is the sword hand
 
 **What.** `anim rig` now draws the unit's kit onto the skeleton. A knight's stick figure

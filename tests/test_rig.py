@@ -320,3 +320,84 @@ def test_game_02s_audit_accepts_the_extra_generation_key(hit_job, assets_tree,
     (units / "knight_hit.json").write_text(json.dumps(meta, indent=2))
     proc = subprocess.run([sys.executable, str(audit_script)], capture_output=True, text=True)
     assert proc.returncode != 0, "the audit must still demand a seed"
+
+
+# ---------------------------------------------------------------------------
+# Depth - the rig props feature
+# ---------------------------------------------------------------------------
+def test_rig_writes_one_depth_frame_per_sampled_frame(hit_job):
+    depths = hit_job.depths()
+    assert [p.name for p in depths] == [p.name for p in hit_job.frames()], \
+        "depth/%04d.png indexes exactly as frames/%04d.png"
+    manifest = hit_job.read_manifest()
+    src = manifest["motion_source"]
+    assert src["depth"] is True
+    far, near = src["depth_range"]
+    assert far < near
+    assert src["depth_far_grey"] == 48
+    for path in depths:
+        with Image.open(path) as img:
+            assert img.mode == "L", "8-bit grayscale"
+            assert img.size == tuple(manifest["pose"]["cell"])
+            arr = np.asarray(img)
+        assert arr.max() > 0, "a body was drawn"
+        assert (arr == 0).mean() > 0.5, "on a black background"
+
+
+def test_no_depth_skips_the_directory_and_says_so(knight_glb, work_dir):
+    job = rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight",
+                        depth=False, work_dir=work_dir)
+    assert job.depths() == []
+    src = job.read_manifest()["motion_source"]
+    assert src["depth"] is False and "depth_range" not in src
+    # And a re-run with depth on fills it; a re-run with it off clears it.
+    rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight", work_dir=work_dir)
+    assert len(job.depths()) == len(job.frames())
+    rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight",
+                  depth=False, work_dir=work_dir)
+    assert job.depths() == []
+
+
+def test_the_depth_flag_is_parsed():
+    import argparse
+    parser = argparse.ArgumentParser()
+    rig_stage.add_arguments(parser)
+    assert parser.parse_args(["x.glb"]).depth is True
+    assert parser.parse_args(["x.glb", "--no-depth"]).depth is False
+
+
+def test_the_props_show_up_in_depth_not_just_as_outlines(work_dir):
+    """On the Quaternius recovery frame (blade out front) the tip's pixels are
+    a surface with the kit and nothing without it (the mannequin has no props)."""
+    ual = REPO / "rigs" / "quaternius" / "UAL1_Standard.glb"
+    if not ual.exists():
+        pytest.skip("rigs/quaternius/UAL1_Standard.glb is not vendored")
+    armed = rig_stage.rig(ual, clip="Sword_Attack", action="strike", slug="knight",
+                          work_dir=work_dir, job_name="armed")
+    bare = rig_stage.rig(ual, clip="Sword_Attack", action="strike", slug="knight",
+                         props=(), work_dir=work_dir, job_name="bare")
+    assert armed.read_manifest()["motion_source"]["props"] == ["sword", "shield"]
+    blade = np.asarray(json.loads(armed.keypoints_path.read_text())
+                       ["frames"][10]["props"][0]["polygons"][0], dtype=float)
+    axis = blade[2] - (blade[0] + blade[4]) / 2
+    x, y = (blade[2] - 40 * axis / np.linalg.norm(axis)).astype(int)   # the tip leaves the cell
+    window = (slice(y - 2, y + 3), slice(x - 2, x + 3))
+    with Image.open(armed.depths()[10]) as img:
+        assert np.asarray(img)[window].max() > 0
+    with Image.open(bare.depths()[10]) as img:
+        assert np.asarray(img)[window].max() == 0
+
+
+def test_base_from_a_rig_writes_its_one_depth_frame(knight_glb, work_dir):
+    job = base_stage.prepare("knight", rig=knight_glb, clip="Idle", frame=0,
+                             work_dir=work_dir)
+    assert [p.name for p in job.depths()] == ["0001.png"]
+    with Image.open(job.depths()[0]) as img:
+        assert img.size == tuple(config.BASE_CELL) and img.mode == "L"
+    src = job.read_manifest()["motion_source"]
+    assert src["depth"] is True and src["depth_range"][0] < src["depth_range"][1]
+
+
+def test_the_canned_base_writes_no_depth(work_dir):
+    job = base_stage.prepare("knight", work_dir=work_dir)
+    assert job.depths() == []

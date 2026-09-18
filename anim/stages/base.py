@@ -62,10 +62,11 @@ def stand_payload(path: Path | None = None) -> dict[str, Any]:
 
 def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
                 fps: int | None = None, mirror: bool = False,
-                props: Sequence[str] = ()
-                ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """One frame of a rig clip as a one-frame keypoints payload, plus its
-    motion_source block. Same facing detection, per-rig scale and props as
+                props: Sequence[str] = (), depth: bool = True
+                ) -> tuple[dict[str, Any], dict[str, Any], rigkit.DepthClip | None]:
+    """One frame of a rig clip as a one-frame keypoints payload, its
+    motion_source block, and its depth frame (None for a bare rig or
+    `depth=False`). Same facing detection, per-rig scale and props as
     `anim rig`, at the portrait cell."""
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
@@ -83,15 +84,19 @@ def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
     payload["frames"][0]["file"] = "(rig)"
     payload["_note"] = (f"Frame {frame} of {clip} from {glb.name}, projected at "
                         f"the portrait cell by anim.rigkit - see anim rig.")
-    source = rig_stage.motion_source(glb, provenance, clip_obj, payload, jmap, mirror)
+    depth_clip = rigkit.clip_depth(loaded, clip, fps=fps, cell=cell, frame=ref,
+                                   times=[float(times[frame])]) \
+        if depth and loaded.skinned else None
+    source = rig_stage.motion_source(glb, provenance, clip_obj, payload, jmap,
+                                     mirror, depth=depth_clip)
     source["frame"] = frame
-    return payload, source
+    return payload, source, depth_clip
 
 
 def prepare(slug: str, *, cell: tuple[int, int] | None = None,
             pose_path: Path | None = None, rig: Path | None = None,
             clip: str = "Idle", frame: int = 0, mirror: bool = False,
-            props: Sequence[str] | None = None,
+            props: Sequence[str] | None = None, depth: bool = True,
             work_dir: Path | None = None) -> Job:
     """Lay out work/<slug>_base/ so `post` and `publish` can be re-used verbatim.
 
@@ -109,10 +114,12 @@ def prepare(slug: str, *, cell: tuple[int, int] | None = None,
     job.strip_dir.mkdir(parents=True, exist_ok=True)
 
     source: dict[str, Any] | None = None
+    depth_clip: rigkit.DepthClip | None = None
     if rig is not None:
         props = config.props_for_unit(slug) if props is None else tuple(props)
-        payload, source = rig_payload(Path(rig), clip=clip, frame=frame,
-                                      cell=cell, mirror=mirror, props=props)
+        payload, source, depth_clip = rig_payload(
+            Path(rig), clip=clip, frame=frame, cell=cell, mirror=mirror,
+            props=props, depth=depth)
     else:
         payload = stand_payload(pose_path)
     entry = payload["frames"][0]
@@ -123,6 +130,11 @@ def prepare(slug: str, *, cell: tuple[int, int] | None = None,
     skeleton = job.pose_dir / "skel_0001.png"
     Image.fromarray(canvas[:, :, ::-1]).save(skeleton)
     write_json_in_place(job.keypoints_path, payload)
+    if depth_clip is not None:
+        rig_stage.write_depths(depth_clip, job.depth_dir)
+    elif job.depth_dir.is_dir():
+        for stale in job.depth_dir.glob("*.png"):
+            stale.unlink()
 
     strip_path = job.strip_dir / "skeleton_strip.png"
     write_bytes_in_place(strip_path, skeleton.read_bytes())
