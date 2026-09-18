@@ -75,18 +75,52 @@ WANT = [
     ("prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA",
      "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors",
      "loras", "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors"),
+
+    # --- stage 3, the clip render feature: Wan 2.2 Fun-Control 5B ---
+    # The 5B line first (owner's decision, 2026-09-17): ~10 GB bf16, fits the
+    # 24 GB A5000 without quantisation or block swapping, and is the model the
+    # official `video_wan2_2_5B_fun_control` template loads through a plain
+    # UNETLoader. These three files are exactly what that template names
+    # (read from comfyui_workflow_templates_json 0.1.78, the pin at
+    # ComfyUI 0.35.0). The Wan 2.2 VAE is the 48-channel one the 5B/TI2V
+    # line needs - `Wan22FunControlToVideo` branches on
+    # `vae.latent_channels == 48`. A14B (two 14B experts, GGUF + block swap)
+    # is the fallback if 5B fails the gate; it is NOT locked here.
+    ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+     "split_files/diffusion_models/wan2.2_fun_control_5B_bf16.safetensors",
+     "diffusion_models", "wan2.2_fun_control_5B_bf16.safetensors"),
+    ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+     "split_files/vae/wan2.2_vae.safetensors",
+     "vae", "wan2.2_vae.safetensors"),
+    ("Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+     "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+     "text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
 ]
 
 # Hard licence gate: this project ships commercially, so nothing else is allowed.
 ALLOWED_LICENCES = {"apache-2.0", "mit", "cc0-1.0"}
 
 
-def get(url: str, payload: dict | None = None):
+def get(url: str, payload: dict | None = None, retries: int = 6):
+    """One HF API call. Backs off on 429 - the API rate-limits anonymous
+    callers per minute, and a relock makes ~2 calls per file (hit 2026-09-17)."""
+    import time
+    import urllib.error
+
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
         url, data=data, headers={"Content-Type": "application/json"} if data else {}
     )
-    return json.load(urllib.request.urlopen(req))
+    for attempt in range(retries):
+        try:
+            return json.load(urllib.request.urlopen(req))
+        except urllib.error.HTTPError as exc:
+            if exc.code != 429 or attempt == retries - 1:
+                raise
+            wait = 15 * (attempt + 1)
+            print(f"  429 from {url.split('/api/')[-1]}; retrying in {wait}s",
+                  file=sys.stderr)
+            time.sleep(wait)
 
 
 def main() -> int:

@@ -1,6 +1,6 @@
 # Workflow notes — verification status
 
-Three API-format ComfyUI workflows (the flat `{node_id: {class_type, inputs, _meta}}`
+Four API-format ComfyUI workflows (the flat `{node_id: {class_type, inputs, _meta}}`
 dict that `POST /prompt` accepts). They are **not** UI workflows; drag one into the
 editor and you get an ad-hoc auto-arranged graph.
 
@@ -112,6 +112,67 @@ Settled with a running service; the numbers refer to the original list.
 
 ---
 
+## `clip_render.json` — the clip render feature (2026-09-17)
+
+Read from ComfyUI 0.35.0 at `db70adbd` (the running install under
+`/mnt/private/AI Data/comfyui-run/ComfyUI`) and the official
+`video_wan2_2_5B_fun_control` template in `comfyui_workflow_templates_json` 0.1.78
+(the pin at that HEAD). The node list, widget values and model files are the
+template's; the only structural change is `SaveImage` on the decoded batch in place
+of `CreateVideo → SaveVideo`, so the CPU side gets one PNG per frame without a
+video decode.
+
+### CONFIRMED — read from the node definition
+
+| `class_type` | Inputs used | Where / what |
+|---|---|---|
+| `Wan22FunControlToVideo` | `positive`, `negative`, `vae`, `width`, `height`, `length`, `batch_size`, `ref_image`, `control_video` | `comfy_extras/nodes_wan.py`. `length` has **step 4** (4n+1). Branches on `vae.latent_channels == 48` for the Wan 2.2 VAE. `ref_image` becomes `reference_latents` on the conditioning; `control_video` is VAE-encoded into the first `latent_channels` of `concat_latent_image`. **One control input** — pose + depth means one composited video. Both images are resized with `common_upscale(…, "center")`, i.e. **centre-cropped** to the cell aspect: `anim clip` pads the reference to the cell first. `start_image` exists in `execute` but is not in the schema — not usable from the API. |
+| `UNETLoader` | `unet_name: wan2.2_fun_control_5B_bf16.safetensors`, `weight_dtype: default` | loads; startup log `model_type FLOW`, no dtype warning. |
+| `CLIPLoader` | `clip_name: umt5_xxl_fp8_e4m3fn_scaled.safetensors`, `type: wan` | the template's value. |
+| `VAELoader` | `vae_name: wan2.2_vae.safetensors` | the 48-channel Wan 2.2 VAE the 5B/TI2V line needs. |
+| `ModelSamplingSD3` | `shift: 8` | template value. |
+| `KSampler` | `steps 20`, `cfg 5.0`, `uni_pc`, `simple`, `denoise 1` | template values. cfg 5 means the negative prompt is live (unlike the Z-Image graphs at cfg 1). |
+| `LoadVideo` | `file` | `comfy_extras/nodes_video.py`. Lists **only the input root** (`os.listdir(input_dir)` filtered by video MIME); `validate_inputs` checks existence. Uploaded through the same `/upload/image` endpoint as PNGs — `server.py image_upload` writes any bytes — under a job-unique name. |
+| `GetVideoComponents` | `video` | outputs `images` (the frame batch), `audio`, `fps`. |
+| `SaveImage` | `images`, `filename_prefix` | one file per frame in the batch, `_00001_` … numbering, batch order. |
+
+### Verified on the GPU — 2026-09-17
+
+- **The 5B model runs on the A5000 without quantisation or block swap.** Knight
+  `Sword_Attack` (19 rig frames → 21 sent) at 512×768: **20.2 s** of execution; `Hit_Chest`
+  (5 frames) **8.8 s**; `Death01` (30 → 33) at 768×768 **48.7 s**. The first job after a
+  model load adds ~65 s. All far inside the 5-minute budget.
+- **Lossless H.264 4:4:4 (`-qp 0 -pix_fmt yuv444p`) decodes through `LoadVideo`** and the
+  frame count comes back exactly (21 → 21 images, 33 → 33).
+- **`LoadVideo` reports its input preview under `outputs[…].images` with `type: "input"`.**
+  Measured: 22 image entries for a 21-frame clip. `anim clip` keeps only `type == "output"`.
+- **A portrait 512×768 cell clips a lying skeleton.** The rig scales once per rig, and a
+  lying 1.83-unit body is ~600 px wide; the death skeleton's bbox started at x = 0 and
+  the model drew half a knight. Death is rigged at 768×768 (`rig --width 768 --height
+  768`). Wan has no square-aspect penalty — that rule is Qwen-Image-Edit's.
+- **Timing from the service's own stamps:** `/history` `status.messages` carries
+  `execution_start` / `execution_success` timestamps (ms); `clip.json.seconds` is their
+  difference, not the poll loop's wall clock.
+
+### TODO-verify
+
+- **Pose + depth composition.** Only pose-only control has been rendered; `--control
+  blend` (skeleton drawn over the depth frame) and `--control depth` are wired and
+  unit-tested but wait on the rig props feature's depth frames. Whether the model reads
+  a white-on-grey skeleton over a depth silhouette as one control type or as noise is
+  the open question.
+- **Frame rate.** The rig samples at 12 fps and the model was trained at 24 fps (121
+  frames); the clip is fed 1:1 at 12 fps so picks index the rig frames directly. Doubling
+  every control frame (24 fps, 2× generation time) may give cleaner mid-swing frames.
+- **The styly-agents `Wan2-2-pixel-animate` LoRA** (Apache-2.0, on Wan2.2-I2V-A14B, not
+  5B) — not applicable to this model; revisit only if A14B becomes the fallback.
+- **Prompt.** `config.CLIP_PROMPT` + `CLIP_ACTION_PHRASES` is a first draft; the
+  Chinese negative is the template's. Not A/B'd.
+- **A14B fallback** (`Wan2.2-Fun-A14B-Control`, two 14B experts, needs GGUF/fp8 +
+  block swap under 24 GB). Not locked, not downloaded — only if 5B fails the gate.
+
+---
+
 ## Deliberate design choices
 
 **Why `pose_pass` and `identity_pass` are two separate `/prompt` jobs.** Z-Image
@@ -162,6 +223,7 @@ skeleton instead of a posed character.
 | `pose_pass.json` | skeleton strip filename, control `strength`, positive prompt, strip width/height, seed, output prefix |
 | `identity_pass.json` | image1 reference sprite, image2 skeleton strip, image3 pose-pass output, LoRA strength, positive prompt, seed, output prefix |
 | `base_sprite.json` | standing skeleton filename, control `strength`, unit-description prompt, cell size, seed, output prefix |
+| `clip_render.json` | reference image filename, control video filename, clip size (width/height/length), positive prompt, negative prompt, seed (+ steps/cfg on the same node), output prefix |
 
 `LoadImage` filenames resolve against the container's `/basedir/input/`, so the CPU
 pipeline must copy its strips there before enqueuing.

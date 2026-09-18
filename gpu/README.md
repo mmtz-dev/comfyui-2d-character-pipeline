@@ -170,7 +170,7 @@ sudo systemctl stop docker      # TTY again; optional
 |---|---|
 | `compose.yml` | The service. Project name `anim-pipeline-gpu`, image pinned by digest. |
 | `extra_model_paths.yaml` | Exposes the pre-existing checkpoint library read-only so nothing is duplicated. |
-| `models.lock` | **Resolved lockfile** — repo, revision, filename, size, sha256, licence for all 9 weights (41.32 GiB). Regenerate with `relock_models.py` (it writes next to itself, from any CWD); do not hand-edit — the KNOWN DISCREPANCY note is part of the generator. |
+| `models.lock` | **Resolved lockfile** — repo, revision, filename, size, sha256, licence for all 12 weights (58.23 GiB). Regenerate with `relock_models.py` (it writes next to itself, from any CWD); do not hand-edit — the KNOWN DISCREPANCY note is part of the generator. |
 | `userscripts/` | Start-up scripts the image runs inside the venv on every start (`10-nunchaku.sh`). |
 | `relock_models.py` | The only writable source for `models.lock`. Cross-checks two HF endpoints and refuses to write on any disagreement, gated repo, or non-commercial licence. |
 | `download_models.sh` | Downloads the weights **on Docker Desktop** (no GPU needed). Idempotent, resumable, verifies every file against `models.lock`. |

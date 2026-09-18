@@ -82,15 +82,23 @@ class ComfyClient:
             return False
 
     def upload_image(self, path: Path, *, subfolder: str = "",
-                     overwrite: bool = True) -> str:
-        """Upload one PNG and return the name a LoadImage node should use.
+                     overwrite: bool = True, name: str | None = None) -> str:
+        """Upload one file and return the name a LoadImage node should use.
 
         ComfyUI answers with the name it actually stored under (it de-duplicates
         by appending a counter unless overwrite is set), and that returned name -
         not the local filename - is what gets patched into the workflow.
+
+        `name` overrides the stored filename: the clip render feature uploads
+        `clip/control.mp4` from every job, and `LoadVideo` lists only the input
+        ROOT, so the name has to carry the job to keep two jobs apart. The
+        endpoint is `/upload/image` for videos too - it writes whatever bytes
+        it is given (server.py `image_upload`); the content type is not checked.
         """
         path = Path(path)
-        files = {"image": (path.name, path.read_bytes(), "image/png")}
+        name = name or path.name
+        mime = "video/mp4" if name.lower().endswith(".mp4") else "image/png"
+        files = {"image": (name, path.read_bytes(), mime)}
         data = {"overwrite": "true" if overwrite else "false", "type": "input"}
         if subfolder:
             data["subfolder"] = subfolder

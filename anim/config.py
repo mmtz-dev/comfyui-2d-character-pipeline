@@ -229,6 +229,39 @@ def props_for_unit(slug: str) -> tuple[str, ...]:
 
 
 # ---------------------------------------------------------------------------
+# The clip render feature - `anim clip`, Wan 2.2 Fun-Control
+# ---------------------------------------------------------------------------
+# The generated clip is a video: every rig frame in, every frame out, and the
+# canvas is the base render's portrait cell so the reference and the control
+# video share one scale. Wan's latent takes 4 frames per step, so the control
+# video is padded to 4n+1 by holding the last frame (`clip` records the map).
+CLIP_CELL = BASE_CELL
+CLIP_FRAME_STEP = 4
+# One prompt for every action; the action-specific phrase is looked up below
+# and the unit is the reference image, not the words. `--prompt` replaces it.
+CLIP_PROMPT = (
+    "a single side-view pixel art character sprite, facing right, full body in "
+    "frame, {phrase}, the same character and outfit as the reference image in "
+    "every frame, plain flat white background, no ground shadow, no floor")
+CLIP_ACTION_PHRASES: dict[str, str] = {
+    "strike": "swinging a sword in a melee attack",
+    "hit": "flinching from a hit",
+    "death": "struck down, falling and collapsing to the ground",
+    "idle": "standing at rest, breathing",
+    "walk": "walking",
+    "shoot": "drawing and loosing a bow",
+    "cast": "casting a spell",
+}
+
+
+def clip_prompt(action: str) -> str:
+    action = action.strip().lower()
+    phrase = CLIP_ACTION_PHRASES.get(action) or (f"performing a {action}" if action
+                                               else "standing at rest")
+    return CLIP_PROMPT.format(phrase=phrase)
+
+
+# ---------------------------------------------------------------------------
 # Pose extraction
 # ---------------------------------------------------------------------------
 # rtmlib model family. 'wholebody' is DWPose (133 keypoints -> openpose134 when

@@ -33,13 +33,13 @@ extracted from real footage**. Same ComfyUI plumbing, different output contract.
 | Frames per action | 33+, a smooth cycle | 2–6 auto-picked key poses, owner can override |
 | Output | 512px greyscale RGBA sheet, runtime-tinted | 64×64 PNG per frame, palette-snapped, binary alpha, one sidecar per action |
 | Layering | separate cosmetic sheets (hair/eyes/clothes) | none — one sprite per unit |
-| Weights | ~120 GB (Wan 2.2, VACE, SAM3, GGUF) | 41 GiB, all Apache-2.0 (`gpu/models.lock`) |
+| Weights | ~120 GB (Wan 2.2, VACE, SAM3, GGUF) | 58 GiB, all Apache-2.0 (`gpu/models.lock`; 17 GiB of it is the clip render feature's Wan 2.2 Fun-Control 5B) |
 | Post-processing | inside ComfyUI (BiRefNet) | deterministic CPU chain outside ComfyUI (rembg → pixeloe → pixel-art-fixer → ImageMagick `-remap`) |
 
 ## The `anim` CLI — the whole flow
 
-Everything CPU-side is one command. It runs on **Docker Desktop**; the only stage
-that touches a GPU is `render`, over HTTP.
+Everything CPU-side is one command. It runs on **Docker Desktop**; the only stages
+that touch a GPU are `render`, `clip` and `base`, over HTTP.
 
 ```bash
 cd tools/anim-pipeline
@@ -96,11 +96,35 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `pick <job>` | keypoints | `picks.json` | peaks of deviation-from-rest + reversals + both endpoints, de-duplicated in torso lengths. Also records the **timing shape** (`timing`: one weight per frame + the anchor frame — the strip timing feature): the per-verb template in `config.ACTION_TIMING` by default, or the clip's own frame gaps with `--timing clip`. **Refuses to overwrite a hand-edited `picks.json`** (picks *or* timing) unless `--force`. |
 | `review <job>` | frames + picks | rewrites `picks.json` | the click-to-pick page — see below. |
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
-| `render <job>` | strip | `render/pose_pass.png`, `identity_pass.png`, `provenance.json` | **the only GPU stage.** Two `/prompt` jobs, not one graph. Seed is derived from the clip hash + action + picks unless `--seed` is given, so a re-run reproduces. |
-| `post <job>` | generated strip | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. |
+| `render <job>` | strip | `render/pose_pass.png`, `identity_pass.png`, `provenance.json` | **a GPU stage.** Two `/prompt` jobs, not one graph. Seed is derived from the clip hash + action + picks unless `--seed` is given, so a re-run reproduces. |
+| `clip <job>` | every skeleton (+ `depth/` if `rig` wrote it) | `clip/frames/%04d.png`, `clip/control.mp4`, `clip/clip.json`, `clip/provenance.json` | **a GPU stage — the clip render feature.** Renders the whole rig clip as one Wan 2.2 Fun-Control 5B video with the unit's `base` render as the identity reference and the skeleton PNGs as the control video, one generated frame per rig frame (padded to 4n+1 by holding the last; `clip.json.frame_map`). `--control auto|pose|depth|blend` (auto = blend when `depth/` exists) and `--depth-gain` decide what the control video carries. Rig the job at the clip cell first: `rig … --width 512 --height 768` (768×768 for a lying death). Measured 2026-09-17: 9–55 s of GPU per action. Then `pick` as usual and `post --input clip`. See "The clip route" below. |
+| `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. |
 | `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips; `--skeleton-only` stops before the GPU. |
 | `run <clip>` | a filmed clip | all of the above | stops politely before `render` when the GPU is off. |
+
+### The clip route — the clip render feature
+
+```bash
+anim rig rigs/quaternius/UAL1_Standard.glb --clip Sword_Attack --unit knight \
+    --action strike --job knightq_strike_clip --width 512 --height 768
+anim clip knightq_strike_clip            # ~20 s on the A5000 once the model is warm
+anim pick knightq_strike_clip
+anim post knightq_strike_clip --input clip
+anim publish knightq_strike_clip         # sidecar generation.route = "clip"
+```
+
+Why: the strip route generates each action's poses with an image model and keeps
+identity across actions by prompt + seed alone, which is where the anchor gate's
+shield-colour and armour-tone drift came from. A reference-conditioned video model
+denoises every frame of one clip against one reference latent, so a clip is one
+character throughout; `pick` then chooses the 2–6 key poses from frames that already
+agree. The strip pose pass stays as the seconds-long preview. Cell: the base render's
+512×768 so reference and control share a scale; a lying death needs 768×768 (the rig
+scales once per rig and a lying body is wider than 512). Wan has no square-aspect
+rule — that one is Qwen-Image-Edit's. Models: `wan2.2_fun_control_5B_bf16`,
+`umt5_xxl_fp8_e4m3fn_scaled`, `wan2.2_vae` in `gpu/models.lock` (all Apache-2.0).
+Evidence and the depth-control trials: `http://192.168.1.158:8090/clip-render/`.
 
 ### The review page
 
@@ -257,7 +281,7 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | `COMFYUI_URL` | `http://host.docker.internal:8188` | the GPU image service. From the host or the Mac: `http://192.168.1.158:8188` |
 | `ANIM_CAPTURE_DIR` | `/work/capture` | the watched drop folder for filmed clips |
 | `ANIM_WORK_DIR` | `/work/work` | per-job scratch; everything regenerable |
-| `ANIM_WORKFLOW_DIR` | `/work/gpu/workflows` | the API-format workflows `render` POSTs |
+| `ANIM_WORKFLOW_DIR` | `/work/gpu/workflows` | the API-format workflows `render`, `clip` and `base` POST |
 | `ANIM_MODELS_LOCK` | `/work/gpu/models.lock` | repo + revision + sha256 per weight, copied into the sidecar |
 | `ANIM_ASSETS_DIR` | `/assets` | game-02's published assets (read-write) |
 | `ANIM_GAME02_DIR` | `/game02` | the game-02 repo, read-only, so `publish` can run its audit here |
@@ -309,7 +333,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 207 passed, 1 skipped
+docker compose run --rm anim-pipeline pytest        # 255 passed, 1 skipped (2026-09-17)
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake
@@ -347,10 +371,11 @@ documented; they are the starting point for a later full-cycle animation tier.
 
 | Path | What it is |
 |---|---|
-| `gpu/` | **The GPU image service feature** — ComfyUI in a pinned container on the native Docker daemon, the only GPU service in the project. Compose file, `models.lock`, pinned custom nodes, the three workflows. Start here: [`gpu/README.md`](gpu/README.md). |
+| `gpu/` | **The GPU image service feature** — ComfyUI in a pinned container on the native Docker daemon, the only GPU service in the project. Compose file, `models.lock`, pinned custom nodes, the four workflows. Start here: [`gpu/README.md`](gpu/README.md). |
 | `gpu/workflows/pose_pass.json` | Stage 1: Z-Image-Turbo (int8) + Z-Image Fun ControlNet Union 2.1 (full 2602 8-step; lite was ignoring the pose). Skeleton strip → posed strip, drawn at 2 px. No upstream counterpart; upstream had no pose-only stage. |
 | `gpu/workflows/identity_pass.json` | Stage 2: the reworked W1. Re-skins the posed strip onto the unit's reference sprite. Two images in (reference, pose pass). **Off since the anchor gate** — it flattens poses; `post` takes the pose pass. |
 | `gpu/workflows/base_sprite.json` | Generates a unit's standing sprite from a canned skeleton when no reference sprite exists yet. |
+| `gpu/workflows/clip_render.json` | The clip render feature: Wan 2.2 Fun-Control 5B, reference image + control video → one PNG per frame (`SaveImage` on the decoded batch instead of the template's `SaveVideo`). Translated from the official `video_wan2_2_5B_fun_control` template. |
 | `gpu/workflows/NOTES.md` | Which node names and input keys were verified against source, and what is still `TODO-verify`. |
 | `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base`. |
 | `anim/rigkit.py` + `anim/stages/rig.py` + `rigs/` | **The rig motion input feature** — a CC0 rigged character's clips as the motion source, sampled with `pygltflib` + numpy, mapped to OpenPose-18, projected in profile facing right. Replaces filming for the anchor unit; makes the spike's TripoSG / Mixamo path unnecessary. |

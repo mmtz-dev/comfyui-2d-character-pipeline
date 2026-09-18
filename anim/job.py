@@ -12,6 +12,8 @@ wrote, and a job that failed at `post` does not cost another GPU render.
       pose/skel_0001.png    `pose`
       picks.json            `pick`, rewritten by `review`
       strip/                `strip`
+      depth/0001.png ...    `rig` (the rig props feature; optional)
+      clip/frames/0001.png  `clip` (the clip render feature; optional)
       render/               `render`
       post/                 `post`
 """
@@ -54,6 +56,20 @@ class Job:
         return self.root / "strip"
 
     @property
+    def depth_dir(self) -> Path:
+        """Per-frame depth PNGs from `rig` (the rig props feature). Optional."""
+        return self.root / "depth"
+
+    @property
+    def clip_dir(self) -> Path:
+        return self.root / "clip"
+
+    @property
+    def clip_frames_dir(self) -> Path:
+        """Generated frames, 1:1 with frames/ (the clip render feature)."""
+        return self.clip_dir / "frames"
+
+    @property
     def render_dir(self) -> Path:
         return self.root / "render"
 
@@ -89,6 +105,14 @@ class Job:
         return self.render_dir / "provenance.json"
 
     @property
+    def clip_path(self) -> Path:
+        return self.clip_dir / "clip.json"
+
+    @property
+    def clip_provenance_path(self) -> Path:
+        return self.clip_dir / "provenance.json"
+
+    @property
     def report_path(self) -> Path:
         return self.post_dir / "report.json"
 
@@ -105,9 +129,15 @@ class Job:
         return sorted(self.pose_dir.glob("skel_*.png"))
 
     def depths(self) -> list[Path]:
+        """`depth/%04d.png` in order, or [] when `rig` wrote no depth."""
         if not self.depth_dir.is_dir():
             return []
         return sorted(self.depth_dir.glob("[0-9][0-9][0-9][0-9].png"))
+
+    def clip_frames(self) -> list[Path]:
+        if not self.clip_frames_dir.is_dir():
+            return []
+        return sorted(self.clip_frames_dir.glob("*.png"))
 
     def post_frames(self) -> list[Path]:
         if not self.post_dir.is_dir():

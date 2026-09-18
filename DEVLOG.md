@@ -106,6 +106,88 @@ then is a one-line change plus a README row. `anim base --rig` takes the same mo
 `props` on a unit with no kit writes no depth (there is nothing to draw) and records
 `depth_mode: none`. Props-only strike and death are on the evidence page under the full
 renders. Suite 261 passed / 1 skipped, +4.
+## 2026-09-17 — the clip render feature: `anim clip`, one Wan 2.2 Fun-Control video per action
+
+**What.** A new GPU stage between `rig` and `pick`. `anim clip <job>` renders EVERY frame
+of a rig clip as one short video — Wan 2.2 Fun-Control **5B** (the owner's pick over
+A14B), the unit's `base` render as `ref_image`, the skeleton PNGs as the control video —
+and writes one generated frame per rig frame to `clip/frames/`. `pick` runs unchanged on
+the keypoints; `post --input clip` takes the picked frames one by one instead of slicing
+a strip; `publish` records `generation.route: "clip"` and copies `clip/provenance.json`
+instead of the strip render's. The knight's `Sword_Attack`, `Hit_Chest` and `Death01` are
+rendered through it (jobs `knightq_{strike,hit,death}_clip`, **not published**). Evidence,
+timings and the depth trials: <http://192.168.1.158:8090/clip-render/>. Work package
+[#268](http://192.168.1.158:8700/work_packages/268); decisions in
+`game_core/discovery/game02/ai-sprite-sheet-generators-research.md` §6/§7.1.
+
+**Why.** The anchor gate published every action as a pose pass, so identity across
+actions was prompt + seed alone and the shield/armour colours wandered. A video model
+denoises all of a clip's frames against one reference latent — the cross-frame
+mechanism the 2026-09-16 survey found — so at least within an action the character is
+one character. First result: **it is.** All 19 strike frames are the base render's
+knight (helm, cape, red shield with the yellow emblem, one sword). Cost: **20.2 s** for
+strike, **8.8 s** hit, **48.7 s** death, by ComfyUI's own execution stamps, against a
+5-minute budget; the first job after a model load adds ~65 s.
+
+**What was built, where.**
+
+- `gpu/workflows/clip_render.json` — translated from the official
+  `video_wan2_2_5B_fun_control` template (ComfyUI 0.35.0, templates 0.1.78): `UNETLoader`
+  → `ModelSamplingSD3` shift 8 → `KSampler` 20 steps / cfg 5 / uni_pc; `Wan22FunControlToVideo`
+  with `ref_image` + `control_video`; `LoadVideo` + `GetVideoComponents` for the control;
+  **`SaveImage` on the decoded batch** instead of `CreateVideo`/`SaveVideo`, so the CPU
+  side gets PNGs and never decodes video. Every class and key read from source —
+  `gpu/workflows/NOTES.md` has the rows.
+- `gpu/models.lock` +3 rows via `relock_models.py` (which gained a 429 back-off — the HF
+  API rate-limited an anonymous relock): `wan2.2_fun_control_5B_bf16` (9.3 GiB),
+  `wan2.2_vae` (the 48-channel one the 5B line needs), `umt5_xxl_fp8_e4m3fn_scaled`
+  (6.3 GiB). Comfy-Org repackaged, Apache-2.0, ungated. Downloaded and verified. No new
+  custom node — core has everything. A14B is NOT locked; it is the fallback only.
+- `anim/stages/clip.py` — control video assembly (pure, tested): pad to 4n+1 by holding
+  the last frame with `frame_map` recorded; `--control auto|pose|depth|blend` and
+  `--depth-gain`; lossless H.264 4:4:4 through ffmpeg so 2 px sticks survive; reference
+  letterboxed to the cell's aspect on white before upload (the node centre-crops
+  otherwise); seed derived from clip hash + action + unit + control mode (picks are not
+  known yet); `clip.json` + `provenance.json` in the render's shape.
+- `anim/comfy.py` `upload_image(name=)` — inputs go up under job-unique names because
+  `LoadImage`/`LoadVideo` list only the input root.
+- `post.py` split into `strip_cells` / `clip_cells`; `publish.py` route selection;
+  `Job` gained `depth_dir`, `clip_dir`, `clip_frames_dir` and friends; `config.CLIP_*`.
+- Tests: `tests/test_clip.py` (+17) against `FakeComfy`, which now answers a frame
+  batch. **255 passed, 1 skipped** (was 238).
+
+**Found on the GPU, recorded in NOTES.md.** `LoadVideo` reports its input preview
+under `outputs[].images` with `type: "input"` (22 entries for 21 frames) — the stage
+keeps `type == "output"` only. A **512×768 portrait cell clips a lying skeleton**: the
+rig scales once per rig, a lying 1.83-unit body is ~600 px wide, the death skeleton's
+bbox started at x = 0 and the model faithfully drew half a knight — death is rigged at
+**768×768**; Wan has no square-aspect penalty, that rule is Qwen-Image-Edit's.
+
+**The depth trials (later the same day).** The rig props feature landed on its branch
+(`057df0b`) mid-build with the contract: `depth/%04d.png`, L, near 255 / far 48 /
+background 0, same cell and index as the skeletons. Its committed `rig` was run with
+this worktree's `work/` mounted over the container's, so nothing in its tree changed,
+and the three actions were re-rendered with `blend` (skeleton over depth), `depth`
+alone, and `blend` at `--depth-gain 0.35`:
+
+- **Full-strength depth solves the props and breaks the identity.** Sword in the sword
+  hand and the shield on the rig's plate in every frame — the two-sword strike is gone —
+  but the model paints the *mannequin*: thinner, painterly, and on death a bare head
+  with hair where the helm should be. Depth-only degrades to a grey mannequin by
+  mid-clip.
+- **Dimmed depth (gain 0.35) is the compromise for strike:** the knight stays the
+  knight, sword and shield land where the rig put them. Death still loses the helmet —
+  the mannequin's head silhouette is the one thing the reference cannot overrule.
+- **Ask of the rig props feature:** a props-only depth (sword + shield, no body). That
+  would carry "what the hand holds" without carrying "what the body looks like". Until
+  then `auto` = blend at gain 1.0 remains the default so the behaviour is explicit;
+  the owner picks per action.
+
+**Open (TODO-verify in NOTES.md).** Pose+depth composition as above; 12 fps 1:1 versus
+doubling to the model's native 24 fps; the prompt table is a first draft; the
+styly-agents pixel-animate LoRA is A14B-only and moot for 5B. The `pick` result for
+strike is the auto `[0, 6, 10, 18]` — the hand-pinned contact frame 5 of the strip
+route was not carried over; the gate can re-pick from the clip.
 
 ---
 
