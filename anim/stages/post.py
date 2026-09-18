@@ -51,6 +51,17 @@ afterwards and the key never survives into the output.
 **Recanvas 64x64 bottom-center**, the paste rule from
 `assets_src/extract_barrow_assets.py`, then **verify** - dimensions, binary
 alpha, every opaque colour a palette member. A frame that fails is not written.
+
+TWO SOURCES, ONE CHAIN (the clip render feature)
+-------------------------------------------------
+`--input <strip.png>` (or the default `render/<final>`) is the strip route: the
+generated N x 1 strip is matted once and sliced by `strip/layout.json`.
+`--input clip` is the clip route: the picked frames are read one by one from
+`clip/frames/<frame + 1>.png` (what `anim clip` generated, 1:1 with the rig
+frames) and each is matted on its own. From the cell onward the chain is the
+same function, so the two routes differ only in where the pixels came from;
+`report.json` says which (`route`), and `publish` picks the matching
+provenance file from it.
 """
 
 from __future__ import annotations
@@ -291,16 +302,20 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
 # ---------------------------------------------------------------------------
 # Stage entry point
 # ---------------------------------------------------------------------------
-def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
-         source: Path | None = None, use_pixelfixer: bool = True,
-         downscale: str = DEFAULT_DOWNSCALE,
-         work_dir: Path | None = None) -> dict[str, Any]:
-    job = Job.open(job_name, work_dir)
-    manifest = job.read_manifest()
+CLIP_SOURCE = "clip"
+
+
+def is_clip_source(source: Path | str | None) -> bool:
+    """`--input clip` selects the clip route; anything else is a strip path."""
+    return source is not None and str(source) == CLIP_SOURCE
+
+
+def strip_cells(job: Job, manifest: dict[str, Any], source: Path | None,
+                cut: Callable[[Image.Image], Image.Image]) -> tuple[list[tuple[dict[str, Any], Image.Image]], str]:
+    """The strip route: matte the whole strip once, slice by layout.json."""
     layout = read_json(job.layout_path) if job.layout_path.exists() else None
     if layout is None:
         raise FileNotFoundError(f"no {job.layout_path} - run `anim strip` first")
-
     strip_path = Path(source) if source else (
         job.render_dir / (manifest.get("render", {}).get("final")
                           or "identity_pass.png"))
@@ -308,18 +323,58 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         raise FileNotFoundError(
             f"no generated strip at {strip_path} - run `anim render` first "
             f"(or pass --input)")
+    with Image.open(strip_path) as raw:
+        matted = cut(raw.convert("RGBA"))
+    cells = []
+    for cell_meta in layout["cells"]:
+        x, y, width, height = cell_meta["rect"]
+        cells.append(({"index": cell_meta["index"], "frame": cell_meta["frame"]},
+                      matted.crop((x, y, x + width, y + height))))
+    return cells, str(strip_path)
+
+
+def clip_cells(job: Job, cut: Callable[[Image.Image], Image.Image]
+               ) -> tuple[list[tuple[dict[str, Any], Image.Image]], str]:
+    """The clip route: one generated frame per pick, each matted on its own."""
+    if not job.clip_frames():
+        raise FileNotFoundError(f"no generated frames in {job.clip_frames_dir} - "
+                                f"run `anim clip` first")
+    if not job.picks_path.exists():
+        raise FileNotFoundError(f"no {job.picks_path} - run `anim pick` first")
+    picks = list(read_json(job.picks_path).get("picks") or [])
+    if not picks:
+        raise ValueError(f"{job.picks_path} has no picks")
+    cells = []
+    for position, frame_index in enumerate(picks):
+        path = job.clip_frames_dir / f"{frame_index + 1:04d}.png"
+        if not path.exists():
+            raise FileNotFoundError(f"pick {frame_index} has no generated frame at "
+                                    f"{path}; re-run `anim clip`")
+        with Image.open(path) as raw:
+            cells.append(({"index": position, "frame": frame_index,
+                           "source": path.name}, cut(raw.convert("RGBA"))))
+    return cells, str(job.clip_frames_dir)
+
+
+def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
+         source: Path | str | None = None, use_pixelfixer: bool = True,
+         downscale: str = DEFAULT_DOWNSCALE,
+         work_dir: Path | None = None) -> dict[str, Any]:
+    job = Job.open(job_name, work_dir)
+    manifest = job.read_manifest()
+    if matte not in MATTES:
+        raise ValueError(f"unknown matte {matte!r}; known: {sorted(MATTES)}")
+    route = "clip" if is_clip_source(source) else "strip"
+    if route == "clip":
+        cells, source_label = clip_cells(job, MATTES[matte])
+    else:
+        cells, source_label = strip_cells(job, manifest, source, MATTES[matte])
 
     palette_path = Path(palette) if palette else config.PALETTE
     colours = imaging.read_palette(palette_path)
     chroma = imaging.chroma_key_for(colours)
     job.post_dir.mkdir(parents=True, exist_ok=True)
     palette_png = imaging.palette_png(colours, job.post_dir / "palette.png")
-
-    if matte not in MATTES:
-        raise ValueError(f"unknown matte {matte!r}; known: {sorted(MATTES)}")
-    with Image.open(strip_path) as raw:
-        strip_img = raw.convert("RGBA")
-    cut = MATTES[matte](strip_img)
 
     slug = manifest.get("slug", "unit")
     action = manifest.get("action") or ""
@@ -333,9 +388,7 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
 
     records: list[dict[str, Any]] = []
     problems_total = 0
-    for cell_meta in layout["cells"]:
-        x, y, width, height = cell_meta["rect"]
-        cell = cut.crop((x, y, x + width, y + height))
+    for cell_meta, cell in cells:
         frame, steps = process_cell(cell, target_height=target_height,
                                     palette_png=palette_png, chroma=chroma,
                                     use_pixelfixer=use_pixelfixer,
@@ -361,7 +414,8 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         "job": job.name,
         "slug": slug,
         "action": action,
-        "source": str(strip_path),
+        "route": route,
+        "source": source_label,
         "matte": matte,
         "downscale": downscale,
         "target_height": target_height,
@@ -384,7 +438,8 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
                            + "\n  - ".join(bad)
                            + f"\nSee {job.report_path}")
     job.update_manifest(post={"frames": len(records), "palette": str(palette_path),
-                              "matte": matte, "downscale": downscale})
+                              "matte": matte, "downscale": downscale,
+                              "route": route})
     return report
 
 
@@ -401,7 +456,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "on a drawn fixture strip; none = trust the alpha "
                              "already there")
     parser.add_argument("--input", dest="source", default=None,
-                        help="strip to slice (default render/identity_pass.png)")
+                        help="strip to slice (default render/<final>), or the "
+                             "word `clip` to take the picked frames from "
+                             "clip/frames/ (the clip render feature)")
     parser.add_argument("--no-pixelfixer", dest="pixelfixer",
                         action="store_false",
                         help="skip the grid-repair step")

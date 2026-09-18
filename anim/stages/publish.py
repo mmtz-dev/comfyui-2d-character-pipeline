@@ -62,6 +62,14 @@ generation (seed, workflow, model hashes). A filmed job has no such block and
 `generation.motion_source` is null; `generation.clip`/`clip_sha256` then name
 the footage as before.
 
+ON `generation.route` (the clip render feature)
+------------------------------------------------
+`"strip"` when the frames were sliced from a generated N x 1 strip
+(`render/provenance.json`), `"clip"` when they were picked out of a generated
+clip (`clip/provenance.json`). `post`'s report.json says which route it ran,
+and that decides which provenance file the sidecar copies - the seed, the
+workflow hash and the model list are the clip's, not a stale strip render's.
+
 ON `source.license`
 -------------------
 It says **CC0-1.0**, the licence of the OUTPUT - and it has to: the audit
@@ -103,7 +111,8 @@ def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any]
                 report: dict[str, Any] | None,
                 retrieved: str | None = None,
                 timing: dict[str, Any] | None = None,
-                timing_source: str = "uniform") -> dict[str, Any]:
+                timing_source: str = "uniform",
+                route: str = "strip") -> dict[str, Any]:
     """Build the sidecar. Pure - takes what the stages wrote, returns the dict."""
     stem = f"{slug}_{action}" if action else slug
     contract: dict[str, Any] = {
@@ -159,6 +168,8 @@ def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any]
             "seed": (provenance or {}).get("seed"),
             "workflow": final.get("workflow"),
             "workflow_sha256": final.get("workflow_sha256"),
+            # Which generation path made the pixels (see the module docstring).
+            "route": route,
             "models": models,
             "clip_sha256": manifest.get("clip_sha256"),
             "clip": Path(manifest.get("clip", "")).name or None,
@@ -255,8 +266,10 @@ def publish(job_name: str, *, assets_dir: Path | None = None,
             f"no finished frames in {job.post_dir} - run `anim post` first")
 
     report = read_json(job.report_path) if job.report_path.exists() else None
-    provenance = (read_json(job.provenance_path)
-                  if job.provenance_path.exists() else None)
+    route = (report or {}).get("route") or "strip"
+    provenance_path = (job.clip_provenance_path if route == "clip"
+                       else job.provenance_path)
+    provenance = read_json(provenance_path) if provenance_path.exists() else None
     picks_record = read_json(job.picks_path) if job.picks_path.exists() else None
     picks = list((picks_record or {}).get("picks") or [])
     timing, timing_source = resolve_timing(action, len(frames), picks_record)
@@ -266,7 +279,8 @@ def publish(job_name: str, *, assets_dir: Path | None = None,
     names = frame_names(stem, len(frames))
     meta = sidecar_for(slug=slug, action=action, frames=len(frames),
                        manifest=manifest, provenance=provenance, picks=picks,
-                       report=report, timing=timing, timing_source=timing_source)
+                       report=report, timing=timing, timing_source=timing_source,
+                       route=route)
 
     result: dict[str, Any] = {"stem": stem, "dir": str(units_dir),
                               "frames": names, "sidecar": f"{stem}.json",

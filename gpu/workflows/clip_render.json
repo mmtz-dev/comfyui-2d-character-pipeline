@@ -1,0 +1,192 @@
+{
+  "1": {
+    "class_type": "UNETLoader",
+    "inputs": {
+      "unet_name": "wan2.2_fun_control_5B_bf16.safetensors",
+      "weight_dtype": "default"
+    },
+    "_meta": {
+      "title": "Wan2.2 Fun-Control 5B (bf16)"
+    }
+  },
+  "2": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+      "type": "wan",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "umT5-XXL text encoder (Wan)"
+    }
+  },
+  "3": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "wan2.2_vae.safetensors"
+    },
+    "_meta": {
+      "title": "Wan2.2 VAE (48-channel, 5B line)"
+    }
+  },
+  "4": {
+    "class_type": "ModelSamplingSD3",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 8
+    },
+    "_meta": {
+      "title": "ModelSamplingSD3 shift=8"
+    }
+  },
+  "5": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "clip_reference.png"
+    },
+    "_meta": {
+      "title": "PATCH reference image (the unit's base render)"
+    }
+  },
+  "6": {
+    "class_type": "LoadVideo",
+    "inputs": {
+      "file": "clip_control.mp4"
+    },
+    "_meta": {
+      "title": "PATCH control video (skeleton / depth)"
+    }
+  },
+  "7": {
+    "class_type": "GetVideoComponents",
+    "inputs": {
+      "video": [
+        "6",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "control frames"
+    }
+  },
+  "8": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "a single side-view pixel art character sprite, facing right, full body in frame, the same character and outfit as the reference image in every frame, plain flat white background, no ground shadow, no floor",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "PATCH positive prompt"
+    }
+  },
+  "9": {
+    "class_type": "CLIPTextEncode",
+    "inputs": {
+      "text": "色调艳丽，过曝，静态，细节模糊不清，字幕，风格，作品，画作，画面，静止，整体发灰，最差质量，低质量，JPEG压缩残留，丑陋的，残缺的，多余的手指，画得不好的手部，画得不好的脸部，畸形的，毁容的，形态畸形的肢体，手指融合，静止不动的画面，杂乱的背景，三条腿，背景人很多，倒着走",
+      "clip": [
+        "2",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "PATCH negative prompt (Wan's standard negative)"
+    }
+  },
+  "10": {
+    "class_type": "Wan22FunControlToVideo",
+    "inputs": {
+      "positive": [
+        "8",
+        0
+      ],
+      "negative": [
+        "9",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
+      "width": 512,
+      "height": 768,
+      "length": 21,
+      "batch_size": 1,
+      "ref_image": [
+        "5",
+        0
+      ],
+      "control_video": [
+        "7",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "PATCH clip size (width, height, length=4n+1)"
+    }
+  },
+  "11": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "4",
+        0
+      ],
+      "seed": 20260917,
+      "steps": 20,
+      "cfg": 5.0,
+      "sampler_name": "uni_pc",
+      "scheduler": "simple",
+      "positive": [
+        "10",
+        0
+      ],
+      "negative": [
+        "10",
+        1
+      ],
+      "latent_image": [
+        "10",
+        2
+      ],
+      "denoise": 1.0
+    },
+    "_meta": {
+      "title": "PATCH seed - KSampler 20-step uni_pc"
+    }
+  },
+  "12": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "11",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Decode (one image per frame)"
+    }
+  },
+  "13": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "12",
+        0
+      ],
+      "filename_prefix": "anim_pipeline/clip_render/frame"
+    },
+    "_meta": {
+      "title": "PATCH output prefix"
+    }
+  }
+}

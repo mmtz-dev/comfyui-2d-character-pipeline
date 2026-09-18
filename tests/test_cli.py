@@ -7,7 +7,7 @@ import pytest
 from anim import __version__, cli
 from anim.stages import STAGE_ORDER
 
-EXPECTED = ["extract", "pose", "rig", "pick", "review", "strip", "render",
+EXPECTED = ["extract", "pose", "rig", "clip", "pick", "review", "strip", "render",
             "post", "publish", "base", "run"]
 
 

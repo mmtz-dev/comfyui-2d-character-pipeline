@@ -49,9 +49,13 @@ class FakeComfy:
     """Start with `with FakeComfy() as fake:` and read `fake.url`."""
 
     def __init__(self, *, png: bytes | None = None, fail_prompt: bool = False,
-                 error_job: bool = False,
+                 error_job: bool = False, batch: list[bytes] | None = None,
                  version: str = "0.35.0-fake") -> None:
         self.png = png if png is not None else canned_png()
+        # The clip render feature's SaveImage returns one file per frame; when
+        # `batch` is given, /history lists that many and /view serves them by
+        # the frame number in the filename.
+        self.batch = batch
         self.fail_prompt = fail_prompt
         self.error_job = error_job
         self.version = version
@@ -120,17 +124,23 @@ class FakeComfy:
                                                       "fake failure"}]]},
                             "outputs": {}}})
                         return
+                    count = len(fake.batch) if fake.batch else 1
                     self._json(200, {prompt_id: {
                         "status": {"status_str": "success", "completed": True},
                         "outputs": {"13": {"images": [
-                            {"filename": f"{prompt_id}_00001_.png",
-                             "subfolder": "anim_pipeline", "type": "output"}]}},
+                            {"filename": f"{prompt_id}_{i + 1:05d}_.png",
+                             "subfolder": "anim_pipeline", "type": "output"}
+                            for i in range(count)]}},
                     }})
                     return
                 if parsed.path == "/view":
                     query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
                     fake.views.append(query)
-                    self._send(200, fake.png, "image/png")
+                    body = fake.png
+                    if fake.batch:
+                        number = int(query["filename"].rsplit("_", 2)[-2])
+                        body = fake.batch[number - 1]
+                    self._send(200, body, "image/png")
                     return
                 self._send(404, b"not found", "text/plain")
 

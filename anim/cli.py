@@ -6,6 +6,7 @@ Stages run in order; each reads what the previous one wrote under work/<job>/:
 
     extract -> pose -> pick -> review -> strip -> render -> post -> publish
     rig     ---------^   (a rig clip instead of a filmed one: replaces extract + pose)
+    rig -> clip -> pick -> post --input clip -> publish   (the clip render feature)
 
 `base` generates a unit's standing sprite; `run` chains the whole thing.
 
@@ -27,6 +28,8 @@ EPILOG = """\
 stage order:
   extract -> pose -> pick -> review -> strip -> render -> post -> publish
   rig replaces extract + pose when the motion is a rig clip (KayKit Knight)
+  clip renders every rig frame as one Wan 2.2 Fun-Control video; then
+    pick -> post --input clip -> publish (the clip render feature)
   base is the standing-sprite variant of the same chain
   run chains extract..strip, then render..publish if the GPU is up
 
@@ -41,7 +44,7 @@ where things live (override with the env vars in anim/config.py):
   assets     game-02's published PNGs and sidecars
 
 the GPU:
-  only `render` touches it, over HTTP at $COMFYUI_URL
+  only `render`, `clip` and `base` touch it, over HTTP at $COMFYUI_URL
   (default http://host.docker.internal:8188 - ComfyUI runs on the OTHER Docker
   engine, so localhost would not reach it from inside this container)
 """

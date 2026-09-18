@@ -2,7 +2,7 @@
 # models.lock - the GPU image service feature
 # =====================================================================
 # RESOLVED LOCKFILE, not hand-written. Regenerate with gpu/relock_models.py.
-# Resolved 2026-09-15 from the Hugging Face API; every sha256 and size was
+# Resolved 2026-09-17 from the Hugging Face API; every sha256 and size was
 # read from BOTH /api/models/<repo>?blobs=true and
 # /api/models/<repo>/paths-info/<revision> and the two reads agreed.
 # Every repo below was confirmed ungated and Apache-2.0 via the same API.
@@ -11,7 +11,7 @@
 # install a file whose size or sha256 does not match a row here.
 # Verify a file by hand with:  sha256sum <file>
 #
-# Total: 44370217909 bytes = 41.32 GiB (44.37 GB)
+# Total: 62518829046 bytes = 58.23 GiB (62.52 GB)
 #
 # TAB-separated columns:
 #   repo_id  repo_revision  repo_file  dest_subdir  dest_filename  size_bytes  sha256  license
@@ -56,3 +56,6 @@ nunchaku-ai/nunchaku-qwen-image-edit-2509	e93a5fb77403d02a5a73c7cc8707b292c6ebc6
 Comfy-Org/Qwen-Image_ComfyUI	7beb7b647f04469fbe64ba8adc2bb0d7e5e9f73f	split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors	text_encoders	qwen_2.5_vl_7b_fp8_scaled.safetensors	9384670680	cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4	apache-2.0
 Comfy-Org/Qwen-Image_ComfyUI	7beb7b647f04469fbe64ba8adc2bb0d7e5e9f73f	split_files/vae/qwen_image_vae.safetensors	vae	qwen_image_vae.safetensors	253806246	a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f	apache-2.0
 prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA	e14eea588e8e4a9c753439e52a203d06288769c5	Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors	loras	Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors	1179885016	2a2775ac823b3704eba2f72f3be65d7b0fe3262f1822e971c16818d0c923a4b6	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	c4f60d30c55a624e35427060fdd217579a6c1d77	split_files/diffusion_models/wan2.2_fun_control_5B_bf16.safetensors	diffusion_models	wan2.2_fun_control_5B_bf16.safetensors	10003303280	ace4718a7c87ee3e5606a68ab79142c4395e81aece76b8120bc886f0fbbe1d16	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	c4f60d30c55a624e35427060fdd217579a6c1d77	split_files/vae/wan2.2_vae.safetensors	vae	wan2.2_vae.safetensors	1409400960	e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156	apache-2.0
+Comfy-Org/Wan_2.1_ComfyUI_repackaged	617a7633e636506f850e043bc4605f290a466a8e	split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	text_encoders	umt5_xxl_fp8_e4m3fn_scaled.safetensors	6735906897	c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68	apache-2.0
