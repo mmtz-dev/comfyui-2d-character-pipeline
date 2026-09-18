@@ -213,6 +213,22 @@ def height_for_unit(slug: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# The skeleton props feature - what each unit holds, drawn onto its skeleton
+# ---------------------------------------------------------------------------
+# `anim rig` draws these onto the ControlNet image so the model is TOLD which
+# hand is the sword hand (anim.rigkit, PROPS). Kinds are rigkit.PROP_KINDS.
+# Only units whose kit is settled in the art bible are listed; anything else
+# gets no props unless `--props` says otherwise.
+UNIT_PROPS: dict[str, tuple[str, ...]] = {
+    "knight": ("sword", "shield"),
+}
+
+
+def props_for_unit(slug: str) -> tuple[str, ...]:
+    return UNIT_PROPS.get(slug.strip().lower(), ())
+
+
+# ---------------------------------------------------------------------------
 # Pose extraction
 # ---------------------------------------------------------------------------
 # rtmlib model family. 'wholebody' is DWPose (133 keypoints -> openpose134 when

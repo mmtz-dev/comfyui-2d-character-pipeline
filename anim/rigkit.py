@@ -91,6 +91,28 @@ PROFILE AND THE FAR SIDE: a true profile puts the far-side limbs behind the
 near-side ones, and both project to nearly the same 2D points. Both are kept -
 the renderer draws both, as DWPose does on a real profile shot - and every
 joint carries confidence 1.0, because a rig has no detection uncertainty.
+
+PROPS - the skeleton props feature
+----------------------------------
+A stick figure says where the wrists are, not what they hold. Asked for "a
+sword and a kite shield", the ControlNet put the sword in whichever hand looked
+like a sword hand - both of them, on the recovery frame of `Sword_Attack` -
+and no prompt fixed it (DEVLOG 2026-09-16). So the props are drawn onto the
+skeleton: a blade off the right hand, a kite on the left forearm, as white
+outlines the ControlNet reads like canny edges. They are computed in 3D and
+projected with the joints, so a swing that crosses the body foreshortens the
+blade exactly as it foreshortens the arm.
+
+Each prop rides a bone (`PROPS`: the sword the right-wrist bone, the shield the
+left-elbow bone, i.e. the forearm) and is laid out in that bone's own frame at
+REST under one convention: the rest pose is a T- or A-pose with the palms down,
+so a gripped blade points FORWARD out of the fist (the thumb side), its guard
+runs along the fingers, and the back of the forearm - where the shield is
+strapped - faces UP. Sizes are fractions of the standing height, per rig, never
+per clip. `prop_polygons()` returns the outlines in world space; `clip_keypoints`
+writes them per frame as `props: [{kind, polygons: [[[x, y], ...], ...]}]` in
+cell pixels, and `anim.posekit.draw` strokes them. A job without props writes
+no `props` key and renders exactly as before.
 """
 
 from __future__ import annotations
@@ -137,6 +159,22 @@ BASELINE_FRACTION = 0.9375
 # When a GLB carries no mesh (a bare animation library, or the synthetic rig in
 # the tests) the head length is this many neck-to-head distances instead.
 HEAD_LENGTH_FALLBACK = 1.5
+
+# ---------------------------------------------------------------------------
+# Props - sizes as fractions of the standing height (a 1.83 m mannequin gets a
+# 0.85 m blade; a chibi gets one that fits a chibi)
+# ---------------------------------------------------------------------------
+PROP_SIZES: dict[str, dict[str, float]] = {
+    "sword": {"blade": 0.465, "pommel": 0.066, "guard": 0.120,
+              "blade_width": 0.027, "guard_width": 0.019},
+    # A kite: flat top toward the elbow, point toward the hand, standing a
+    # little off the back of the forearm.
+    "shield": {"length": 0.44, "width": 0.23, "offset": 0.055},
+}
+# Which OpenPose joint's bone each prop rides. Both are single bones in every
+# map (the midpoint joints are the neck only).
+PROP_JOINT: dict[str, str] = {"sword": "right_wrist", "shield": "left_elbow"}
+PROP_KINDS: tuple[str, ...] = tuple(PROP_SIZES)
 
 
 # ---------------------------------------------------------------------------
@@ -641,6 +679,18 @@ def resolve_joint(spec: str | Midpoint, positions: dict[str, np.ndarray]) -> np.
 
 
 @dataclass(frozen=True)
+class PropFrame:
+    """One prop's attachment: the bone it rides and its axes in that bone's
+    rest frame, so `bone_rotation @ axis` is the axis in any pose."""
+
+    kind: str
+    bone: str
+    axes: dict[str, np.ndarray]
+    # The shield sits on the forearm's midpoint, which needs the wrist bone too.
+    end_bone: str | None = None
+
+
+@dataclass(frozen=True)
 class RigFrame:
     """Everything about a rig that is fixed across its clips."""
 
@@ -652,15 +702,52 @@ class RigFrame:
     head_length: float
     head_forward_local: np.ndarray   # forward expressed in the head bone's frame
     head_up_local: np.ndarray
+    props: tuple[PropFrame, ...] = ()
 
     @property
     def height(self) -> float:
         return self.top_y - self.floor_y
 
 
+def prop_frame(kind: str, rig: Rig, world: np.ndarray, jmap: JointMap,
+               forward: np.ndarray) -> PropFrame:
+    """Attach one prop under the palms-down rest convention (module docstring)."""
+    if kind not in PROP_SIZES:
+        raise ValueError(f"unknown prop {kind!r}; known: {list(PROP_SIZES)}")
+    bone = jmap.joints[PROP_JOINT[kind]]
+    if isinstance(bone, tuple):
+        raise ValueError(f"prop {kind!r} needs a single bone for "
+                         f"{PROP_JOINT[kind]}, not a midpoint")
+    up = np.array([0.0, 1.0, 0.0])
+    lateral = np.cross(up, forward)                  # the character's LEFT
+    r_bone = rotation_part(world[rig.index(bone)])
+    pos = positions_by_name(rig, world)
+    if kind == "sword":
+        # Blade out of the fist along forward; the guard along the fingers,
+        # which in a T/A-pose is the arm's own direction, elbow -> wrist.
+        elbow = jmap.joints["right_elbow"]
+        along = pos[bone] - pos[elbow]
+        along[1] = 0.0
+        along = along / (np.linalg.norm(along) or 1.0)
+        return PropFrame(kind, bone, {"blade": r_bone.T @ forward,
+                                      "guard": r_bone.T @ along})
+    wrist = jmap.joints["left_wrist"]
+    axis = pos[wrist] - pos[bone]
+    axis = axis / (np.linalg.norm(axis) or 1.0)
+    return PropFrame(kind, bone, {"axis": r_bone.T @ axis,
+                                  "normal": r_bone.T @ up,
+                                  "width": r_bone.T @ np.cross(up, axis)},
+                     end_bone=wrist)
+
+
 def reference_frame(rig: Rig, jmap: JointMap | None = None,
-                    mirror: bool = False) -> RigFrame:
-    """Facing, floor, standing height and head length, all from the rest pose."""
+                    mirror: bool = False,
+                    props: Sequence[str] = ()) -> RigFrame:
+    """Facing, floor, standing height and head length, all from the rest pose.
+
+    `props` names the props to attach (`PROP_KINDS`); they are laid out in the
+    same rest pose the facing is read from.
+    """
     jmap = jmap or detect_map(rig.names)
     missing = jmap.missing(rig.names)
     if missing:
@@ -688,7 +775,50 @@ def reference_frame(rig: Rig, jmap: JointMap | None = None,
     return RigFrame(map=jmap, forward=forward, mirror=bool(mirror),
                     floor_y=floor_y, top_y=top_y, head_length=head_length,
                     head_forward_local=r_head.T @ forward,
-                    head_up_local=r_head.T @ up)
+                    head_up_local=r_head.T @ up,
+                    props=tuple(prop_frame(k, rig, world, jmap, forward)
+                                for k in props))
+
+
+def prop_polygons(rig: Rig, world: np.ndarray, frame: RigFrame
+                  ) -> list[tuple[str, list[np.ndarray]]]:
+    """[(kind, [(N, 3) closed outlines in world space, ...]), ...] for one pose.
+
+    A sword is two outlines - the blade (with its tip) and the crossguard - and
+    a shield is one kite. Sizes come from `PROP_SIZES` x the standing height.
+    """
+    out: list[tuple[str, list[np.ndarray]]] = []
+    for prop in frame.props:
+        size = {k: v * frame.height for k, v in PROP_SIZES[prop.kind].items()}
+        bone_world = world[rig.index(prop.bone)]
+        r_bone = rotation_part(bone_world)
+        origin = bone_world[:3, 3]
+        ax = {k: r_bone @ v for k, v in prop.axes.items()}
+        if prop.kind == "sword":
+            blade, guard = ax["blade"], ax["guard"]
+            half = guard * size["blade_width"] / 2.0
+            tip = origin + blade * size["blade"]
+            shoulder = origin + blade * (size["blade"] - size["blade_width"] * 1.5)
+            pommel = origin - blade * size["pommel"]
+            gh = guard * size["guard"] / 2.0
+            gt = blade * size["guard_width"] / 2.0
+            out.append((prop.kind, [
+                np.stack([pommel + half, shoulder + half, tip, shoulder - half, pommel - half]),
+                np.stack([origin - gh + gt, origin + gh + gt, origin + gh - gt, origin - gh - gt]),
+            ]))
+        else:
+            end = world[rig.index(prop.end_bone)][:3, 3]
+            centre = (origin + end) / 2.0 + ax["normal"] * size["offset"]
+            a, w = ax["axis"], ax["width"]
+            length, width = size["length"], size["width"]
+            out.append((prop.kind, [np.stack([
+                centre - a * length * 0.45 - w * width * 0.35,
+                centre - a * length * 0.45 + w * width * 0.35,
+                centre - a * length * 0.15 + w * width * 0.5,
+                centre + a * length * 0.55,
+                centre - a * length * 0.15 - w * width * 0.5,
+            ])]))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -738,6 +868,12 @@ class Projection:
                    scale=height_fraction * height / frame.height,
                    cell=(int(width), int(height)),
                    baseline=baseline_fraction * height)
+
+    def anchor_for(self, points: np.ndarray) -> np.ndarray:
+        """The world point `to_2d` would centre these points on - so props can
+        be projected with the JOINTS' centre, not their own."""
+        along = np.asarray(points, dtype=float) @ self.forward
+        return self.forward * (float(along.min() + along.max()) / 2.0)
 
     def to_2d(self, points: np.ndarray, anchor: np.ndarray | None = None) -> np.ndarray:
         """(K, 3) world -> (K, 2) cell pixels.
@@ -793,15 +929,26 @@ def clip_keypoints(rig: Rig, clip_name: str, *, fps: int,
     entries: list[dict[str, Any]] = []
     for index, t in enumerate(ts):
         world = rig.pose_at(clip, float(t))
-        pts2d = proj.to_2d(openpose_points(rig, world, frame))
-        entries.append({
+        joints = openpose_points(rig, world, frame)
+        pts2d = proj.to_2d(joints)
+        entry: dict[str, Any] = {
             "index": index,
             "file": f"{index + 1:04d}.png",
             "time": round(float(t), 4),
             "keypoints": [[round(float(x), 2), round(float(y), 2)] for x, y in pts2d],
             "scores": [1.0] * len(OPENPOSE18),
             "person": {"score": 1.0},
-        })
+        }
+        if frame.props:
+            anchor = proj.anchor_for(joints)
+            entry["props"] = [
+                {"kind": kind,
+                 "polygons": [[[round(float(x), 2), round(float(y), 2)]
+                               for x, y in proj.to_2d(poly, anchor=anchor)]
+                              for poly in polys]}
+                for kind, polys in prop_polygons(rig, world, frame)]
+        entries.append(entry)
+    payload_props = [p.kind for p in frame.props]
     return {
         "schema": KEYPOINTS_SCHEMA,
         "rig": "openpose18",
@@ -819,6 +966,7 @@ def clip_keypoints(rig: Rig, clip_name: str, *, fps: int,
             "head_length": round(frame.head_length, 4),
             "scale_px_per_unit": round(proj.scale, 4),
             "baseline_row": round(proj.baseline, 2),
+            "props": payload_props,
         },
         "frames": entries,
     }

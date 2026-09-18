@@ -92,7 +92,7 @@ docker compose run --rm anim publish knight_strike --dry-run
 |---|---|---|---|
 | `extract <clip>` | a filmed clip | `frames/%04d.png`, `job.json` | fps is a **cap**, not a target; a 10 fps clip stays at 10. Rotation is honoured by never passing `-noautorotate`. `--crop` (off by default) crops every frame to **one** person-centred box — use it when the figure sits small in the frame, because the skeleton is letterboxed into the cell and headroom is wasted resolution. |
 | `pose <job>` | frames | `pose/keypoints.json`, `pose/skel_%04d.png` | rtmlib DWPose over onnxruntime, CPU. Inference happens **once per clip** and is cached; `pick`, `review` and `strip` re-read it. Rendered with rtmlib's own `draw_skeleton(openpose_skeleton=True)` at the cell size, line width scaled to the canvas. |
-| `rig <glb> --clip <name>` | a rig clip | `job.json`, `frames/%04d.png`, `pose/keypoints.json`, `pose/skel_%04d.png` | **replaces `extract` + `pose`** when the motion is a rig clip. Samples the clip at the extract fps, maps the bones to OpenPose-18, projects in profile **facing right by detection**, one scale per rig; the skeleton PNGs go through the very same `posekit.draw`. `--list` prints the clips. See "Rig input mode". |
+| `rig <glb> --clip <name>` | a rig clip | `job.json`, `frames/%04d.png`, `pose/keypoints.json`, `pose/skel_%04d.png` | **replaces `extract` + `pose`** when the motion is a rig clip. Samples the clip at the extract fps, maps the bones to OpenPose-18, projects in profile **facing right by detection**, one scale per rig; the skeleton PNGs go through the very same `posekit.draw`, with the unit's props (sword, shield) drawn on as white outlines. `--list` prints the clips, `--props` overrides the kit. See "Rig input mode". |
 | `pick <job>` | keypoints | `picks.json` | peaks of deviation-from-rest + reversals + both endpoints, de-duplicated in torso lengths. Also records the **timing shape** (`timing`: one weight per frame + the anchor frame — the strip timing feature): the per-verb template in `config.ACTION_TIMING` by default, or the clip's own frame gaps with `--timing clip`. **Refuses to overwrite a hand-edited `picks.json`** (picks *or* timing) unless `--force`. |
 | `review <job>` | frames + picks | rewrites `picks.json` | the click-to-pick page — see below. |
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
@@ -148,7 +148,7 @@ docker compose run --rm anim base --unit knight \
 
 What `anim rig` writes is byte-for-byte the layout `extract` + `pose` leave behind
 (`job.json`, `frames/`, `pose/keypoints.json`, `pose/skel_*.png`), so `pick`, `review` and
-`strip` run unchanged. Three things are worth knowing:
+`strip` run unchanged. Four things are worth knowing:
 
 - **Facing is detected, not assumed.** glTF says nothing about which way a character faces.
   The stage reads the rest pose's foot→toes vector and projects that direction onto +x, so the
@@ -164,6 +164,15 @@ What `anim rig` writes is byte-for-byte the layout `extract` + `pose` leave behi
   checked against the GLB and copied into `job.json.motion_source`; `anim publish` copies it
   into the sidecar's `generation.motion_source`, so the audit sees the motion's licence next to
   the pixels' seed and model hashes.
+- **The unit's kit is drawn on (the skeleton props feature).** A stick figure does not say which
+  hand holds the sword, and the pose ControlNet guessed — two swords on the recovery frame of
+  `Sword_Attack`, and no prompt fixed it. So a knight's skeleton carries a blade off the right
+  hand and a kite on the left forearm, computed in 3D on the rig's bones (palms-down rest
+  convention: blade forward out of the fist, shield on the back of the forearm), projected with
+  the joints and stroked in **white** — a colour DWPose never uses, read like a canny edge.
+  `config.UNIT_PROPS` says who carries what; `--props sword,shield` / `--props none` overrides;
+  `keypoints.json` records the outlines per frame and `job.json.motion_source.props` what was
+  drawn. Filmed clips have no props and render exactly as before.
 
 The skeleton is a hint about limb angles only (art bible §3). The Knight is chibi — its head is
 ~45 % of its height, so the neck→nose limb is as long as torso + legs — and whether the pose

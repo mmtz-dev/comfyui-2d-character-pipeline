@@ -20,7 +20,7 @@ x-anim-common: &anim-common
   build:
     context: .
     dockerfile: Dockerfile
-  image: anim-pipeline:local
+  image: ${ANIM_IMAGE:-anim-pipeline:local}
   environment:
     # ComfyUI lives on the OTHER Docker engine. host.docker.internal is how a
     # Docker Desktop container reaches a port published on the host, which is

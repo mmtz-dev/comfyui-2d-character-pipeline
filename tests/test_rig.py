@@ -142,6 +142,62 @@ def test_mirror_is_recorded_and_flips_the_skeleton(knight_glb, work_dir):
 
 
 # ---------------------------------------------------------------------------
+# Props - the skeleton props feature
+# ---------------------------------------------------------------------------
+def _has_white(path: Path) -> bool:
+    with Image.open(path) as img:
+        return bool((np.asarray(img.convert("RGB")) == 255).all(axis=2).any())
+
+
+def test_the_knight_carries_its_kit_by_default(hit_job):
+    """`config.UNIT_PROPS` says a knight holds a sword and a shield; the stage
+    draws them onto every skeleton and records what it drew."""
+    assert hit_job.read_manifest()["motion_source"]["props"] == ["sword", "shield"]
+    payload = json.loads(hit_job.keypoints_path.read_text())
+    assert payload["motion"]["props"] == ["sword", "shield"]
+    assert all([p["kind"] for p in e["props"]] == ["sword", "shield"]
+               for e in payload["frames"])
+    assert all(_has_white(p) for p in hit_job.skeletons()), "white outlines on every cell"
+    with Image.open(hit_job.frames_dir / "0001.png") as img:
+        assert rig_stage.PREVIEW_PROP in {tuple(px) for px in
+                                          np.asarray(img.convert("RGB")).reshape(-1, 3)}, \
+            "the review preview shows them too"
+
+
+def test_props_none_draws_a_bare_skeleton(knight_glb, work_dir):
+    job = rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight",
+                        props=(), work_dir=work_dir)
+    assert job.read_manifest()["motion_source"]["props"] == []
+    payload = json.loads(job.keypoints_path.read_text())
+    assert all("props" not in e for e in payload["frames"])
+    assert not any(_has_white(p) for p in job.skeletons())
+
+
+def test_a_unit_with_no_kit_gets_no_props(knight_glb, work_dir):
+    job = rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="hound",
+                        work_dir=work_dir)
+    assert job.read_manifest()["motion_source"]["props"] == []
+
+
+def test_the_props_flag_is_parsed_and_checked():
+    assert rig_stage.parse_props(None) is None
+    assert rig_stage.parse_props("none") == ()
+    assert rig_stage.parse_props("sword, shield") == ("sword", "shield")
+    with pytest.raises(SystemExit, match="halberd"):
+        rig_stage.parse_props("halberd")
+
+
+def test_base_draws_the_kit_on_the_standing_skeleton(knight_glb, work_dir):
+    job = base_stage.prepare("knight", rig=knight_glb, clip="Idle", frame=0,
+                             work_dir=work_dir)
+    assert job.read_manifest()["motion_source"]["props"] == ["sword", "shield"]
+    assert _has_white(job.strip_dir / "skeleton_strip.png")
+    bare = base_stage.prepare("knight", rig=knight_glb, clip="Idle", frame=0,
+                              props=(), work_dir=work_dir)
+    assert not _has_white(bare.strip_dir / "skeleton_strip.png")
+
+
+# ---------------------------------------------------------------------------
 # The stages after it, unchanged
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("clip,action,budget", ANCHOR, ids=[a[1] for a in ANCHOR])

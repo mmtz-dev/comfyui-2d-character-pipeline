@@ -28,6 +28,11 @@ THE SCHEMA (pose/keypoints.json)
 those rather than inventing a pose. One person per frame: these are single-actor
 clips by the art bible's filming rules, and the largest/highest-scoring
 detection wins.
+
+A rig job may add, per frame, `"props": [{"kind": "sword", "polygons": [[[x, y],
+...], ...]}, ...]` - closed outlines in the same pixels as `keypoints` (the
+skeleton props feature, `anim.rigkit`). Filmed clips never have it, and the
+picker ignores it: props are drawing, not pose.
 """
 
 from __future__ import annotations
@@ -175,9 +180,18 @@ def line_width_for(size: tuple[int, int]) -> int:
     return LINE_WIDTH
 
 
+# Props are stroked in white: a colour DWPose never uses, so a blade cannot be
+# mistaken for a limb, and the colour of the canny edges the same union
+# ControlNet was trained on. Measured 2026-09-16 (DEVLOG): outline, single
+# line and filled silhouette all put the sword in the drawn hand; outline kept
+# the shield's shape best.
+PROP_COLOUR = (255, 255, 255)
+
+
 def draw(keypoints: Sequence[Sequence[float]], scores: Sequence[float],
          source_size: tuple[int, int], out_size: tuple[int, int],
-         kpt_thr: float = 0.4) -> np.ndarray:
+         kpt_thr: float = 0.4,
+         props: Sequence[dict[str, Any]] | None = None) -> np.ndarray:
     """Render one OpenPose-style skeleton onto a black canvas of `out_size`.
 
     Always `rtmlib.draw_skeleton(..., openpose_skeleton=True)` - never a
@@ -189,7 +203,12 @@ def draw(keypoints: Sequence[Sequence[float]], scores: Sequence[float],
     Coordinates are letterboxed rather than stretched: a skeleton squashed to a
     different aspect ratio is a skeleton with the wrong proportions, and the
     reference sprite - not the rig - is supposed to own proportions.
+
+    `props` is a frame's `props` list from the keypoints payload (the skeleton
+    props feature): closed outlines in the same source pixels as the joints,
+    stroked over the skeleton at the same line width.
     """
+    import cv2
     from rtmlib import draw_skeleton
 
     src_w, src_h = source_size
@@ -204,9 +223,17 @@ def draw(keypoints: Sequence[Sequence[float]], scores: Sequence[float],
     placed[:, 1] = kp[:, 1] * scale + off_y
 
     canvas = np.zeros((out_h, out_w, 3), dtype=np.uint8)
-    return draw_skeleton(canvas,
-                         placed[None, :, :],
-                         np.asarray(scores, dtype=float)[None, :],
-                         openpose_skeleton=True,
-                         kpt_thr=kpt_thr,
-                         line_width=line_width_for(out_size))
+    canvas = draw_skeleton(canvas,
+                           placed[None, :, :],
+                           np.asarray(scores, dtype=float)[None, :],
+                           openpose_skeleton=True,
+                           kpt_thr=kpt_thr,
+                           line_width=line_width_for(out_size))
+    for prop in props or ():
+        for polygon in prop.get("polygons") or ():
+            pts = np.asarray(polygon, dtype=float)
+            pts[:, 0] = pts[:, 0] * scale + off_x
+            pts[:, 1] = pts[:, 1] * scale + off_y
+            cv2.polylines(canvas, [np.round(pts).astype(np.int32)], True,
+                          PROP_COLOUR, thickness=line_width_for(out_size))
+    return canvas

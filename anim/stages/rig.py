@@ -5,7 +5,8 @@ Knight, first) is the motion source instead of a filmed clip:
 
     anim rig rigs/kaykit-adventurers/Knight.glb --list
     anim rig rigs/kaykit-adventurers/Knight.glb --clip Hit_A \\
-        --unit knight --action hit [--fps 12] [--job knight_hit] [--mirror]
+        --unit knight --action hit [--fps 12] [--job knight_hit] [--mirror] \\
+        [--props sword,shield | --props none]
 
 It writes exactly what `anim extract` followed by `anim pose` would have:
 
@@ -27,6 +28,12 @@ frames/ previews are a different thing: a picture for the review page, drawn
 with Pillow, deliberately not in DWPose's colours so nobody feeds one to the
 GPU by mistake.
 
+PROPS (the skeleton props feature). The unit's kit - `config.UNIT_PROPS`, or
+`--props` - is computed in 3D on the rig's hand and forearm bones and written
+into keypoints.json per frame, so the skeleton PNGs carry a blade and a shield
+outline and the ControlNet is told which hand is which (anim.rigkit, PROPS).
+The manifest's `motion_source.props` records what was drawn.
+
 PROVENANCE. A rig directory carries `rig.json` (pack, author, url, licence,
 per-file sha256). The stage refuses a rig without one, and refuses one whose
 recorded hash does not match the file: motion is an input like any other, and
@@ -40,7 +47,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from PIL import Image, ImageDraw
 
@@ -58,6 +65,7 @@ PREVIEW_FLOOR = (52, 56, 66)
 PREVIEW_LIMB = (167, 180, 200)
 PREVIEW_JOINT = (240, 192, 112)
 PREVIEW_FACE = (120, 170, 220)
+PREVIEW_PROP = (214, 214, 214)
 
 
 # ---------------------------------------------------------------------------
@@ -109,6 +117,7 @@ def motion_source(glb: Path, provenance: dict[str, Any], clip: rigkit.Clip,
         "forward": motion["forward"],
         "height": motion["height"],
         "scale_px_per_unit": motion["scale_px_per_unit"],
+        "props": list(motion.get("props") or []),
     }
 
 
@@ -116,7 +125,8 @@ def motion_source(glb: Path, provenance: dict[str, Any], clip: rigkit.Clip,
 # The preview frames
 # ---------------------------------------------------------------------------
 def draw_preview(keypoints: list[list[float]], names: list[str],
-                 cell: tuple[int, int], baseline: float | None = None) -> Image.Image:
+                 cell: tuple[int, int], baseline: float | None = None,
+                 props: list[dict[str, Any]] | None = None) -> Image.Image:
     """A stick figure on a dark ground for the review page. Not for the GPU."""
     img = Image.new("RGB", tuple(cell), PREVIEW_BG)
     draw = ImageDraw.Draw(img)
@@ -124,6 +134,9 @@ def draw_preview(keypoints: list[list[float]], names: list[str],
         draw.line([(0, baseline), (cell[0], baseline)], fill=PREVIEW_FLOOR, width=1)
     index = {n: i for i, n in enumerate(names)}
     width = max(2, round(min(cell) * 0.012))
+    for prop in props or ():
+        for polygon in prop.get("polygons") or ():
+            draw.polygon([tuple(pt) for pt in polygon], outline=PREVIEW_PROP, width=1)
     for a, b in rigkit.LIMBS:
         if a in index and b in index:
             colour = PREVIEW_FACE if a in rigkit.FACE_JOINTS or b in rigkit.FACE_JOINTS \
@@ -146,7 +159,8 @@ def write_previews(payload: dict[str, Any], frames_dir: Path) -> list[Path]:
     baseline = (payload.get("motion") or {}).get("baseline_row")
     written: list[Path] = []
     for entry in payload["frames"]:
-        img = draw_preview(entry["keypoints"], payload["names"], cell, baseline)
+        img = draw_preview(entry["keypoints"], payload["names"], cell, baseline,
+                           props=entry.get("props"))
         path = frames_dir / entry["file"]
         img.save(path)
         written.append(path)
@@ -159,16 +173,21 @@ def write_previews(payload: dict[str, Any], frames_dir: Path) -> list[Path]:
 def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
         mirror: bool = False, job_name: str | None = None,
         cell: tuple[int, int] | None = None,
+        props: Sequence[str] | None = None,
         work_dir: Path | None = None) -> Job:
-    """Sample one clip into work/<job>/ as if extract + pose had run."""
+    """Sample one clip into work/<job>/ as if extract + pose had run.
+
+    `props` None means the unit's kit from `config.UNIT_PROPS`; pass () for none.
+    """
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
     cell = tuple(cell or config.STRIP_CELL)
+    props = config.props_for_unit(slug) if props is None else tuple(props)
     provenance = rig_provenance(glb)
 
     loaded = rigkit.load_rig(glb)
     jmap = rigkit.detect_map(loaded.names)
-    frame = rigkit.reference_frame(loaded, jmap, mirror=mirror)
+    frame = rigkit.reference_frame(loaded, jmap, mirror=mirror, props=props)
     payload = rigkit.clip_keypoints(loaded, clip, fps=fps, cell=cell,
                                     mirror=mirror, frame=frame)
     clip_obj = loaded.clip(clip)
@@ -198,6 +217,20 @@ def list_clips(glb: Path) -> list[dict[str, Any]]:
     return rigkit.list_clips(rigkit.load_rig(Path(glb)))
 
 
+def parse_props(text: str | None) -> tuple[str, ...] | None:
+    """`--props`: None (unit default), 'none' -> (), else the listed kinds."""
+    if text is None:
+        return None
+    kinds = tuple(k.strip() for k in text.split(",") if k.strip())
+    if kinds == ("none",):
+        return ()
+    unknown = [k for k in kinds if k not in rigkit.PROP_KINDS]
+    if unknown:
+        raise SystemExit(f"anim rig: unknown prop(s) {unknown}; known: "
+                         f"{list(rigkit.PROP_KINDS)} or none")
+    return kinds
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -218,6 +251,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "rig's forward on +x: the party faces right)")
     parser.add_argument("--job", default=None,
                         help="job name (default <slug>_<action>)")
+    parser.add_argument("--props", default=None,
+                        help="props drawn onto the skeleton, comma-separated "
+                             f"from {list(rigkit.PROP_KINDS)}, or 'none' "
+                             "(default: the unit's kit in config.UNIT_PROPS)")
     parser.add_argument("--width", type=int, default=config.STRIP_CELL[0],
                         help="skeleton cell width; must match the strip cell")
     parser.add_argument("--height", type=int, default=config.STRIP_CELL[1])
@@ -238,6 +275,7 @@ def run_stage(args: argparse.Namespace) -> int:
         raise SystemExit(f"anim rig: {', '.join(missing)} required (or --list)")
     job = rig(Path(args.glb), clip=args.clip, action=args.action, slug=args.slug,
               fps=args.fps, mirror=args.mirror, job_name=args.job,
+              props=parse_props(args.props),
               cell=(args.width, args.height))
     manifest = job.read_manifest()
     src = manifest["motion_source"]

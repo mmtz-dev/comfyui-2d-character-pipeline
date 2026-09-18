@@ -344,3 +344,99 @@ def test_the_feet_stand_on_the_floor_in_idle(knight):
     assert baseline - 25 < lowest < baseline, "ankles a little above the floor row"
     assert lowest == kp["frames"][0]["keypoints"][names.index("left_ankle")][1] or \
         lowest == kp["frames"][0]["keypoints"][names.index("right_ankle")][1]
+
+
+# ---------------------------------------------------------------------------
+# Props - the skeleton props feature
+# ---------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def ual() -> rigkit.Rig:
+    if not UAL.exists():
+        pytest.skip("rigs/quaternius/UAL1_Standard.glb is not vendored")
+    return rigkit.load_rig(UAL)
+
+
+def _outline(kind: str, polys: list) -> np.ndarray:
+    return np.asarray(polys[0], dtype=float)
+
+
+def test_a_rig_without_props_writes_no_props_key(knight):
+    kp = rigkit.clip_keypoints(knight, "Hit_A", fps=12, cell=CELL)
+    assert kp["motion"]["props"] == []
+    assert all("props" not in entry for entry in kp["frames"])
+
+
+def test_an_unknown_prop_is_refused_with_the_known_kinds(ual):
+    with pytest.raises(ValueError, match="sword"):
+        rigkit.reference_frame(ual, props=("halberd",))
+
+
+def test_props_ride_the_hand_and_forearm_bones(ual):
+    frame = rigkit.reference_frame(ual, props=("sword", "shield"))
+    assert [(p.kind, p.bone, p.end_bone) for p in frame.props] == [
+        ("sword", "hand_r", None), ("shield", "lowerarm_l", "hand_l")]
+
+
+def test_at_rest_the_blade_points_forward_and_the_shield_faces_up(ual):
+    """The palms-down convention: T-pose, a gripped blade points forward out
+    of the fist, the back of the forearm (and so the shield) faces up."""
+    frame = rigkit.reference_frame(ual, props=("sword", "shield"))
+    world = ual.rest_world()
+    props = dict(rigkit.prop_polygons(ual, world, frame))
+    hand = world[ual.index("hand_r")][:3, 3]
+    blade = props["sword"][0]
+    tip = blade[2]
+    reach = tip - hand
+    assert reach @ frame.forward == pytest.approx(
+        rigkit.PROP_SIZES["sword"]["blade"] * frame.height, rel=1e-3)
+    assert abs(reach[1]) < 1e-6, "level, at rest"
+    kite = props["shield"][0]
+    normal = np.cross(kite[1] - kite[0], kite[3] - kite[0])
+    normal /= np.linalg.norm(normal)
+    assert abs(normal[1]) == pytest.approx(1.0, abs=1e-3), "face up (or down) at rest"
+    forearm_mid = (world[ual.index("lowerarm_l")][:3, 3] + world[ual.index("hand_l")][:3, 3]) / 2
+    assert np.linalg.norm(kite.mean(axis=0) - forearm_mid) < 0.15 * frame.height
+
+
+def test_props_are_sized_by_the_standing_height(ual):
+    frame = rigkit.reference_frame(ual, props=("sword",))
+    blade = dict(rigkit.prop_polygons(ual, ual.rest_world(), frame))["sword"][0]
+    length = np.linalg.norm(blade[2] - (blade[0] + blade[4]) / 2)
+    sizes = rigkit.PROP_SIZES["sword"]
+    assert length == pytest.approx((sizes["blade"] + sizes["pommel"]) * frame.height, rel=1e-3)
+
+
+def test_props_project_with_the_joints_centre_not_their_own(ual):
+    """The guard is centred on the hand, so its 2D centre must land on the
+    right-wrist keypoint in every frame - which only holds if the props were
+    centred on the joints' extent, not on the props' own."""
+    frame = rigkit.reference_frame(ual, props=("sword", "shield"))
+    kp = rigkit.clip_keypoints(ual, "Sword_Attack", fps=12, cell=CELL, frame=frame)
+    assert kp["motion"]["props"] == ["sword", "shield"]
+    wrist = kp["names"].index("right_wrist")
+    for entry in kp["frames"]:
+        kinds = [p["kind"] for p in entry["props"]]
+        assert kinds == ["sword", "shield"]
+        guard = np.asarray(entry["props"][0]["polygons"][1], dtype=float)
+        assert guard.mean(axis=0) == pytest.approx(entry["keypoints"][wrist], abs=0.05)
+        assert len(entry["props"][1]["polygons"][0]) == 5, "a kite"
+
+
+def test_props_do_not_move_the_joints(ual):
+    plain = rigkit.clip_keypoints(ual, "Sword_Attack", fps=12, cell=CELL)
+    frame = rigkit.reference_frame(ual, props=("sword", "shield"))
+    armed = rigkit.clip_keypoints(ual, "Sword_Attack", fps=12, cell=CELL, frame=frame)
+    assert [e["keypoints"] for e in plain["frames"]] == [e["keypoints"] for e in armed["frames"]]
+    poses, _ = posekit.series_from(armed)
+    assert all(p is not None for p in poses), "the picker still reads it"
+
+
+def test_the_blade_follows_the_swing(ual):
+    """Sword_Attack is a horizontal slash: on the recovery (frame 10) the sword
+    hand is out front and the blade reaches further forward still."""
+    frame = rigkit.reference_frame(ual, props=("sword",))
+    kp = rigkit.clip_keypoints(ual, "Sword_Attack", fps=12, cell=CELL, frame=frame)
+    wrist = kp["names"].index("right_wrist")
+    entry = kp["frames"][10]
+    tip_x = entry["props"][0]["polygons"][0][2][0]
+    assert tip_x > entry["keypoints"][wrist][0] + 40

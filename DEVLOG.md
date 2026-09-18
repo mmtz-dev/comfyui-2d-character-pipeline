@@ -4,6 +4,111 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-16 — the skeleton props feature: the ControlNet is told which hand is the sword hand
+
+**What.** `anim rig` now draws the unit's kit onto the skeleton. A knight's stick figure
+carries a blade (with crossguard) off the right hand and a kite shield on the left forearm,
+computed in 3D on the rig's `hand_r` / `lowerarm_l` bones, projected with the joints, and
+stroked in white 2 px outlines by `posekit.draw`. `knight_strike` was re-run through
+`rig → pick → strip → render → post` with it; **not published** — the frames are in
+`work/knight_strike/post/` awaiting the owner's look. Before/after, the style trials and the
+robustness renders: <http://192.168.1.158:8090/knight-two-swords/props.html>.
+
+**Why this and not a prompt.** Yesterday's entry: 1 clean strip in 5 by prompting. The
+prompt cannot name which stick is the sword arm; only the image can. Three prop styles
+(single white line, white outline, filled white silhouette) were rendered on the published
+picks at the published seed: **all three fixed the two-sword recovery cell** — the sword
+went where the blade was drawn, the shield where the kite was. Outline kept the shield's
+shape best and is what the union ControlNet already knows as canny, so that is what shipped.
+
+**Where it lives.**
+
+- `anim.rigkit`: `PROP_SIZES` (fractions of the standing height, so a chibi gets a chibi
+  sword), `PROP_JOINT` (sword → right-wrist bone, shield → left-elbow bone), `PropFrame`
+  on `RigFrame.props`, `prop_frame()` / `prop_polygons()`. One rest convention, stated in
+  the module docstring: T/A-pose, palms down, so a gripped blade points FORWARD out of the
+  fist, the guard runs along the fingers, and the back of the forearm — where the shield
+  sits — faces UP. `Projection.anchor_for()` gives the joints' centre so the props are
+  centred with the joints, not on their own extent (the test pins the guard's centre to
+  the wrist keypoint in every frame).
+- `keypoints.json`: per frame `props: [{kind, polygons: [[[x, y], …], …]}]` in cell
+  pixels; `motion.props` lists the kinds. Schema still `anim.keypoints/1` — additive; a
+  filmed clip never has it and the picker ignores it (drawing, not pose).
+- `posekit.draw(props=…)`: `cv2.polylines` in `PROP_COLOUR` white after rtmlib's
+  skeleton, same letterbox, same line width. `pose.render_skeletons` passes it through.
+- `config.UNIT_PROPS` (`knight: sword, shield`) and `props_for_unit()`; `anim rig --props`
+  and `anim base --props` override (`none` for a bare skeleton). `job.json.motion_source.
+  props` records what was drawn; the previews get grey outlines.
+- Tests: +15 (238 passed / 1 skipped, was 223). Geometry on the vendored Quaternius rig,
+  renderer, stage defaults, the flag.
+
+**The pick moved too, by hand.** With props the recovery cell was right in every trial,
+but the follow-through cell (frame 6) still put the sword on the raised arm — that arm is
+the *shield* arm, raised behind the head, and the real sword arm is crossed in front of
+the chest at hip height, which a profile flattens to a stub. Nothing drawn on it survives
+that reading. Frame 5 — the true contact, sword arm straight out, lost to 6 by 0.0007 of
+deviation — renders clean at two seeds, so `picks.json` is hand-edited to `[0, 5, 10, 18]`
+(rest, contact, recover, rest) with `timing {weights [2, 4, 3, 2], anchor 1, source
+"hand"}`; `pick` will refuse to overwrite it without `--force`. The template-shaped
+alternative `[0, 3, 5, 10]` (rest, wind-up, contact, recover) was tried and rejected: in
+the wind-up the shield is edge-on, its outline a sliver, and the forward shield arm grew a
+sword again.
+
+**Rendered at the seed the other knight actions used** (`--seed 3139000483690707`), not
+the derived one: the derived seed gave one sword per cell too but a different knight
+(open-faced helm), and cross-action identity is prompt + seed only (2026-09-15, fix 4).
+
+**Open.** An edge-on shield draws as a sliver; a minimum apparent width (turn the kite to
+face the camera when its projected width drops under some fraction) would cover the
+wind-up pose. The picker preferring 6 over 5 is a plateau tie, not a bug, but "the frame
+after the speed peak is the contact" would have found 5 by itself. Neither built.
+
+---
+
+## 2026-09-16 — the two-sword strike: why, and why a prompt does not fix it
+
+**What.** Owner feedback on the published `knight_strike`: the swing "spawns two swords".
+Traced, then a prompt-only fix tried and rejected. No code changed; the published frames are
+untouched. Sheets: <http://192.168.1.158:8090/knight-two-swords/> (cause) and
+<http://192.168.1.158:8090/knight-two-swords/prompt-fix.html> (the experiment).
+
+**Why it happens.** Three things stack.
+
+1. **The skeleton has no props.** An OpenPose stick figure says where the wrists are, not
+   what they hold; the prompt said "a sword and a kite shield" but not which hand, and the
+   ControlNet's left/right colouring is a hint Z-Image mostly ignores — it already puts the
+   sword in the *front* hand at rest, which on the rig is the left (shield) hand.
+2. **Quaternius `Sword_Attack` is a horizontal slash with a 46° body twist, and the projection
+   is a flat profile.** Read off the GLB: on the follow-through (frame 6) the sword hand has
+   crossed to the character's left side at hip height (lateral +0.57 rig units) while the
+   off-hand is raised high behind the head; the orthographic side view flattens that to
+   "short stub forward-down, long arm raised behind", so the model paints the sword on the
+   *shield* arm and the shield vanishes. On the recovery (frame 10) both arms are straight
+   out, one forward one back — two straight arms plus "sword" in the prompt is a sword on
+   each end.
+3. The picks are `[0, 6, 10, 18]`: rest, follow-through, recovery, rest. The mid-swing
+   contact (frame 5, deviation 0.8337) lost to frame 6 (0.8344) by 0.0007 and was deduped
+   away, so the strip has no hit pose.
+
+**The prompt experiment.** Same skeleton strip, strength 1.0, pose pass only. Two prompts
+that spell out the hands ("sword in his right hand only … shield strapped to his left
+forearm … left hand is empty and never holds a weapon … exactly one sword in each pose", and a
+variant insisting the shield stays visible when that arm is raised or swung back), at the
+original seed and two fresh ones. **1 clean strip out of 5.** Same seed → same composition,
+two swords again; the one clean strip (A, seed 1001) got there by *not* following the
+skeleton — the raised arm became a shield held up and cells 2 and 3 are the same lunge. No
+negative prompt is available: the workflow runs Z-Image Turbo at cfg 1.0 with the negative
+zeroed, so "no dual wield" cannot be said.
+
+**Conclusion.** The prompt cannot name which stick is the sword arm; only the skeleton image
+can. Next candidates, in order: draw the props onto the skeleton (a blade line off the right
+wrist, a shield shape on the left forearm — the ControlNet is *told*, not asked); or pick a
+clip that reads in profile (a vertical chop with no body twist) and pin frame 5 into the
+picks. Neither is built; nothing in OpenProject was changed. Experiment renders in
+`work/_exp/ks_prompt_*.png` (gitignored).
+
+---
+
 ## 2026-09-15 — the strip timing feature: the sidecar carries the shape, `publish` writes it
 
 **What.** Every published action now says how long each frame holds and which frame is the
@@ -731,3 +836,33 @@ change in either silently changes every published frame.
 - The Pixel-Art LoRA hash decision.
 - Every pipeline stage body.
 - Fixtures: a CC0 profile clip, the knight placeholder, a canned standing skeleton.
+
+---
+
+## 2026-09-16 — the two open gate problems get a route: three features filed, no code
+
+**What.** After the two-sword trace above, the owner asked how the hosted AI sprite-sheet tools
+(pixelanimation.io) animate, and whether we can. Research and the grilled decisions are in
+`game_core/discovery/game02/ai-sprite-sheet-generators-research.md`; the work is filed as
+[#268 the clip render feature](http://192.168.1.158:8700/work_packages/268),
+[#269 the rig props feature](http://192.168.1.158:8700/work_packages/269) and
+[#270 the part palette lock feature](http://192.168.1.158:8700/work_packages/270). Nothing in this
+repo changed; the published knight frames stay.
+
+**Why this shape.** The hosted tools are closed models (Retro Diffusion behind pixelanimation.io;
+PixelLab's own skeleton-window model), so "do it ourselves" means the approach, not the weights.
+For **identity drift**, the survey's usable mechanism is a reference-image-conditioned video model —
+Wan 2.2 Fun-Control (VACE as fallback; the forked pipeline already runs it at 22.5 GB) fed the
+`base` pose-pass render and a control video rendered from every frame of the rig clip; `pick` then
+chooses the 2–6 key poses from the generated frames, so `review`/`post`/`publish`, the sidecar and
+the timing block are untouched, and the pose pass survives as the seconds-long preview. For
+**props**, the DEVLOG entry above listed "draw the props onto the skeleton" first; the owner chose
+the stronger route instead — prop meshes parented to the Quaternius hand bones in `anim rig`,
+carried by a **depth** channel, because a depth frame from a rig that holds the sword is the only
+conditioning any surveyed model has for "what the hand holds", and it is a fact of the rig rather
+than a request in a prompt. First-hand: `rigs/quaternius/UAL1_Standard.glb` is a single `Mannequin`
+mesh, so the props are added, not read. The **part palette lock** is the safety net the owner asked
+for — SAM3 part masks at 512 px, each part snapped to the base sprite's colours — and its per-part
+pixel counts are the measurable half of the second gate: one knight per frame; part colours within
+tolerance across strike/hit/death; one sword, in the sword hand, in every strike frame. Budget: up
+to ~5 min per action for a final render. The KayKit/Quaternius ruling waits for that gate.

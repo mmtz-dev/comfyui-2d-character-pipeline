@@ -129,7 +129,8 @@ def render_skeletons(payload: dict[str, Any], out_dir: Path,
         if not entry.get("keypoints"):
             continue
         canvas = posekit.draw(entry["keypoints"], entry["scores"], source, cell,
-                              kpt_thr=float(payload.get("kpt_thr", 0.4)))
+                              kpt_thr=float(payload.get("kpt_thr", 0.4)),
+                              props=entry.get("props"))
         path = out_dir / f"skel_{entry['index'] + 1:04d}.png"
         Image.fromarray(canvas[:, :, ::-1]).save(path)  # BGR -> RGB
         written.append(path)

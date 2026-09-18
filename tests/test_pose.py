@@ -194,3 +194,39 @@ def test_smoke_dwpose_finds_the_person_in_the_cc0_photo(tmp_path):
     assert normalised is not None, "hips and shoulders were not both found"
     written = pose_stage.render_skeletons(payload, tmp_path / "pose")
     assert len(written) == 2
+
+
+def test_the_renderer_strokes_props_in_white_over_the_skeleton(keypoints_payload):
+    """The skeleton props feature: a closed outline in the joints' own pixels,
+    drawn in a colour DWPose never uses, so it reads as an edge, not a limb."""
+    frame = keypoints_payload["frames"][6]
+    source = tuple(keypoints_payload["source_size"])
+    sx, sy = source
+    square = [[sx * 0.1, sy * 0.1], [sx * 0.3, sy * 0.1], [sx * 0.3, sy * 0.3],
+              [sx * 0.1, sy * 0.3]]
+    plain = posekit.draw(frame["keypoints"], frame["scores"], source, config.STRIP_CELL)
+    armed = posekit.draw(frame["keypoints"], frame["scores"], source, config.STRIP_CELL,
+                         props=[{"kind": "sword", "polygons": [square]}])
+    white = (armed == 255).all(axis=2)
+    assert white.any(), "the outline was drawn"
+    assert not (plain == 255).all(axis=2).any(), "rtmlib's palette has no white"
+    # Letterboxed with the joints: the square's corner lands where a joint at
+    # the same source point would.
+    scale = min(config.STRIP_CELL[0] / sx, config.STRIP_CELL[1] / sy)
+    off = ((config.STRIP_CELL[0] - sx * scale) / 2, (config.STRIP_CELL[1] - sy * scale) / 2)
+    cx, cy = round(sx * 0.1 * scale + off[0]), round(sy * 0.1 * scale + off[1])
+    assert white[cy - 2:cy + 3, cx - 2:cx + 3].any()
+    # Everything that is not the outline is the plain skeleton.
+    assert np.array_equal(armed[~white], plain[~white])
+
+
+def test_render_skeletons_draws_a_frames_props(keypoints_payload, tmp_path):
+    payload = json.loads(json.dumps(keypoints_payload))
+    sx, sy = payload["source_size"]
+    payload["frames"][0]["props"] = [{"kind": "shield", "polygons": [
+        [[sx * 0.4, sy * 0.4], [sx * 0.6, sy * 0.4], [sx * 0.5, sy * 0.7]]]}]
+    written = pose_stage.render_skeletons(payload, tmp_path)
+    with Image.open(written[0]) as img:
+        assert (np.asarray(img.convert("RGB")) == 255).all(axis=2).any()
+    with Image.open(written[1]) as img:
+        assert not (np.asarray(img.convert("RGB")) == 255).all(axis=2).any()

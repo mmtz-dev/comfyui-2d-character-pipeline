@@ -36,7 +36,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from PIL import Image
 
@@ -61,17 +61,18 @@ def stand_payload(path: Path | None = None) -> dict[str, Any]:
 
 
 def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
-                fps: int | None = None, mirror: bool = False
+                fps: int | None = None, mirror: bool = False,
+                props: Sequence[str] = ()
                 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """One frame of a rig clip as a one-frame keypoints payload, plus its
-    motion_source block. Same facing detection and per-rig scale as `anim rig`,
-    at the portrait cell."""
+    motion_source block. Same facing detection, per-rig scale and props as
+    `anim rig`, at the portrait cell."""
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
     provenance = rig_stage.rig_provenance(glb)
     loaded = rigkit.load_rig(glb)
     jmap = rigkit.detect_map(loaded.names)
-    ref = rigkit.reference_frame(loaded, jmap, mirror=mirror)
+    ref = rigkit.reference_frame(loaded, jmap, mirror=mirror, props=props)
     clip_obj = loaded.clip(clip)
     times = rigkit.sample_times(clip_obj.duration, fps)
     if not 0 <= frame < len(times):
@@ -90,6 +91,7 @@ def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
 def prepare(slug: str, *, cell: tuple[int, int] | None = None,
             pose_path: Path | None = None, rig: Path | None = None,
             clip: str = "Idle", frame: int = 0, mirror: bool = False,
+            props: Sequence[str] | None = None,
             work_dir: Path | None = None) -> Job:
     """Lay out work/<slug>_base/ so `post` and `publish` can be re-used verbatim.
 
@@ -108,14 +110,16 @@ def prepare(slug: str, *, cell: tuple[int, int] | None = None,
 
     source: dict[str, Any] | None = None
     if rig is not None:
+        props = config.props_for_unit(slug) if props is None else tuple(props)
         payload, source = rig_payload(Path(rig), clip=clip, frame=frame,
-                                      cell=cell, mirror=mirror)
+                                      cell=cell, mirror=mirror, props=props)
     else:
         payload = stand_payload(pose_path)
     entry = payload["frames"][0]
     canvas = posekit.draw(entry["keypoints"], entry["scores"],
                           tuple(payload["source_size"]), cell,
-                          kpt_thr=float(payload.get("kpt_thr", 0.4)))
+                          kpt_thr=float(payload.get("kpt_thr", 0.4)),
+                          props=entry.get("props"))
     skeleton = job.pose_dir / "skel_0001.png"
     Image.fromarray(canvas[:, :, ::-1]).save(skeleton)
     write_json_in_place(job.keypoints_path, payload)
@@ -212,9 +216,10 @@ def base(slug: str, *, prompt: str | None = None, seed: int | None = None,
          assets_dir: Path | None = None, run_audit: bool = True,
          audit_script: Path | None = None, use_pixelfixer: bool = True,
          rig: Path | None = None, clip: str = "Idle", frame: int = 0,
-         mirror: bool = False, work_dir: Path | None = None) -> dict[str, Any]:
+         mirror: bool = False, props: Sequence[str] | None = None,
+         work_dir: Path | None = None) -> dict[str, Any]:
     job = prepare(slug, rig=rig, clip=clip, frame=frame, mirror=mirror,
-                  work_dir=work_dir)
+                  props=props, work_dir=work_dir)
     render_base(job, prompt=prompt, seed=seed, strength=strength, client=client)
     post_stage.post(job.name, palette=palette, matte=matte,
                     use_pixelfixer=use_pixelfixer, work_dir=work_dir)
@@ -248,6 +253,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "(default 0)")
     parser.add_argument("--mirror", action="store_true",
                         help="flip the rig's detected facing")
+    parser.add_argument("--props", default=None,
+                        help="props drawn onto the rig skeleton (see anim rig "
+                             "--props); default: the unit's kit")
     parser.set_defaults(audit=True, pixelfixer=True)
 
 
@@ -255,7 +263,7 @@ def run_stage(args: argparse.Namespace) -> int:
     rig_path = Path(args.rig) if args.rig else None
     if args.skeleton_only:
         job = prepare(args.slug, rig=rig_path, clip=args.clip, frame=args.frame,
-                      mirror=args.mirror)
+                      mirror=args.mirror, props=rig_stage.parse_props(args.props))
         what = (f"{job.read_manifest()['clip']}" if rig_path
                 else "canned standing skeleton")
         print(f"base: {what} -> {job.strip_dir / 'skeleton_strip.png'}")
@@ -266,7 +274,8 @@ def run_stage(args: argparse.Namespace) -> int:
                   strength=args.strength, palette=args.palette, matte=args.matte,
                   client=client, run_audit=args.audit,
                   use_pixelfixer=args.pixelfixer, rig=rig_path, clip=args.clip,
-                  frame=args.frame, mirror=args.mirror)
+                  frame=args.frame, mirror=args.mirror,
+                  props=rig_stage.parse_props(args.props))
     print(f"base: wrote {', '.join(result['frames'])} + {result['sidecar']} "
           f"to {result['dir']}")
     return 0
