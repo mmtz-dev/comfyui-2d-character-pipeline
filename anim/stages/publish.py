@@ -70,6 +70,17 @@ clip (`clip/provenance.json`). `post`'s report.json says which route it ran,
 and that decides which provenance file the sidecar copies - the seed, the
 workflow hash and the model list are the clip's, not a stale strip render's.
 
+ON `generation.parts` (the part palette lock feature)
+-----------------------------------------------------
+When `post` ran with `--parts`, the sidecar carries what it found: the part
+names, the palettes (on a base sprite, the palettes it EXTRACTED - which is
+where every action of that unit then reads them from; on an action, the
+palettes it LOCKED to and where they came from), the SAM 2.1 weights that
+drew the masks (also appended to `models`, since they touched the frame), and
+per frame, per part: pixels, colours, whether the part was found, and `drift`
+- the pixels that were outside the part's palette before the lock. The audit
+ignores keys it does not know, so this is additive.
+
 ON `source.license`
 -------------------
 It says **CC0-1.0**, the licence of the OUTPUT - and it has to: the audit
@@ -135,6 +146,26 @@ def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any]
         if record.get("steps"):
             steps = list(record["steps"])
             break
+    parts_block = None
+    parts_meta = (report or {}).get("parts")
+    if parts_meta:
+        parts_block = {
+            "mode": parts_meta.get("mode"),
+            "parts": list(parts_meta.get("parts") or []),
+            "palettes": parts_meta.get("palettes"),
+            "palettes_from": parts_meta.get("palettes_from"),
+            "model": parts_meta.get("model"),
+            "frames": [
+                {"index": r.get("index"),
+                 "parts": {name: {k: v for k, v in info.items()
+                                  if k in ("pixels", "drift", "colours", "found",
+                                           "locked", "reason")}
+                           for name, info in (r.get("parts") or {}).items()}}
+                for r in (report or {}).get("frames") or []],
+        }
+        model = parts_meta.get("model")
+        if model and model not in models:
+            models = list(models) + [model]
     motion = manifest.get("motion_source")
     if motion and motion.get("kind") == "rig":
         author = (f"generated locally from a {motion.get('license', '?')} rig "
@@ -182,6 +213,8 @@ def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any]
             "motion_source": dict(motion) if motion else None,
             # Where the timing SHAPE came from (see the module docstring).
             "timing_source": timing_source,
+            # The part palette lock feature's record, or null when it did not run.
+            "parts": parts_block,
         },
         "postprocess": steps,
     }

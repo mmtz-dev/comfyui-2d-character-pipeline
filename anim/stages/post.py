@@ -62,6 +62,21 @@ frames) and each is matted on its own. From the cell onward the chain is the
 same function, so the two routes differ only in where the pixels came from;
 `report.json` says which (`route`), and `publish` picks the matching
 provenance file from it.
+
+**The part palette lock (`--parts`, the part palette lock feature).** Off by
+default, and with it off the chain above produces exactly the bytes it did
+before the feature existed. On, each HD cell is masked into the unit's parts
+(`config.UNIT_PARTS`: sword, shield, helmet, arms, torso, legs for the knight)
+by SAM 2.1 prompted from the rig's joints and prop outlines, the masks ride
+the same trim/downscale as the pixels, and after the unit-level snap every
+pixel of a part is re-snapped to *that part's* palette. The palettes come
+from the unit's accepted base sprite: `post --parts` on a `base` job is the
+EXTRACT mode (no action -> nothing to lock to) and writes `post/parts.json`,
+which `publish` carries into the sprite's sidecar as `generation.parts`; every
+action job then LOCKS to it (`--parts-from` overrides the lookup). Per frame,
+per part, `report.json` records pixels, colours and `drift` - how many pixels
+were NOT in the part's palette before the lock - which is the number the
+second gate reads. See anim/partkit.py for the why of each choice.
 """
 
 from __future__ import annotations
@@ -74,7 +89,7 @@ from typing import Any, Callable
 import numpy as np
 from PIL import Image
 
-from anim import config, imaging
+from anim import config, imaging, partkit, posekit
 from anim.job import Job
 from anim.util import have, read_json, tool_version, write_json_in_place
 from anim.util import run as run_tool
@@ -242,8 +257,20 @@ def palette_snap(img: Image.Image, palette_png: Path) -> Image.Image:
 def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
                  chroma: tuple[int, int, int], use_pixelfixer: bool = True,
                  canvas: tuple[int, int] = None,
-                 downscale: str = DEFAULT_DOWNSCALE) -> tuple[Image.Image, list[str]]:
-    """One generated cell -> one finished 64x64 frame. Pure; no disk state."""
+                 downscale: str = DEFAULT_DOWNSCALE,
+                 part_masks: partkit.PartMasks | None = None,
+                 part_palettes: dict[str, Any] | None = None,
+                 parts_out: dict[str, Any] | None = None
+                 ) -> tuple[Image.Image, list[str]]:
+    """One generated cell -> one finished 64x64 frame. Pure; no disk state.
+
+    `part_masks` (the part palette lock feature) is the cell's HD label map;
+    it is trimmed and downscaled alongside the pixels and, after the palette
+    snap, either LOCKS each part to `part_palettes` or - when no palettes are
+    given - EXTRACTS the colours each part shows. What happened lands in
+    `parts_out` (an out-param so the return shape every caller relies on stays
+    `(frame, steps)`). With `part_masks` None, nothing below changes.
+    """
     canvas = tuple(canvas or config.CANVAS)
     if downscale not in DOWNSCALES:
         raise ValueError(f"unknown downscale {downscale!r}; known: "
@@ -256,6 +283,7 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
     cell, dropped = imaging.keep_main_blobs(cell)
     if dropped:
         steps.append(f"dropped {dropped} stray island(s)")
+    trim_box = imaging.opaque_box(cell) if part_masks is not None else None
     trimmed = imaging.trim(cell)
     alpha = trimmed.getchannel("A")
     steps.append(f"trim to {trimmed.width}x{trimmed.height}")
@@ -294,15 +322,133 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
     rgba = imaging.binarise_alpha(rgba)
     steps.append("re-apply binary mask")
 
+    if part_masks is not None:
+        small = partkit.downscale_labels(part_masks.labels, rgba.size, trim_box)
+        if part_palettes is not None:
+            rgba, part_report = partkit.lock(rgba, small, part_masks.names,
+                                             part_palettes)
+            locked = sum(1 for r in part_report.values() if r.get("locked"))
+            steps.append(f"part palette lock ({locked}/{len(part_masks.names)} "
+                         f"part(s) locked)")
+        else:
+            palettes = partkit.extract_palettes(rgba, small, part_masks.names)
+            part_report = {
+                name: {"pixels": int(((small == i) & (np.asarray(rgba)[:, :, 3] > 0)).sum()),
+                       "colours": [list(c) for c in palettes[name]]}
+                for i, name in enumerate(part_masks.names)}
+            steps.append("part palettes extracted")
+        if parts_out is not None:
+            # Only the sprite's own pixels carry a label on the canvas map.
+            small = np.where(np.asarray(rgba)[:, :, 3] > 0, small, -1)
+            placed = np.full((canvas[1], canvas[0]), -1, dtype=np.int16)
+            left = (canvas[0] - rgba.width) // 2
+            top = canvas[1] - rgba.height
+            h = min(rgba.height, canvas[1] - max(top, 0))
+            w = min(rgba.width, canvas[0] - max(left, 0))
+            placed[max(top, 0):max(top, 0) + h, max(left, 0):max(left, 0) + w] = \
+                small[:h, :w]
+            parts_out.update({"report": part_report, "labels": placed,
+                              "found": dict(part_masks.found),
+                              "scores": dict(part_masks.scores),
+                              "reasons": dict(part_masks.reasons)})
+
     framed = imaging.recanvas(rgba, canvas, "bottom-center")
     steps.append(f"recanvas {canvas[0]}x{canvas[1]} bottom-center")
     return framed, steps
 
 
 # ---------------------------------------------------------------------------
+# The part palette lock feature - where the palettes come from, and the masks
+# ---------------------------------------------------------------------------
+def load_part_palettes(slug: str, explicit: Path | None = None, *,
+                       assets_dir: Path | None = None,
+                       work_dir: Path | None = None
+                       ) -> tuple[dict[str, list[list[int]]], str]:
+    """(part -> colours, where they came from), in precedence order:
+
+      1. `--parts-from FILE` - a `post/parts.json` or a unit sidecar;
+      2. the published unit sprite's sidecar, `<assets>/2d/units/<slug>.json`
+         `generation.parts.palettes` - the accepted sprite is the source of truth;
+      3. `work/<slug>_base/post/parts.json` - the last `post --parts` on the base.
+    """
+    candidates: list[Path] = []
+    if explicit is not None:
+        candidates.append(Path(explicit))
+    else:
+        base = Path(assets_dir) if assets_dir is not None else config.ASSETS_DIR
+        candidates.append(base / "2d" / "units" / f"{slug}.json")
+        candidates.append(Job.open(f"{slug}_base", work_dir).post_dir / "parts.json")
+    for path in candidates:
+        if not path.exists():
+            continue
+        data = read_json(path)
+        palettes = (data.get("palettes") if data.get("schema") == partkit.PARTS_SCHEMA
+                    else ((data.get("generation") or {}).get("parts") or {}).get("palettes"))
+        if palettes:
+            return {k: [list(c) for c in v] for k, v in palettes.items()}, str(path)
+    tried = ", ".join(str(c) for c in candidates)
+    raise FileNotFoundError(
+        f"no part palettes for {slug!r} (tried {tried}). Run "
+        f"`anim post {slug}_base --parts` on the accepted base sprite first, "
+        f"publish it, or pass --parts-from.")
+
+
+def _mask_cells(job: Job, *, slug: str, cells: list[Cell],
+                segmenter: partkit.Segmenter | None
+                ) -> tuple[list[partkit.PartMasks], list[str]]:
+    """SAM masks for every cell (strip or clip route), prompted from keypoints.json."""
+    table = config.parts_for_unit(slug)
+    if not table:
+        raise ValueError(f"no part table for unit {slug!r} - add a row to "
+                         f"config.UNIT_PARTS before locking its palette")
+    if not job.keypoints_path.exists():
+        raise FileNotFoundError(f"no {job.keypoints_path} - the part prompts come "
+                                f"from the rig's joints (run `anim rig`/`pose`)")
+    payload = read_json(job.keypoints_path)
+    # The canned base pose carries no `names`; resolve them from the rig like
+    # posekit.series_from does.
+    names = list(payload.get("names") or posekit.rig_names(payload["rig"]))
+    source_size = tuple(payload["source_size"])
+    thr = float(payload.get("kpt_thr", config.POSE_KPT_THR))
+    by_index = {f.get("index", i): f for i, f in enumerate(payload["frames"])}
+    segmenter = segmenter or partkit.Sam2Segmenter()
+
+    masks: list[partkit.PartMasks] = []
+    for cell_meta, cell, hd_rgb in cells:
+        entry = by_index.get(cell_meta["frame"]) or {}
+        prompts = partkit.prompts_for(table, entry, names, source_size,
+                                      cell.size, thr)
+        rgb = np.asarray(hd_rgb.convert("RGB"))
+        alpha = np.asarray(cell)[:, :, 3]
+        results = segmenter.segment(rgb, prompts)
+        masks.append(partkit.resolve(table, prompts, results, alpha,
+                                     min_score=config.PART_MIN_SCORE))
+    return masks, [p.name for p in table]
+
+
+def _save_part_images(job: Job, stem: str, index: int, *, hd_rgb: Image.Image,
+                      masks: partkit.PartMasks, parts_out: dict[str, Any]) -> None:
+    """The HD overlay and the 64px label map, for the report and the review page."""
+    out = job.post_dir / "parts"
+    out.mkdir(parents=True, exist_ok=True)
+    partkit.overlay(hd_rgb, masks.labels, masks.names).save(out / f"{stem}_{index}_hd.png")
+    labels = parts_out.get("labels")
+    if labels is not None:
+        arr = np.zeros((labels.shape[0], labels.shape[1], 4), dtype=np.uint8)
+        for i in range(len(masks.names)):
+            arr[labels == i] = (*partkit.PART_COLOURS[i % len(partkit.PART_COLOURS)], 255)
+        Image.fromarray(arr, "RGBA").save(out / f"{stem}_{index}_labels.png")
+
+
+# ---------------------------------------------------------------------------
 # Stage entry point
 # ---------------------------------------------------------------------------
 CLIP_SOURCE = "clip"
+
+# One cell of work: its layout meta, the matted RGBA cell, and the un-matted
+# HD RGB crop the part palette lock feature prompts SAM with and draws its
+# overlay on.
+Cell = tuple[dict[str, Any], Image.Image, Image.Image]
 
 
 def is_clip_source(source: Path | str | None) -> bool:
@@ -311,7 +457,7 @@ def is_clip_source(source: Path | str | None) -> bool:
 
 
 def strip_cells(job: Job, manifest: dict[str, Any], source: Path | None,
-                cut: Callable[[Image.Image], Image.Image]) -> tuple[list[tuple[dict[str, Any], Image.Image]], str]:
+                cut: Callable[[Image.Image], Image.Image]) -> tuple[list[Cell], str]:
     """The strip route: matte the whole strip once, slice by layout.json."""
     layout = read_json(job.layout_path) if job.layout_path.exists() else None
     if layout is None:
@@ -324,17 +470,19 @@ def strip_cells(job: Job, manifest: dict[str, Any], source: Path | None,
             f"no generated strip at {strip_path} - run `anim render` first "
             f"(or pass --input)")
     with Image.open(strip_path) as raw:
-        matted = cut(raw.convert("RGBA"))
-    cells = []
+        strip_img = raw.convert("RGBA")
+    matted = cut(strip_img)
+    cells: list[Cell] = []
     for cell_meta in layout["cells"]:
         x, y, width, height = cell_meta["rect"]
+        box = (x, y, x + width, y + height)
         cells.append(({"index": cell_meta["index"], "frame": cell_meta["frame"]},
-                      matted.crop((x, y, x + width, y + height))))
+                      matted.crop(box), strip_img.crop(box)))
     return cells, str(strip_path)
 
 
 def clip_cells(job: Job, cut: Callable[[Image.Image], Image.Image]
-               ) -> tuple[list[tuple[dict[str, Any], Image.Image]], str]:
+               ) -> tuple[list[Cell], str]:
     """The clip route: one generated frame per pick, each matted on its own."""
     if not job.clip_frames():
         raise FileNotFoundError(f"no generated frames in {job.clip_frames_dir} - "
@@ -344,21 +492,25 @@ def clip_cells(job: Job, cut: Callable[[Image.Image], Image.Image]
     picks = list(read_json(job.picks_path).get("picks") or [])
     if not picks:
         raise ValueError(f"{job.picks_path} has no picks")
-    cells = []
+    cells: list[Cell] = []
     for position, frame_index in enumerate(picks):
         path = job.clip_frames_dir / f"{frame_index + 1:04d}.png"
         if not path.exists():
             raise FileNotFoundError(f"pick {frame_index} has no generated frame at "
                                     f"{path}; re-run `anim clip`")
         with Image.open(path) as raw:
-            cells.append(({"index": position, "frame": frame_index,
-                           "source": path.name}, cut(raw.convert("RGBA"))))
+            hd = raw.convert("RGBA")
+        cells.append(({"index": position, "frame": frame_index,
+                       "source": path.name}, cut(hd), hd))
     return cells, str(job.clip_frames_dir)
 
 
 def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
          source: Path | str | None = None, use_pixelfixer: bool = True,
          downscale: str = DEFAULT_DOWNSCALE,
+         parts: bool | None = None, parts_from: Path | None = None,
+         segmenter: partkit.Segmenter | None = None,
+         assets_dir: Path | None = None,
          work_dir: Path | None = None) -> dict[str, Any]:
     job = Job.open(job_name, work_dir)
     manifest = job.read_manifest()
@@ -386,19 +538,39 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
     for stale in job.post_dir.glob(f"{stem}_*.png"):
         stale.unlink()
 
+    # The part palette lock feature. `parts` None -> the unit's config default.
+    lock_on = parts if parts is not None else config.part_lock_default(slug)
+    part_masks: list[partkit.PartMasks] | None = None
+    part_names: list[str] = []
+    part_palettes: dict[str, list[list[int]]] | None = None
+    palettes_from: str | None = None
+    if lock_on:
+        part_masks, part_names = _mask_cells(job, slug=slug, cells=cells,
+                                             segmenter=segmenter)
+        if action:   # an action locks to the base sprite; the base extracts
+            part_palettes, palettes_from = load_part_palettes(
+                slug, parts_from, assets_dir=assets_dir, work_dir=work_dir)
+        for stale in (job.post_dir / "parts").glob(f"{stem}_*.png"):
+            stale.unlink()
+
     records: list[dict[str, Any]] = []
     problems_total = 0
-    for cell_meta, cell in cells:
+    for cell_index, (cell_meta, cell, hd_rgb) in enumerate(cells):
+        parts_out: dict[str, Any] = {}
         frame, steps = process_cell(cell, target_height=target_height,
                                     palette_png=palette_png, chroma=chroma,
                                     use_pixelfixer=use_pixelfixer,
-                                    downscale=downscale)
+                                    downscale=downscale,
+                                    part_masks=(part_masks[cell_index]
+                                                if part_masks else None),
+                                    part_palettes=part_palettes,
+                                    parts_out=parts_out)
         problems = imaging.verify_frame(frame, colours)
         problems_total += len(problems)
         name = f"{stem}_{cell_meta['index']}.png"
         if not problems:
             frame.save(job.post_dir / name)
-        records.append({
+        record = {
             "index": cell_meta["index"],
             "frame": cell_meta["frame"],
             "file": name,
@@ -407,7 +579,19 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
             "alpha_binary": imaging.alpha_is_binary(frame),
             "steps": steps,
             "problems": problems,
-        })
+        }
+        if part_masks:
+            masks = part_masks[cell_index]
+            record["parts"] = {
+                name_: {**parts_out["report"].get(name_, {}),
+                        "found": masks.found.get(name_, False),
+                        "score": masks.scores.get(name_),
+                        **({"reason": masks.reasons[name_]}
+                           if name_ in masks.reasons else {})}
+                for name_ in part_names}
+            _save_part_images(job, stem, cell_meta["index"], hd_rgb=hd_rgb,
+                              masks=masks, parts_out=parts_out)
+        records.append(record)
 
     report = {
         "schema": POST_SCHEMA,
@@ -430,6 +614,53 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         },
         "frames": records,
     }
+    if part_masks:
+        if part_palettes is None:
+            # EXTRACT: the base sprite's part palettes, the union over its cells
+            # (one, for a base job). Written where `load_part_palettes` looks
+            # and where `publish` copies it into the sprite's sidecar.
+            extracted: dict[str, list[list[int]]] = {n: [] for n in part_names}
+            pixels: dict[str, int] = {n: 0 for n in part_names}
+            for record in records:
+                for name_, info in (record.get("parts") or {}).items():
+                    pixels[name_] += int(info.get("pixels") or 0)
+                    for colour in info.get("colours") or []:
+                        if colour not in extracted[name_]:
+                            extracted[name_].append(colour)
+            # A part the base barely shows is not a palette. Locking a raised
+            # shield to the three pixels of shield the standing sprite has
+            # flattens it (knight_strike, 2026-09-17); better to leave that
+            # part unlocked, say so, and let the owner fix the base or the
+            # file by hand.
+            too_small = {n: pixels[n] for n in part_names
+                         if 0 < pixels[n] < config.PART_MIN_PALETTE_PIXELS}
+            part_palettes = {n: (cols if n not in too_small and cols else [])
+                             for n, cols in extracted.items()}
+            write_json_in_place(job.post_dir / "parts.json", {
+                "schema": partkit.PARTS_SCHEMA, "slug": slug, "job": job.name,
+                "model": partkit.model_entry(), "parts": part_names,
+                "palettes": part_palettes,
+                "pixels": pixels,
+                "rejected": {n: {"pixels": px, "colours": extracted[n],
+                                 "reason": f"under {config.PART_MIN_PALETTE_PIXELS} "
+                                           f"px on the base sprite"}
+                             for n, px in too_small.items()},
+                "found": {n: any((r.get("parts") or {}).get(n, {}).get("found")
+                                 for r in records) for n in part_names},
+                "_note": ("Hand-editable: `anim post <job> --parts-from` this "
+                          "file, or publish the base and every action reads "
+                          "the sprite's sidecar. Colours are [r, g, b] members "
+                          "of the unit palette."),
+            })
+        report["parts"] = {
+            "schema": partkit.PARTS_SCHEMA,
+            "mode": "lock" if action else "extract",
+            "model": partkit.model_entry(),
+            "min_score": config.PART_MIN_SCORE,
+            "parts": part_names,
+            "palettes": part_palettes,
+            "palettes_from": palettes_from,
+        }
     write_json_in_place(job.report_path, report)
     if problems_total:
         bad = [f"{r['file']}: {'; '.join(r['problems'])}"
@@ -439,7 +670,7 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
                            + f"\nSee {job.report_path}")
     job.update_manifest(post={"frames": len(records), "palette": str(palette_path),
                               "matte": matte, "downscale": downscale,
-                              "route": route})
+                              "route": route, "parts": bool(part_masks)})
     return report
 
 
@@ -467,18 +698,45 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="box = area-average straight to the target height "
                              "(default); pixeloe = contrast-aware pixelize, "
                              "noisier on real renders (anchor gate, 2026-09-15)")
+    parser.add_argument("--parts", dest="parts", action="store_true",
+                        default=None,
+                        help="the part palette lock feature: mask each frame "
+                             "into the unit's parts (SAM 2.1, prompted from "
+                             "the rig) and snap every part to its palette on "
+                             "the base sprite; on a base job, extract those "
+                             "palettes instead. Default: config.PART_LOCK_DEFAULT")
+    parser.add_argument("--no-parts", dest="parts", action="store_false",
+                        help="force the lock off")
+    parser.add_argument("--parts-from", dest="parts_from", default=None,
+                        metavar="FILE",
+                        help="part palettes to lock to (a post/parts.json or a "
+                             "unit sidecar); default: the published sprite's "
+                             "sidecar, then work/<slug>_base/post/parts.json")
     parser.set_defaults(pixelfixer=True)
 
 
 def run_stage(args: argparse.Namespace) -> int:
     report = post(args.job, palette=args.palette, matte=args.matte,
                   source=args.source, use_pixelfixer=args.pixelfixer,
-                  downscale=args.downscale)
+                  downscale=args.downscale, parts=args.parts,
+                  parts_from=Path(args.parts_from) if args.parts_from else None)
     print(f"post: {len(report['frames'])} frame(s) at "
           f"{config.CANVAS[0]}x{config.CANVAS[1]}, "
           f"{report['palette']['colours']}-colour palette")
     for record in report["frames"]:
         print(f"  {record['file']}  {record['colours']} colour(s)")
+        for name, info in (record.get("parts") or {}).items():
+            state = ("locked" if info.get("locked") else
+                     "extracted" if "drift" not in info and info.get("found") else
+                     f"skipped ({info.get('reason', 'not found')})")
+            drift = f", drift {info['drift']}" if info.get("drift") is not None else ""
+            print(f"      {name:<8} {info.get('pixels', 0):4d} px, "
+                  f"{len(info.get('colours') or [])} colour(s){drift}  {state}")
+    if report.get("parts"):
+        p = report["parts"]
+        where = (f"locked to {p['palettes_from']}" if p["mode"] == "lock"
+                 else f"palettes -> {Job.open(args.job).post_dir / 'parts.json'}")
+        print(f"  parts: {p['mode']} ({', '.join(p['parts'])}); {where}")
     return 0
 
 

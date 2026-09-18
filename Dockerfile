@@ -97,6 +97,12 @@ WORKDIR /work
 COPY requirements.txt /opt/anim/requirements.txt
 RUN pip install --no-cache-dir -r /opt/anim/requirements.txt
 
+# SAM 2.1 for the part palette lock feature - its own layer, no build isolation
+# (setup.py imports torch, which the layer above already installed), CUDA
+# extension off (optional; no nvcc here). See requirements.txt for the why.
+RUN SAM2_BUILD_CUDA=0 pip install --no-cache-dir --no-build-isolation "sam2==1.1.0" \
+ && python -c "from sam2.build_sam import build_sam2; print('sam2 importable')"
+
 # Test-only deps in their own layer, AFTER the expensive one, so moving pytest
 # never re-resolves torch + onnxruntime + the CUDA wheels.
 COPY requirements-dev.txt /opt/anim/requirements-dev.txt

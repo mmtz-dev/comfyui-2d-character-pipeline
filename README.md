@@ -98,9 +98,9 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
 | `render <job>` | strip | `render/pose_pass.png`, `identity_pass.png`, `provenance.json` | **a GPU stage.** Two `/prompt` jobs, not one graph. Seed is derived from the clip hash + action + picks unless `--seed` is given, so a re-run reproduces. |
 | `clip <job>` | every skeleton (+ `depth/` if `rig` wrote it) | `clip/frames/%04d.png`, `clip/control.mp4`, `clip/clip.json`, `clip/provenance.json` | **a GPU stage — the clip render feature.** Renders the whole rig clip as one Wan 2.2 Fun-Control 5B video with the unit's `base` render as the identity reference and the skeleton PNGs as the control video, one generated frame per rig frame (padded to 4n+1 by holding the last; `clip.json.frame_map`). `--control auto|pose|depth|blend` (auto = blend when `depth/` exists) and `--depth-gain` decide what the control video carries. Rig the job at the clip cell first: `rig … --width 512 --height 768` (768×768 for a lying death). Measured 2026-09-17: 9–55 s of GPU per action. Then `pick` as usual and `post --input clip`. See "The clip route" below. |
-| `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. |
+| `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
 | `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
-| `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips; `--skeleton-only` stops before the GPU. |
+| `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips; `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
 | `run <clip>` | a filmed clip | all of the above | stops politely before `render` when the GPU is off. |
 
 ### The clip route — the clip render feature
@@ -125,6 +125,33 @@ scales once per rig and a lying body is wider than 512). Wan has no square-aspec
 rule — that one is Qwen-Image-Edit's. Models: `wan2.2_fun_control_5B_bf16`,
 `umt5_xxl_fp8_e4m3fn_scaled`, `wan2.2_vae` in `gpu/models.lock` (all Apache-2.0).
 Evidence and the depth-control trials: `http://192.168.1.158:8090/clip-render/`.
+
+### The part palette lock
+
+The generation cannot promise that a shield stays the same grey from `strike` to `death`
+(the anchor gate, 2026-09-15). `post --parts` is the deterministic safety net:
+
+```bash
+# once, on the accepted base sprite: extract the palettes and publish them
+docker compose run --rm anim post knight_base --parts
+docker compose run --rm anim publish knight_base          # -> knight.json generation.parts
+
+# every action: lock to them
+docker compose run --rm anim post knight_strike --parts
+```
+
+- **Masks** come from SAM 2.1 hiera-small on the CPU (Apache-2.0, pinned by sha256 in
+  `config.SAM2_WEIGHTS`, fetched once into `.cache/sam2/`), prompted with **points from the
+  rig** — the joints in `pose/keypoints.json` plus the sword and shield outlines the skeleton
+  props feature draws — never with text (SAM 3 is gated and not Apache-2.0). The part table
+  per unit is `config.UNIT_PARTS`; order is priority for overlaps.
+- A part SAM does not find in a frame (a shield behind the body) is reported, not invented,
+  and a part under `PART_MIN_PALETTE_PIXELS` on the base sprite yields no palette, so an
+  action never locks a whole shield to three pixels.
+- **Off by default.** `config.PART_LOCK_DEFAULT` turns it on per unit; `--no-parts` forces it
+  off. With it off `post` produces the same bytes it did before the feature existed.
+- Read `anim/partkit.py` for the measured reasons behind each choice (why negatives are used
+  to choose SAM's candidate rather than fed to it, why no box, why Oklab).
 
 ### The review page
 
@@ -333,7 +360,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 255 passed, 1 skipped (2026-09-17)
+docker compose run --rm anim-pipeline pytest        # 312 passed, 4 skipped (2026-09-17)
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake
@@ -344,11 +371,15 @@ strips are drawn with Pillow; the sidecar is judged by game-02's **real**
 `test_rig.py`) use a two-bone GLB built in the test for the maths and the
 vendored CC0 `Knight.glb` for the end-to-end run.
 
-The one skipped test is opt-in and needs the network on first run — it proves
-rtmlib actually finds a person in a real photograph:
+The skipped tests are opt-in. One needs the network on first run — it proves
+rtmlib actually finds a person in a real photograph; one runs SAM 2.1 for real on
+the knight base (downloads 184 MB once); two re-run `post` on the real
+`knight_hit` / `knight_death` jobs and compare bytes with the published frames:
 
 ```bash
 docker compose run --rm -e ANIM_POSE_SMOKE=1 anim-pipeline pytest tests/test_pose.py -k smoke
+docker compose run --rm -e ANIM_SAM2_SMOKE=1 anim-pipeline pytest tests/test_partkit.py -k sam2
+docker compose run --rm -e ANIM_POST_REGRESSION=1 anim-pipeline pytest tests/test_parts_post.py -k reproduces
 ```
 
 Fixture sources and licences: [`tests/fixtures/FIXTURES_NOTICE.md`](tests/fixtures/FIXTURES_NOTICE.md).
