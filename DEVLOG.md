@@ -4,6 +4,44 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-20 — the camera direction sheet: one command for the manual test (#288)
+
+**What.** `#288`'s manual test asked for one command and one page. `anim/tools/direction_sheet.py`
+(new package `anim/tools/`) is that command: `python -m anim.tools.direction_sheet knight Idle`
+renders frame 0 of the named clip in every cell of `config.DIRECTIONS` — sixteen skeleton +
+depth pairs — plus the legacy `--mirror` render next to `s180`, and writes one static contact
+sheet naming every cell against the five pass criteria in #288. Every cell goes through the exact
+calls `anim rig` / `anim base` make (`rigkit.reference_frame`, `clip_keypoints`, `clip_depth`,
+`posekit.draw`) at one sampled time instead of the whole clip — no second projection, nothing
+written under `work/<job>/`. Ran green: 33 PNGs in 5.5 s, CPU only.
+
+**The unit → rig lookup nothing else in the pipeline has.** Every stage takes a GLB path on the
+command line; this tool's two positional args (`unit`, `clip`) needed a default, so
+`DEFAULT_RIG_FOR_UNIT` lives in the new module rather than `anim/config.py`. It points `knight`
+at the **KayKit** Knight, not Quaternius: both bodies are skinned, but the manual test's own
+example clip is named `Idle`, which is a KayKit clip — Quaternius's UAL rig calls its nearest
+equivalents `Idle_Loop` / `Sword_Idle` and has none spelled exactly `Idle`.
+
+**Output has no mount to publish through.** `compose.yml` mounts `/assets`, `/assets_src` and
+`/game02` into the container but nothing under `~/.cache/claude/visuals`, so the sheet writes to
+`work/sheets/camera-direction/` (inside the repo, already mounted) and the CLI prints the one
+`cp -r` line to publish it. Evidence: <http://192.168.1.158:8090/sprite-studio/camera-direction/>.
+
+**Test, without a real rig.** `tests/test_direction_sheet.py` reuses `test_rigkit.py`'s two-bone
+synthetic GLB (`write_synthetic_glb`) plus a throwaway `rig.json` sidecar (every rig here carries
+a licence, even a fixture). Its bones match no `rigkit.JointMap` `detect_map` knows, so
+`build_sheet` takes an optional `jmap` — test-only — that folds every OpenPose joint onto the
+rig's two bones, geometrically meaningless but enough to prove all sixteen cells, both channels
+and the mirror cell get written and named in `index.html`, with no network and no GPU. The bare
+rig has no mesh, so `Rig.skinned` is False and every depth frame is a placeholder — the sheet
+says so per cell (`no depth: unskinned rig`) rather than silently omitting the file, so the
+16 × 2 + 1 file count holds for any rig, skinned or not. Full suite: 420 passed / 4 skipped / 1
+failed (the one other
+failure in the suite right now, `test_cli.py::test_every_stage_in_the_plan_is_registered`,
+belongs to the concept-stage work landing in parallel on this branch — untouched here).
+
+---
+
 ## 2026-09-20 — the camera direction feature: `--yaw` / `--elevation`, the rig rotated before projection
 
 **What.** `anim rig` and `anim base` take `--yaw {0,45,…,315}` and `--elevation {side,top}`

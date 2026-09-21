@@ -309,6 +309,12 @@ What `anim rig` writes is byte-for-byte the layout `extract` + `pose` leave behi
   OpenPose face points are drawn in every cell, nose included on the back view — whether the
   pose ControlNet wants them hidden there is a turnaround-gate question, not decided here.
 
+**The manual test for the camera direction feature (#288) is one command.**
+`docker compose run --rm anim-pipeline python -m anim.tools.direction_sheet knight Idle`
+renders frame 0 of a clip in all sixteen cells plus the `--mirror` comparison and writes one
+contact-sheet page — see [`anim/tools/direction_sheet.py`](anim/tools/direction_sheet.py) for
+the five pass criteria and where the page lands.
+
 The skeleton is a hint about limb angles only (art bible §3). The Knight is chibi — its head is
 ~45 % of its height, so the neck→nose limb is as long as torso + legs — and whether the pose
 ControlNet honours that is the anchor-gate question; `rigs/quaternius/` holds a realistic-
