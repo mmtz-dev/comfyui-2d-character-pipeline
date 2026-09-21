@@ -51,7 +51,7 @@ extracted from real footage**. Same ComfyUI plumbing, different output contract.
 ## The `anim` CLI — the whole flow
 
 Everything CPU-side is one command. It runs on **Docker Desktop**; the only stages
-that touch a GPU are `render`, `clip`, `base` and `concept`, over HTTP.
+that touch a GPU are `render`, `clip`, `base`, `concept` and `bakeoff`, over HTTP.
 
 ```bash
 cd tools/anim-pipeline
@@ -114,6 +114,7 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
 | `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>` and `--existing [png]` | `work/<slug>_concept/candidates/NN.png` + `job.json`; `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
+| `bakeoff --unit <slug> --action attack` | the two rigs' attack clips | `work/bakeoff_<slug>_attack/{bakeoff.json,page/,report.md}` + one job per cell `work/bakeoff_<slug>_attack_<cell>/` | **a GPU stage — the frame route bake-off feature.** One action through both candidate routes for the in-between frames on both candidate rigs — four cells `V-kaykit`, `V-quaternius`, `K-kaykit`, `K-quaternius` — as ordinary `rig → clip → pick → post --parts` (V) and `rig → pick → strip → render → post --parts` (K) jobs called as a library, one seed, then one page with an animated 12 fps preview per row and one metric table. Resumable per cell (`--cells`, `--force`, `--page-only`); seconds per stage and VRAM per cell in `bakeoff.json`. The owner rules on the page; the stage picks nothing. See "The frame route bake-off" below. |
 | `run <clip>` | a filmed clip | all of the above | stops politely before `render` when the GPU is off. |
 
 ### The clip route — the clip render feature
@@ -230,6 +231,47 @@ docker compose run --rm anim post knight_base --parts && docker compose run --rm
   untouched; an earlier base render's files stay on disk and the note says what was replaced;
   picking again changes the pick. The manual test page:
   <http://192.168.1.158:8090/sprite-studio/character-concept/>.
+
+### The frame route bake-off — the frame route bake-off feature
+
+Before the action matrix renders eighty clips, one question has to be answered on one
+action ([#274](http://192.168.1.158:8700/work_packages/274)): where do the in-between frames
+come from — and, on the same page, which rig (the ruling open since #261)?
+
+```bash
+docker compose run --rm anim bakeoff --unit knight --action attack --parts-from work/gate_parts.json
+docker compose run --rm anim bakeoff --unit knight --action attack --cells K-kaykit --force   # redo one cell
+docker compose run --rm anim bakeoff --unit knight --action attack --page-only                # rebuild the page
+mkdir -p ~/.cache/claude/visuals/sprite-studio/bake-off && \
+  cp -r work/bakeoff_knight_attack/page/. ~/.cache/claude/visuals/sprite-studio/bake-off/
+```
+
+- **Route V — rig → Wan video.** What `anim clip` does: the rig clip at 12 fps, skeleton over
+  full-body depth at gain 0.35 (the second gate's variant (b)), Wan 2.2 Fun-Control 5B against the
+  unit's base render, then the clip *downsampled* to the attack's 12-frame budget by an even
+  spread of picks, `post --input clip --parts`.
+- **Route K — keyframe stills → rig-space tween.** The strip route's pose pass (Z-Image-Turbo +
+  the Fun ControlNet Union), with the in-betweening done on the rig: the clip is sampled at
+  exactly 12 instants (`rig(..., times=)`), so every frame is a still of the rig and "tween" means
+  denser sampling rather than pixels invented between two renders. The 12 cells go through the
+  pose pass as three 4-cell strips with one seed, at the anchor gate's control strength 1.0 and
+  unit prompt (`bakeoff.POSE_PROMPTS`; the workflow's own prompt returns silhouettes) — a 12-cell
+  strip breaks the pose pass, measured 2026-09-20 — joined into one `render/pose_pass.png` for
+  the page and cut into `clip/frames/` so `post --input clip --parts` mattes each cell on its own
+  (`rembg` on a 3648 px strip loses cells). The identity pass runs too and its strip is on the
+  page; the frames are the pose pass, as every published strip has been. No RIFE / FILM: no
+  interpolation node is pinned and this feature adds no weights. A pixel-space crossfade of the
+  five phase stills is on the page as a display-only baseline.
+- **The metric table** per cell: frames achieved against the budget; per part, mean pixels,
+  drift (pixels the part palette lock moved) and the frames the part was not found in; and two
+  proxies for the second gate's eye checks — *one sword in the sword hand* (one blob, nearest the
+  right wrist) and *one figure* (one matte blob, at most one helmet) — computed on the HD cells
+  from the same SAM 2.1 masks the lock used (`RecordingSegmenter`). The page says they are proxies.
+- Cells named `<route>-<rig>`; `bakeoff.json` records seconds per stage (rig / GPU / post), the
+  service's VRAM after the GPU stage, picks, sample instants, the chunk jobs and the metric block.
+  `report.md` is the same table in markdown plus the four questions the owner has to answer; the
+  committed copy is `docs/bake-off-2026-09-20.md`. Page:
+  <http://192.168.1.158:8090/sprite-studio/bake-off/>.
 
 ## Rig input mode — the rig motion input feature
 
@@ -463,7 +505,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 421 passed, 4 skipped (2026-09-20)
+docker compose run --rm anim-pipeline pytest        # 433 passed, 4 skipped (2026-09-21)
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

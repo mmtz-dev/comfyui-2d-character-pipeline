@@ -31,6 +31,7 @@ stage order:
   clip renders every rig frame as one Wan 2.2 Fun-Control video; then
     pick -> post --input clip -> publish (the clip render feature)
   base is the standing-sprite variant of the same chain
+  bakeoff runs one action through both in-between routes on both rigs -> one page
   run chains extract..strip, then render..publish if the GPU is up
 
 the usual one-liners:
@@ -45,7 +46,7 @@ where things live (override with the env vars in anim/config.py):
   assets     game-02's published PNGs and sidecars
 
 the GPU:
-  only `render`, `clip` and `base` touch it, over HTTP at $COMFYUI_URL
+  only `render`, `clip`, `base`, `concept` and `bakeoff` touch it, over HTTP at $COMFYUI_URL
   (default http://host.docker.internal:8188 - ComfyUI runs on the OTHER Docker
   engine, so localhost would not reach it from inside this container)
 """

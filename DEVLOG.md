@@ -4,6 +4,114 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-20 — the frame route bake-off feature: two routes × two rigs on the knight's attack, the page is the owner's
+
+**What.** `anim bakeoff --unit knight --action attack` — [#274](http://192.168.1.158:8700/work_packages/274),
+the third feature of the sprite studio epic. One character × one action through both candidate
+routes for the in-between frames, on both candidate rigs, rendered for real on the A5000:
+`V-kaykit`, `V-quaternius` (rig → Wan video), `K-kaykit`, `K-quaternius` (keyframe stills →
+tween), one seed (`3139000483690707`, the second gate's), 12 frames each, `post --parts` locked to
+`work/gate_parts.json`. Page: <http://192.168.1.158:8090/sprite-studio/bake-off/> (four rows, 64 px
+post frames ×3 with the raw pre-post cell under each, a 12 fps CSS preview per row, a part-mask
+toggle, the metric table); the same table in markdown with the owner's four questions:
+`docs/bake-off-2026-09-20.md` (the committed copy of `work/bakeoff_knight_attack/report.md`). New:
+`anim/stages/bakeoff.py`, `tests/test_bakeoff.py` (12 cases; 433 passed / 4 skipped, was 421 / 4), an optional `times=` on
+`rig.rig()` (the CLI has no flag for it), README row + section. **No verdict here; the ruling is
+the owner's.** Nothing published, nothing in OpenProject changed, no new weights.
+
+**The two routes, as built.**
+
+- *Route V* is `anim clip` as it stands: rig at 12 fps at the 512×768 clip cell, skeleton over
+  full-body depth at gain 0.35 (the second gate's variant (b)), Wan 2.2 Fun-Control 5B against
+  `work/knight_base/render/base_sprite.png`, then the clip *downsampled* to the budget — `pick`
+  hand-set to an even spread of 12 over the 14 (KayKit) / 19 (Quaternius) rig frames, the
+  picker's own 12 kept beside it in `picks.json` — and `post --input clip --parts`.
+- *Route K*'s in-betweening is the **rig-space tween**: no RIFE / FILM node is pinned in
+  `gpu/custom_nodes.txt` and this feature adds no weights, so the rig is sampled at exactly 12
+  instants across the clip (`phase_times`, `rig(..., times=)`) and every frame — the five phase
+  poses and the seven between — is a still of the rig through the strip route's pose pass. The
+  pixel-space crossfade (the honest baseline) is on the page as a display-only strip under each
+  K row: the five phase keys held, RGBA blends between, no palette snap, no metrics — it costs
+  nothing and shows what a tween without the rig means. Three decisions inside K, each with the
+  alternative:
+  1. **Three 4-cell strips, one seed, not one 12-cell strip.** The 12-cell strip (3648×320) was
+     tried first: the pose pass returned eight black silhouettes and four cells of noise
+     (`work/_exp/bo_k12q`, image on the page's server as `exp-12cell-pose-pass.png`). The 4-cell
+     strip is the unit the anchor gate verified. Per-frame single cells were the other option —
+     untested on this model, and a 304×320 cell is near-square. The three strips are joined into
+     one `render/pose_pass.png` (and `identity_pass.png`) for the page.
+  2. **The anchor gate's strength and prompt.** `pose_pass.json`'s own prompt names no unit and
+     returned black silhouettes on the first K run; the gate's strips were rendered at strength
+     1.0 with the knight's description on the command line (read back from the `prompt` chunk of
+     `work/knight_strike/render/pose_pass.png`). Both now live in the stage (`K_STRENGTH`,
+     `POSE_PROMPTS`) — the first time that prompt is in code.
+  3. **The frames go through `post --input clip`, not the strip slicer.** `rembg` on the whole
+     3648 px strip returned an empty matte for one cell (isnet-anime works at ~1024 px; twelve
+     cells wide leaves each knight ~85 px tall, and `post` refuses a transparent cell). So the 12
+     pose-pass cells are also cut into `clip/frames/%04d.png`, 1:1 with the rig frames exactly as
+     `anim clip` lays them out, and matted one by one — the very same `post` call Route V's
+     frames take. `report.json.route` therefore says `clip` for both. The identity pass runs too
+     (it is what `render` does) and its strip is on the page; the frames are the pose pass, as
+     every published strip has been (2026-09-15, finding 4) — so **the base render is not in
+     Route K's frames at all**: its identity is prompt + skeleton + seed, per strip.
+
+**The metric table** (`docs/bake-off-2026-09-20.md`; the page has it per frame):
+
+| cell | frames | one sword, sword hand | one figure | drift px, all parts, 12 frames | part-not-found cells | GPU s (service clock) | rig + post s | VRAM |
+|---|---|---|---|---|---|---|---|---|
+| V-kaykit | 12/12 | 10/12 | 12/12 | 3595 | 2 | 17.3 | 5.8 + 44.8 | 17.6 GB |
+| V-quaternius | 12/12 | 11/12 | 12/12 | 2384 | 1 | 172.9 | 5.5 + 46.6 | 17.6 GB |
+| K-kaykit | 12/12 | 7/12 | 12/12 | 4125 | 19 | 624.1 | 8.3 + 40.3 | 18.8 GB |
+| K-quaternius | 12/12 | 11/12 | 12/12 | 5277 | 2 | 640.0 | 7.8 + 18.8 | 18.8 GB |
+
+*Seconds.* V-quaternius's 172.9 s is one Wan job with the model paging in from disk (the second
+gate measured 19.9 s warm); V-kaykit ran warm at 17.3 s. Each K cell is six `/prompt` jobs —
+pose pass ~130 s and identity pass ~76 s each by the service's own stamps — because the two
+passes alternate Z-Image and Qwen-Image-Edit and every swap reloads: **both K cells blew the
+~5-minute budget** (10.4 / 10.7 min of GPU) and the run went on because the cost is the swap,
+not the sampling. The first K-quaternius attempt was also killed mid-`post` by the caller's
+timeout, which is why the stage now reuses a chunk's render on a re-run of a cell that is not
+yet done (`_chunk_rendered`) and reads its seconds back from `/history`. VRAM is what
+`/system_stats` reported after the GPU stage (Wan resident: 17.6 GB; Z-Image + Qwen: 18.8 GB).
+
+*The two counts are proxies*, computed on the HD cells from the same SAM 2.1 masks the lock used
+(`RecordingSegmenter` keeps what `post` asked and got): "one sword in the sword hand" = one sword
+blob (islands under 15 % of the largest ignored) whose nearest pixel to the right wrist is within
+12 % of the cell height and no nearer the left wrist; "one figure" = one matte blob and at most
+one helmet mask. The second gate counted these by eye; the page says the owner's eye overrules.
+
+**What I saw, per cell, honestly.**
+
+- *V-quaternius* is the second gate's (b) render at 12 frames instead of 4: silver plate, dark
+  cloak, red kite shield on the rest frames; frames 3–8 (the swing) go dark and painterly, the
+  cloak a black mass, and the drift column says so (torso 0–128, shield 0–184 px/frame). Frame 10
+  is the same two-blade recovery the gate saw. It plays as one knight swinging.
+- *V-kaykit* is one figure in every frame and the sword stays in the near hand — but the model
+  drew the **KayKit mannequin's proportions with a big blue helmet**, not the base render's knight:
+  the chibi body in the depth channel won over the reference (helmet drift 2290 px is the lock
+  fighting the blue). The shield is hidden behind the body in most frames. It is a consistent
+  chibi; it is not the knight.
+- *K-quaternius* follows the rig pose for pose and is the crispest pixel art of the four, but it
+  is **three knights, not one**: each 4-cell strip renders its own (frames 8–11 a smaller,
+  cloakless one), the sword sits in the far hand on frames 0, 1 and 3 and the shield changes from
+  red-with-cross to a round buckler mid-swing. The drift total is the highest (5277) because the
+  lock is pulling three renders toward one base.
+- *K-kaykit* reproduces the anchor gate's finding: the chibi skeleton is barely read as a pose —
+  the twelve cells are mostly front-facing shield-forward knights, the sword in the shield hand
+  on frames 0–1 and 10–11 (7/12), 19 part-not-found cells (torso hidden behind the shield in 8
+  frames, shield not found in 7). Three different knights across the three strips.
+
+**Left to the owner** (the four questions in `docs/bake-off-2026-09-20.md`): the route; the rig;
+whether the mid-swing drift needs a second reference at the contact pose or a Wan-side LoRA (the
+two Wan 2.2 pixel LoRAs found target the 14B i2v — `docs/research/2026-09-20-pixel-art-loras.md`);
+and whether exaggeration goes on the rig (#277 as planned) or into `post`. Also noted for the
+next feature, not decided here: the phase labels on the page are the 12-budget template by
+column (#276 makes them per-action); Route K without the identity pass would be three pose-pass
+jobs and no model swap, the cheap variant this page did not measure; and `gate_parts.json` is
+still the stopgap palette — the base re-render with props is the proper fix (2026-09-17).
+
+---
+
 ## 2026-09-20 — the character concept feature: `anim concept`, Z-Image-Turbo + the pixel-art LoRA, sketch in, candidates out
 
 **What.** `anim concept --unit knight --prompt "…" [--sketch png] [--count N] [--seed S]

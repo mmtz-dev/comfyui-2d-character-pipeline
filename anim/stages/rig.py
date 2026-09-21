@@ -241,6 +241,7 @@ def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
         cell: tuple[int, int] | None = None,
         props: Sequence[str] | None = None, depth: str | bool = "full",
         yaw: int = config.DEFAULT_YAW, elevation: str = config.DEFAULT_ELEVATION,
+        times: Sequence[float] | None = None,
         work_dir: Path | None = None) -> Job:
     """Sample one clip into work/<job>/ as if extract + pose had run.
 
@@ -248,7 +249,11 @@ def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
     `depth` is a `rigkit.DEPTH_MODES` value (or the older bool): `full` writes
     depth/%04d.png of body + props when the rig has a skinned mesh, `props`
     the prop solids alone, `none` nothing. `yaw` / `elevation` pick the cell
-    of `config.DIRECTIONS` (the camera direction feature).
+    of `config.DIRECTIONS` (the camera direction feature). `times` (seconds
+    into the clip) replaces the even `fps` sampling with explicit sample
+    instants - the frame route bake-off feature's rig-space tween samples a
+    clip at exactly its frame budget; the CLI has no flag for it. `fps` is
+    still recorded as the playback rate.
     """
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
@@ -261,13 +266,14 @@ def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
     jmap = rigkit.detect_map(loaded.names)
     frame = rigkit.reference_frame(loaded, jmap, mirror=mirror, props=props,
                                    yaw=yaw, elevation=elevation)
+    sample = [float(t) for t in times] if times is not None else None
     payload = rigkit.clip_keypoints(loaded, clip, fps=fps, cell=cell,
-                                    mirror=mirror, frame=frame)
+                                    mirror=mirror, frame=frame, times=sample)
     clip_obj = loaded.clip(clip)
     mode = rigkit.depth_mode(depth)
     wants_depth = mode == "props" and bool(props) or mode == "full" and loaded.skinned
     depth_clip = rigkit.clip_depth(loaded, clip, fps=fps, cell=cell, frame=frame,
-                                   mode=mode) if wants_depth else None
+                                   times=sample, mode=mode) if wants_depth else None
 
     job = Job.open(job_name, work_dir)
     job.root.mkdir(parents=True, exist_ok=True)

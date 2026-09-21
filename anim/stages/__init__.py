@@ -8,8 +8,10 @@ filmed one; `clip` (the clip render feature) sits between rig and pick and
 replaces strip + render when the frames come from a generated clip; `base` is
 the standing-sprite variant; `concept` (the character concept feature) comes
 before `base` in the studio's chain - text or sketch to candidate base
-characters, one of which is picked as the unit's reference; `run` chains the
-whole thing in one command.
+characters, one of which is picked as the unit's reference; `bakeoff` (the
+frame route bake-off feature) runs one action through both in-between routes
+on both rigs and writes the page the owner rules on; `run` chains the whole
+thing in one command.
 """
 
 STAGE_ORDER = [
@@ -25,5 +27,6 @@ STAGE_ORDER = [
     "publish",
     "base",
     "concept",
+    "bakeoff",
     "run",
 ]
