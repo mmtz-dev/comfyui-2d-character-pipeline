@@ -101,6 +101,67 @@ export interface SavedFrame {
   bytes: number;
 }
 
+// --- the curation board feature ---------------------------------------------
+export type CurationMode = "gates" | "every" | "end";
+export type GateState = "pending" | "accepted";
+export type CellStatus = "pending" | "accepted" | "rejected";
+export type FrameMark = "accept" | "reject";
+
+export interface StripFrame {
+  /** The source frame number - what picks.json and the marks use. */
+  index: number;
+  url: string;
+  mark: FrameMark | null;
+}
+
+export interface BoardCell {
+  key: string;
+  action: string;
+  direction: string;
+  verb: string | null;
+  job: string | null;
+  status: CellStatus;
+  frames: Record<string, FrameMark>;
+  seed: number | null;
+  regenerated_from: number | null;
+  decided_at: string | null;
+  run?: string | null;
+  stages: string[];
+  /** The GPU stage a regenerate runs: `clip` or `render`. */
+  stage: string | null;
+  current_seed: number | null;
+  rerender_requested: boolean;
+  set: string | null;
+  picks: number[];
+  strip: StripFrame[];
+  stale?: boolean;
+}
+
+export interface Waiting {
+  kind: "gate" | "cell";
+  key: string;
+  why: string;
+}
+
+export interface BoardState {
+  unit: string;
+  mode: CurationMode;
+  origin: string | null;
+  exists: boolean;
+  path: string;
+  gates: Record<string, GateState>;
+  actions: string[];
+  directions: string[];
+  cells: Record<string, BoardCell>;
+  waiting: Waiting[];
+}
+
+export interface CurationUnit {
+  unit: string;
+  cells: number;
+  record: boolean;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string, public body: unknown = null) {
     super(message);
@@ -181,4 +242,64 @@ export async function putFrame(job: string, set: string, index: number, png: Blo
   );
   if (!response.ok) throw new ApiError(response.status, await detail(response));
   return (await response.json()) as SavedFrame;
+}
+
+async function sendJSON<T>(method: string, path: string, body: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method,
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new ApiError(response.status, await detail(response));
+  return (await response.json()) as T;
+}
+
+// --- the curation board feature ---------------------------------------------
+export const listCuration = () => getJSON<{ units: CurationUnit[]; mode: CurationMode }>("/curation");
+export const getBoard = (unit: string) => getJSON<BoardState>(`/curation/${encodeURIComponent(unit)}`);
+
+function cellPath(unit: string, action: string, direction: string): string {
+  return `/curation/${encodeURIComponent(unit)}/cells/${encodeURIComponent(action)}/${encodeURIComponent(direction)}`;
+}
+
+/** `PUT .../cells/{action}/{dir}`: a status and/or frame marks (null clears one). */
+export const putCell = (
+  unit: string,
+  action: string,
+  direction: string,
+  body: { status?: CellStatus; frames?: Record<string, FrameMark | null> },
+) => sendJSON<BoardCell>("PUT", cellPath(unit, action, direction), body);
+
+export const putGate = (unit: string, gate: string, state: GateState) =>
+  sendJSON<BoardState>("PUT", `/curation/${encodeURIComponent(unit)}/gates/${encodeURIComponent(gate)}`, { state });
+
+/** `PUT /settings` is the whole document: send back what GET gave, changed. */
+export const putSettings = (settings: Settings) => sendJSON<Settings>("PUT", "/settings", settings);
+
+/** `POST .../regenerate`: the cell with its run (202), or the refusal - a busy
+ * GPU (409) or a pending gate (423) - as a value, like `startRun`. */
+export async function regenerateCell(
+  unit: string,
+  action: string,
+  direction: string,
+): Promise<{ cell: BoardCell; run: RunRecord } | { refused: RunRefusal }> {
+  const response = await fetch(`${cellPath(unit, action, direction)}/regenerate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: "{}",
+  });
+  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status === 202) {
+    const cell = body as unknown as BoardCell & { run: RunRecord };
+    return { cell, run: cell.run };
+  }
+  const error = (body.error ?? body.detail ?? response.statusText) as string;
+  return {
+    refused: {
+      status: response.status,
+      error: typeof error === "string" ? error : JSON.stringify(error),
+      run: body.run as RunRecord | undefined,
+      runs: body.runs as RunRecord[] | undefined,
+    },
+  };
 }

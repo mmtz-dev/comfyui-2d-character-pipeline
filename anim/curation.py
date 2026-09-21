@@ -280,10 +280,13 @@ def strip_of(job: Job, marks: dict[str, str]) -> dict[str, Any]:
     """The `strip` the board shows for one cell: each frame with its source
     frame number (what picks.json and the `frames` marks use), URL and mark.
 
-    With picks, the strip IS the picks: from `post` when it has one frame per
-    pick (post frame k is pick k), else the `clip` / `frames` PNG at each
-    picked index. Without picks, every frame of the best set. `render` and
-    `strip` hold N-cell strips, not frames, so they are not shown.
+    With picks, the strip is the picks PLUS the frames the marks reject - a
+    rejected frame has left picks.json but stays on the board, dimmed, so the
+    owner sees what they threw out and can take it back. From `post` when it
+    has one frame per shown pick (post frame k is pick k; the rejects are
+    what `post` still holds from before the reject), else the `clip` /
+    `frames` PNG at each index. Without picks, every frame of the best set.
+    `render` and `strip` hold N-cell strips, not frames, so they are not shown.
     """
     picks: list[int] = []
     if job.picks_path.exists():
@@ -291,22 +294,24 @@ def strip_of(job: Job, marks: dict[str, str]) -> dict[str, Any]:
             picks = [int(i) for i in read_json(job.picks_path).get("picks") or []]
         except (OSError, ValueError, TypeError):
             picks = []
+    rejected = {int(n) for n, m in marks.items() if m == "reject" and str(n).isdigit()}
+    shown = sorted(set(picks) | rejected)
     sets = {name: jobs_api.FRAME_STAGES[name](job) for name in STRIP_SETS}
     chosen: str | None = next((name for name in STRIP_SETS if sets[name]), None)
     strip: list[dict[str, Any]] = []
     if chosen is None:
         return {"set": None, "picks": picks, "strip": strip}
-    if picks and chosen == "post" and len(sets["post"]) == len(picks):
-        pairs = list(zip(sorted(picks), range(len(picks))))
-    elif picks and chosen == "post":
-        # post/ is stale against the picks (a frame was dropped since): show
-        # the source at the picks rather than a post set that no longer matches.
+    if shown and chosen == "post" and len(sets["post"]) == len(shown):
+        pairs = list(zip(shown, range(len(shown))))
+    elif shown and chosen == "post":
+        # post/ does not match the picks (a re-pick since it ran): show the
+        # source at the picks rather than a post set that means something else.
         chosen = next((n for n in ("clip", "frames") if sets[n]), None)
         if chosen is None:
             return {"set": "post", "picks": picks, "strip": strip, "stale": True}
-        pairs = [(i, i) for i in sorted(picks) if 0 <= i < len(sets[chosen])]
-    elif picks:
-        pairs = [(i, i) for i in sorted(picks) if 0 <= i < len(sets[chosen])]
+        pairs = [(i, i) for i in shown if 0 <= i < len(sets[chosen])]
+    elif shown:
+        pairs = [(i, i) for i in shown if 0 <= i < len(sets[chosen])]
     else:
         pairs = [(i, i) for i in range(len(sets[chosen]))]
     for source, index in pairs:

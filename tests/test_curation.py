@@ -143,6 +143,13 @@ def test_the_post_set_is_the_strip_when_it_matches_the_picks(unit, work_dir):
     assert [f["index"] for f in cell["strip"]] == sorted(picks)
     assert cell["strip"][1]["url"] == "/jobs/knight_strike/frames/post/1.png", \
         "post frame k is pick k, shown under the source frame's number"
+    # A reject drops the pick but post/ still has its frame: the strip keeps
+    # showing post, the rejected one dimmed in its old slot.
+    curation.set_frames(unit, "attack", "s0", {picks[1]: "reject"}, work_dir)
+    cell = curation.board(unit, work_dir)["cells"]["attack/s0"]
+    assert cell["set"] == "post" and cell["picks"] == [p for p in picks if p != picks[1]]
+    assert [(f["index"], f["mark"]) for f in cell["strip"]][1] == (picks[1], "reject")
+    assert cell["strip"][1]["url"] == "/jobs/knight_strike/frames/post/1.png"
 
 
 # ---------------------------------------------------------------------------
@@ -285,8 +292,9 @@ def test_put_cell_frames_rewrites_picks_exactly_as_review_does(api, unit, work_d
     assert cell["frames"] == {str(dropped): "reject"}
     assert cell["picks"] == expected_state["picks"]
     assert job.picks_path.read_bytes() == expected_bytes
-    assert [f["index"] for f in cell["strip"]] == expected_state["picks"], \
-        "the rejected frame leaves the strip with the picks"
+    assert [f["index"] for f in cell["strip"]] == picks, \
+        "the rejected frame stays on the board, marked, so it can be taken back"
+    assert [f["mark"] for f in cell["strip"] if f["index"] == dropped] == ["reject"]
     assert api.get("/jobs/knight_strike/picks").json() == ReviewApp(job).state()
 
     # Clearing the reject brings the frame back; the other picks are untouched.

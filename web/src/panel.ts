@@ -1,8 +1,11 @@
-// The studio panel: the pipeline beside the Piskel canvas. Four sections -
-// Job (open a job's frames), Save (write them back), Pipeline (start stages,
-// follow the run), Palette (the project's colours in Piskel's list). Plain
-// DOM, no framework: the page is one screen and Piskel itself is jQuery-era
-// JavaScript, so a second rendering model would be a second thing to learn.
+// The studio panel: the pipeline beside the Piskel canvas. Two tabs. The
+// Pipeline tab is four sections - Job (open a job's frames), Save (write them
+// back), Pipeline (start stages, follow the run), Palette (the project's
+// colours in Piskel's list); the Board tab is the curation board
+// (board-view.ts), which widens the panel because a grid of frame strips
+// needs the room. The Run section shows on both. Plain DOM, no framework:
+// the page is one screen and Piskel itself is jQuery-era JavaScript, so a
+// second rendering model would be a second thing to learn.
 
 import {
   ApiError,
@@ -20,6 +23,7 @@ import {
   type JobRow,
   type RunRecord,
 } from "./api";
+import { BoardView } from "./board-view";
 import { chooseFrameSet, phaseLabels, type OpenableSet } from "./frames";
 import { projectPalette } from "./palette";
 import {
@@ -33,6 +37,8 @@ import {
 import { describeRun, followRun, viewOf, type RunView } from "./sse";
 
 const DEFAULT_FPS = 12;
+const TAB_KEY = "anim-studio.panel-tab";
+type Tab = "pipeline" | "board";
 
 /** What is open in the editor, if anything. */
 interface Opened {
@@ -65,8 +71,8 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function section(title: string, ...children: Node[]): HTMLElement {
-  return el("section", { class: "studio-section" }, el("h2", {}, title), ...children);
+function section(title: string, tab: Tab | "both", ...children: Node[]): HTMLElement {
+  return el("section", { class: "studio-section", "data-tab": tab }, el("h2", {}, title), ...children);
 }
 
 function status(node: HTMLElement, text: string, kind: "" | "ok" | "warn" | "bad" = ""): void {
@@ -109,6 +115,14 @@ export class StudioPanel {
   // Palette
   private readonly paletteStatus = el("div", { class: "studio-status" });
   private readonly swatches = el("div", { class: "studio-swatches" });
+  // Board (the curation board feature)
+  private readonly board = new BoardView({
+    follow: (run) => this.follow(run),
+    openJob: (name) => void this.openByName(name),
+    refreshHealth: () => void this.refreshHealth(),
+  });
+  private readonly tabButtons = new Map<Tab, HTMLButtonElement>();
+  private tab: Tab = "pipeline";
   // Health
   private readonly health: HTMLElement;
 
@@ -125,9 +139,26 @@ export class StudioPanel {
     const gpu = (label: string, title: string, run: () => void) =>
       this.stageButton(label, title, run, true);
 
+    const tabButton = (tab: Tab, label: string, title: string) => {
+      const button = el("button", { type: "button", class: "studio-tab", title, onclick: () => this.showTab(tab) }, label);
+      this.tabButtons.set(tab, button);
+      return button;
+    };
+
     this.root.replaceChildren(
+      el("div", { class: "studio-tabs" },
+        tabButton("pipeline", "Pipeline", "open a job, save frames, start stages"),
+        tabButton("board", "Board", "the curation board: accept / reject / regenerate per cell and per frame")),
+      section(
+        "Board",
+        "board",
+        el("p", { class: "studio-help" },
+          "Rows are the studio's actions, columns the unit's directions. Click a frame to accept, reject, clear; a rejected frame leaves the job's picks. Accepting a cell locks it."),
+        this.board.root,
+      ),
       section(
         "Job",
+        "pipeline",
         el("div", { class: "studio-row" },
           this.jobSelect,
           el("button", { type: "button", class: "studio-button", title: "GET /jobs again", onclick: () => void this.refreshJobs() }, "↻")),
@@ -136,6 +167,7 @@ export class StudioPanel {
       ),
       section(
         "Save",
+        "pipeline",
         el("p", { class: "studio-help" },
           "Writes every frame back to the set it came from, same size, alpha rounded to 0/255. Adding or removing frames is not saved back yet."),
         el("div", { class: "studio-row" }, this.saveButton),
@@ -143,6 +175,7 @@ export class StudioPanel {
       ),
       section(
         "Pipeline",
+        "pipeline",
         el("div", { class: "studio-row" },
           cpu("pick --phases", "anim pick <job> --phases: the key poses, tagged start / wind-up / action / wind-down / end",
             () => this.run("pick", { job: this.jobName(), phases: true })),
@@ -162,6 +195,7 @@ export class StudioPanel {
       ),
       section(
         "Run",
+        "both",
         this.runTitle,
         el("div", { class: "studio-bar" }, this.runBar),
         this.runLine,
@@ -172,6 +206,7 @@ export class StudioPanel {
       ),
       section(
         "Palette",
+        "pipeline",
         el("div", { class: "studio-row" },
           el("button", { type: "button", class: "studio-button", title: "GET /settings", onclick: () => void this.refreshPalette() }, "project palette ↻")),
         this.paletteStatus,
@@ -197,7 +232,39 @@ export class StudioPanel {
 
   // --- lifecycle -------------------------------------------------------------
   async start(): Promise<void> {
-    await Promise.all([this.refreshHealth(), this.refreshJobs(), this.refreshRuns(), this.refreshPalette()]);
+    let remembered: string | null = null;
+    try {
+      remembered = localStorage.getItem(TAB_KEY);
+    } catch {
+      remembered = null;
+    }
+    this.showTab(remembered === "board" ? "board" : "pipeline");
+    await Promise.all([this.refreshHealth(), this.refreshJobs(), this.refreshRuns(), this.refreshPalette(), this.board.start()]);
+  }
+
+  /** The Pipeline tab or the Board tab; the board widens the panel. */
+  showTab(tab: Tab): void {
+    this.tab = tab;
+    document.body.classList.toggle("studio-board", tab === "board");
+    for (const [name, button] of this.tabButtons) button.classList.toggle("active", name === tab);
+    for (const node of this.root.querySelectorAll<HTMLElement>("section[data-tab]")) {
+      const owner = node.dataset.tab;
+      node.hidden = owner !== "both" && owner !== tab;
+    }
+    try {
+      localStorage.setItem(TAB_KEY, tab);
+    } catch {
+      // private mode; the choice just does not survive a reload
+    }
+  }
+
+  /** Open a job by name (the board's "open in the editor" link). */
+  private async openByName(name: string): Promise<void> {
+    if (!this.jobs.some((job) => job.name === name)) await this.refreshJobs();
+    this.jobSelect.value = name;
+    this.describeSelectedJob();
+    this.showTab("pipeline");
+    await this.open();
   }
 
   private async refreshHealth(): Promise<void> {
@@ -377,6 +444,7 @@ export class StudioPanel {
         void this.refreshJobs();
         void this.refreshRuns();
         void this.refreshHealth();
+        if (this.tab === "board") void this.board.runFinished();
       }
     });
   }
