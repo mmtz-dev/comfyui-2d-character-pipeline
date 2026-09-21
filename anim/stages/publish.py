@@ -322,6 +322,11 @@ def publish(job_name: str, *, assets_dir: Path | None = None,
             f"no finished frames in {job.post_dir} - run `anim post` first")
 
     report = read_json(job.report_path) if job.report_path.exists() else None
+    if ((report or {}).get("palette") or {}).get("snap") is False:
+        raise RuntimeError(
+            f"{job.name} was posted with --no-snap (a raw-colour preview; "
+            f"{job.report_path}). Re-run `anim post {job.name}` without it "
+            f"before publishing.")
     route = (report or {}).get("route") or "strip"
     provenance_path = (job.clip_provenance_path if route == "clip"
                        else job.provenance_path)

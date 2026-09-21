@@ -32,12 +32,14 @@ stage order:
     pick -> post --input clip -> publish (the clip render feature)
   base is the standing-sprite variant of the same chain
   bakeoff runs one action through both in-between routes on both rigs -> one page
+  palette installs the project palette (Lospec slug or file) and unit sub-palettes
   run chains extract..strip, then render..publish if the GPU is up
 
 the usual one-liners:
   anim run capture/knight_strike.mp4 --unit knight --action strike
   anim rig rigs/kaykit-adventurers/Knight.glb --clip Hit_A --unit knight --action hit
   anim rig ... --yaw 270 --elevation top     # any of the 16 cells (rig and base only)
+  anim palette --lospec endesga-32           # the project palette; post snaps to it
 
 where things live (override with the env vars in anim/config.py):
   capture/   filmed clips, dropped in by the owner

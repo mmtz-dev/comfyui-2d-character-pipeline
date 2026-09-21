@@ -61,14 +61,22 @@ AUDIT_SCRIPT = Path(os.environ.get(
 # ---------------------------------------------------------------------------
 # Palette - the art bible's single source of truth for the colour snap
 # ---------------------------------------------------------------------------
-# Defaults to the .gpl the art bible names as the winner of the palette
-# shootout. THAT FILE DOES NOT EXIST YET (the owner has not picked); until it
-# does, point ANIM_PALETTE at one of the candidates, e.g.
+# The project palette (the palette feature): the .gpl the art bible names as
+# its pick - Lospec 2000 since 2026-09-14, installed by game-02's
+# install_palette.py. `anim palette --lospec <slug>` / `--file <path>` rewrites
+# it (with the .hex / .png / .json beside it) and this path's directory is
+# also where the per-unit sub-palettes live (palette_units/<slug>.json). To
+# try a candidate without installing it, point ANIM_PALETTE at it, e.g.
 #   ANIM_PALETTE=/assets_src/palette_candidates/grim32/grim32.gpl
 # Either a GIMP .gpl or a one-row .png is accepted; `post` converts whichever it
 # gets into the one-row PNG that `magick -remap` needs, so the .gpl stays the
 # human-editable source and the PNG is always derived.
 PALETTE = Path(os.environ.get("ANIM_PALETTE", "/assets_src/palette.gpl"))
+# Lospec's JSON endpoint for one palette, with the slug as the template's one
+# field (anim.palettekit.fetch_lospec). Overridable so a test can serve the
+# API's `POST /palette` subprocess from a file:// directory instead of the web.
+LOSPEC_URL = os.environ.get("ANIM_LOSPEC_URL",
+                            "https://lospec.com/palette-list/{slug}.json")
 
 # ---------------------------------------------------------------------------
 # Fixed contract with game-02 (see games-design-wiki .../art-bible.md)

@@ -2,15 +2,21 @@
 
 Just the store: `GET /settings` returns the file merged over the defaults and
 `PUT /settings` validates and writes it in place. Nothing here applies a
-setting - the palette feature reads `palette`, the keyframe phase feature
-reads `frame_budgets`, the curation board reads `curation`, the export reads
-`frame_size`. Until those land, the CLI's config.py values stay in force and
-this file is a note the UI can already edit.
+setting - the keyframe phase feature reads `frame_budgets`, the curation board
+reads `curation`, the export reads `frame_size`. Until those land, the CLI's
+config.py values stay in force and this file is a note the UI can already edit.
 
     palette        path to the project's .gpl / one-row .png (null = config.PALETTE)
     frame_budgets  {action: frames} overriding config.ACTION_FRAMES, capped at 12
     curation       gates | every | end   (sprite-studio.md S2 "Curation")
     frame_size     [w, h] of one exported frame (game-02's contract is 64x64)
+
+`palette` is STORED as a path (or null) and SHOWN expanded: `GET /settings`
+answers `{"path", "name", "colours", "source"}` read from the palette files
+the path names (the palette feature), and `PUT /settings` takes either the
+path string or that object back - so a client can round-trip what it got.
+The path is the `.gpl` `anim palette` writes to and `post` reads; the API's
+`POST /palette` passes it as `--into`.
 """
 
 from __future__ import annotations
@@ -19,7 +25,7 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from anim import config
+from anim import config, palettekit
 from anim.util import read_json, write_json_in_place
 
 SETTINGS_SCHEMA = "anim.project/1"
@@ -45,15 +51,29 @@ def settings_path(work_dir: Path) -> Path:
     return Path(work_dir) / SETTINGS_FILENAME
 
 
-def load(work_dir: Path) -> dict[str, Any]:
-    """The stored settings over the defaults; the defaults alone when there
-    is no file yet, so a fresh work/ answers the same shape."""
+def stored(work_dir: Path) -> dict[str, Any]:
+    """The file over the defaults, palette still a path - what is on disk."""
     merged = copy.deepcopy(DEFAULTS)
     path = settings_path(work_dir)
     if path.exists():
-        stored = read_json(path)
-        if isinstance(stored, dict):
-            merged.update({k: v for k, v in stored.items() if k in DEFAULTS})
+        data = read_json(path)
+        if isinstance(data, dict):
+            merged.update({k: v for k, v in data.items() if k in DEFAULTS})
+    return merged
+
+
+def palette_path(work_dir: Path) -> Path:
+    """The project palette the API acts on: the stored path, else config.PALETTE."""
+    value = stored(work_dir).get("palette")
+    return Path(value) if value else config.PALETTE
+
+
+def load(work_dir: Path) -> dict[str, Any]:
+    """The stored settings over the defaults, `palette` expanded to
+    `{path, name, colours, source}` (the palette feature); the defaults alone
+    when there is no file yet, so a fresh work/ answers the same shape."""
+    merged = stored(work_dir)
+    merged["palette"] = palettekit.summary(palette_path(work_dir))
     return merged
 
 
@@ -70,8 +90,13 @@ def validate(body: dict[str, Any]) -> dict[str, Any]:
     merged["schema"] = SETTINGS_SCHEMA
 
     palette = merged["palette"]
+    if isinstance(palette, dict):
+        # The expanded form GET returns, sent back: only the path is stored.
+        if "path" not in palette:
+            raise SettingsError("palette as an object needs a \"path\"")
+        palette = palette.get("path")
     if palette is not None and (not isinstance(palette, str) or not palette.strip()):
-        raise SettingsError("palette must be a path string or null")
+        raise SettingsError("palette must be a path string, {\"path\": ...} or null")
     merged["palette"] = palette.strip() if isinstance(palette, str) else None
 
     budgets = merged["frame_budgets"]
@@ -101,7 +126,7 @@ def validate(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def save(work_dir: Path, body: dict[str, Any]) -> dict[str, Any]:
-    """Validate, write in place, return what was written."""
+    """Validate, write in place, return what GET now answers."""
     merged = validate(body)
     write_json_in_place(settings_path(work_dir), merged)
-    return merged
+    return load(work_dir)
