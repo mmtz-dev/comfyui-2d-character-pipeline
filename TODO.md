@@ -18,10 +18,6 @@
 
 From the accepted base, one idle still per direction — 8 side-view facings for v1 — each with its own per-direction part palettes.
 
-### the keyframe phase feature · [#276](http://192.168.1.158:8700/work_packages/276)
-
-pick learns the phase template — start → wind-up → action → wind-down → end → loop — and the per-action frame budget, so every clip's frames are…
-
 ### the motion exaggeration feature · [#277](http://192.168.1.158:8700/work_packages/277)
 
 The animation-principle transforms, applied where the pipeline can actually apply them — on the rig, before projection — so the model renders an…
@@ -29,10 +25,6 @@ The animation-principle transforms, applied where the pipeline can actually appl
 ### the action matrix feature · [#278](http://192.168.1.158:8700/work_packages/278)
 
 anim matrix <unit>: every (action × direction) cell through the chosen route, resumable, one seed per unit.
-
-### the pipeline API feature · [#279](http://192.168.1.158:8700/work_packages/279)
-
-A FastAPI service that wraps the stages as jobs, so the editor and the curation board drive the same work/<job>/ state the CLI writes.
 
 ### the web pixel editor feature · [#280](http://192.168.1.158:8700/work_packages/280)
 
@@ -72,7 +64,9 @@ Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid
 
 ## manual test: the frame route bake-off feature · [#290](http://192.168.1.158:8700/work_packages/290)
 
+## manual test: the pipeline API feature · [#292](http://192.168.1.158:8700/work_packages/292)
+
 ---
 
-*17 open · 3 closed. Counts and contents come straight from
+*16 open · 6 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
