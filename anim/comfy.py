@@ -287,6 +287,37 @@ def unlink(workflow: dict[str, Any], needle: str) -> dict[str, Any]:
     return workflow
 
 
+def prune_orphans(workflow: dict[str, Any], *,
+                  outputs: tuple[str, ...] = ("SaveImage", "SaveVideo")
+                  ) -> list[str]:
+    """Drop every node whose output nothing consumes, except the output nodes.
+    Repeats until stable, so a loader feeding only a bypassed node goes too.
+
+    After `bypass()` removes the ControlNet apply node, its ModelPatchLoader and
+    the LoadImage that fed it are still in the graph. ComfyUI only executes
+    what an output node reaches, so they would not RUN - but a `LoadImage`
+    naming a file that was never uploaded is still validated, and the
+    provenance hash and `models_lock.for_workflow` would still list a control
+    model the image never saw. Returns the removed node ids.
+    """
+    removed: list[str] = []
+    while True:
+        consumed: set[str] = set()
+        for node in workflow.values():
+            for value in (node.get("inputs") or {}).values():
+                if isinstance(value, list) and len(value) == 2 and \
+                        isinstance(value[0], str):
+                    consumed.add(value[0])
+        orphans = [node_id for node_id, node in workflow.items()
+                   if node_id not in consumed
+                   and node.get("class_type") not in outputs]
+        if not orphans:
+            return removed
+        for node_id in orphans:
+            del workflow[node_id]
+            removed.append(node_id)
+
+
 def workflow_sha256(workflow: dict[str, Any]) -> str:
     """Hash of the graph AS SENT - the provenance record, not the file on disk."""
     return sha256_bytes(canonical_json(workflow))

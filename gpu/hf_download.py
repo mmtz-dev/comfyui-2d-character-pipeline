@@ -57,9 +57,17 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--verify", action="store_true", help="sha256 every file that is already present")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--only", default=None, metavar="TEXT",
+                    help="restrict the plan to rows whose installed filename "
+                         "contains TEXT (one new weight without walking the "
+                         "other 58 GiB - or the parked Qwen LoRA row)")
     args = ap.parse_args()
 
     plan = list(rows())
+    if args.only:
+        plan = [r for r in plan if args.only in r[4]]
+        if not plan:
+            return print(f"[FATAL] no models.lock row matches --only {args.only!r}") or 1
     total = sum(r[5] for r in plan)
     print(f"[plan] {len(plan)} files, {total / 2**30:.2f} GiB", flush=True)
     free = shutil.disk_usage(DEST_ROOT).free

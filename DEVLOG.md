@@ -4,6 +4,97 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-20 — the character concept feature: `anim concept`, Z-Image-Turbo + the pixel-art LoRA, sketch in, candidates out
+
+**What.** `anim concept --unit knight --prompt "…" [--sketch png] [--count N] [--seed S]
+[--existing [png]]` writes N candidate front-facing base characters to
+`work/<unit>_concept/candidates/NN.png` with a `job.json` that records the prompt, one seed
+per candidate, the LoRA and its strength, the sketch, the workflow hash and the locked models;
+`anim concept --unit knight --pick NN` (or `--pick existing`) makes one of them the unit's base
+render — [#273](http://192.168.1.158:8700/work_packages/273), the second feature of the sprite
+studio epic. New: `anim/stages/concept.py`, `gpu/workflows/concept_pass.json`,
+`tests/test_concept.py` (25 cases), a `--only` filter on `gpu/download_models.sh`,
+`comfy.prune_orphans`, `Job.candidates_dir`, the `CONCEPT_*` block in `anim/config.py`.
+421 passed / 4 skipped (was 393 / 4 before this and the direction sheet's file).
+
+**The model side.** No skeleton: `base` is the pose stack because a standing sprite has to match
+the rig's proportions, and a concept is earlier than that — there is only a description. So the
+pass is Z-Image-Turbo text-to-image on the same int8 convrot UNET the pose stack loads, with
+**`tarn59/pixel_art_style_lora_z_image_turbo`** through `LoraLoaderModelOnly` (the node
+`identity_pass.json` already used; three keys, read from `/object_info` on 0.35.0). The LoRA is
+the owner's pick from `docs/research/2026-09-20-pixel-art-loras.md`; it went into
+`gpu/models.lock` through `relock_models.py` (repo, revision `0a5092d1`, 170,128,328 bytes, sha256
+`09b1b45c…`, Apache-2.0, ungated — both HF endpoints agreed, the licence gate passed, the
+parked `prithivMLmods` row is untouched) and onto disk through `download_models.sh --only
+pixel_art_style` — the new flag, so one 162 MB row does not mean re-verifying 58 GiB or
+re-fetching the Qwen LoRA that is known to fail. ComfyUI saw the file the moment it landed in
+`/basedir/models/loras/` (its folder cache is mtime-based): **no container restart was needed**,
+nothing on the native daemon was touched. Trigger phrase and strength live in
+`config.CONCEPT_LORA` ("Pixel art style.", 0.8 — the card's band is 0.6–1.0); the prompt is
+`config.CONCEPT_PROMPT` = trigger + the owner's description + the base pass's framing and
+flat-white-background rules, so `post`'s matte has a field to key on. 768×768, square on
+purpose: the square-aspect rule is Qwen-Image-Edit's, this pass never reaches that model, and
+nothing downstream reads the size.
+
+**The sketch — scribble, and why not canny.** The Fun ControlNet Union (the full 2602 build
+already in the container) has no mode input: the card lists Canny / Depth / Pose / MLSD / HED /
+Scribble / Gray and the node takes `image` + `strength`, so the condition is whatever the image
+looks like. A hand sketch *is* strokes, so it is sent as the scribble condition — greyscale,
+inverted when the scan is dark-on-light, transparency treated as paper, letterboxed into the
+cell on black — at strength 0.6, the low end of the card's band, because the sketch is a
+silhouette hint rather than a pose to trace. Canny was the alternative: run an edge detector on
+a drawing that is already lines and hand the model a thinner, jaggier version of the same
+thing. If a future sketch is a shaded drawing rather than line art, canny is the one-line swap
+in `sketch_control`. With no sketch the ControlNet apply node is bypassed (as `render` does for
+the LoRA) **and** the now-orphaned `ModelPatchLoader` + `LoadImage` are pruned
+(`comfy.prune_orphans`), so the provenance hash and `models_lock.for_workflow` describe the graph
+the image actually came from, and no never-uploaded filename reaches ComfyUI's validator.
+
+**Where the pick lands — decided, with the alternative.** Every later stage already reads the
+unit's reference from the base job: `clip.find_reference` takes
+`work/<slug>_base/render/<render.final>`, `post --parts` extracts the part palettes there,
+`post` + `publish` turn it into the 64 px sprite. So `--pick` lays that job out with
+`base.prepare(slug, cell=<candidate size>)` and writes `render/concept_pick.png`, with
+`render.final` pointing at it, a `render/provenance.json` built from the concept job's record
+(seed, per-candidate workflow hash as sent, models, the prompt, the LoRA, the sketch; empty
+passes for the existing art) and a `concept` block in `job.json`. `anim base` is unchanged and
+`anim post knight_base` / `anim publish knight_base` run verbatim on the pick. An earlier base
+render's manifest is rewritten but its files stay on disk, and the CLI names what it replaced;
+picking again changes the pick. The alternative was a new first lookup in `clip.find_reference`
+pointing at `work/<slug>_concept/pick.png` — it would have kept the base job pristine, but it
+changes another stage, and every stage that follows (`post --parts`, `publish`, the turnaround)
+would have needed the same new lookup; one slot is the point of the base job.
+
+**The existing art as candidate 00.** `--existing` with no value registers the unit's published
+sprite (`assets/2d/units/<slug>.png`, the same lookup `strip` uses) at the strip reference's ×8
+nearest upscale, bottom-centred on white in the cell; `--existing <png>` registers any file the
+same way. It is candidate 00 and `--pick existing` (or `--pick 00`) chooses it — so "keep the
+hand art" is a pick like any other, with a provenance record that says it was not generated.
+
+**The real run.** `anim concept --unit knight --count 4 --existing --prompt "a plate-armoured
+knight with a closed great helm, a kite shield on the left arm and a longsword in the right
+hand, dark cloak, silver plate with gold trim"` on ComfyUI 0.35.0 / the A5000: **109.9 s** for
+the first image (Z-Image + the Qwen3-4B encoder paging in), then **8.7 / 8.8 / 8.9 s** per image
+by the service's own `execution_start → execution_success` clock; `/system_stats` afterwards
+reported 12.7 GB of 25.3 GB VRAM in use. All four are front-facing pixel-art knights on a clean
+white field with helm, shield and sword where the prompt put them. A second job
+(`sketchtest`, two candidates, a sketch made from candidate 04's edges) proved the scribble
+wiring on the real service: the pose, sword hand and shield arm follow the lines across seeds,
+10.9 s/image. The manual test surface for #273:
+<http://192.168.1.158:8090/sprite-studio/character-concept/> (the five candidates, the sketch
+pair, the job.json).
+
+**Left for the owner.** The pick itself — nothing was picked; `knight_base` still holds the
+2026-09-15 rig render and `work/knight_concept/` holds the five candidates. `--count 4` was the
+brief's number; the base seed is derived from unit + prompt + sketch, so re-running the same
+command reproduces the same four and `--seed` re-rolls. Two things to note before the turnaround
+(#275): a front-facing pick as `clip`'s identity reference for side-view clips is untested (the
+second gate used the profile base render), and `post --parts` on a front-facing pick prompts
+SAM from the canned side-profile skeleton the base job is laid out with — the palettes it
+extracts will be rough until the turnaround gives the base job a matching skeleton.
+
+---
+
 ## 2026-09-20 — the camera direction sheet: one command for the manual test (#288)
 
 **What.** `#288`'s manual test asked for one command and one page. `anim/tools/direction_sheet.py`

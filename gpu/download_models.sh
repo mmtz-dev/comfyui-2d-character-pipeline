@@ -9,6 +9,7 @@
 #   ./download_models.sh                # download what is missing
 #   ./download_models.sh --verify       # also sha256 files already present
 #   ./download_models.sh --dry-run      # print the plan only
+#   ./download_models.sh --only pixel_art_style   # one row by filename
 #
 # Idempotent and resumable: re-run it after an interruption.
 set -euo pipefail

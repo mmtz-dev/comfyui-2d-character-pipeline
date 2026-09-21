@@ -16,6 +16,7 @@ wrote, and a job that failed at `post` does not cost another GPU render.
       clip/frames/0001.png  `clip` (the clip render feature; optional)
       render/               `render`
       post/                 `post`
+      candidates/NN.png     `concept` (the character concept feature; its own job)
 """
 
 from __future__ import annotations
@@ -72,6 +73,11 @@ class Job:
     @property
     def render_dir(self) -> Path:
         return self.root / "render"
+
+    @property
+    def candidates_dir(self) -> Path:
+        """`concept`'s NN.png candidates (the character concept feature)."""
+        return self.root / "candidates"
 
     @property
     def post_dir(self) -> Path:

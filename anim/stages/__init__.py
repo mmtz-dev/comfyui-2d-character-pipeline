@@ -6,7 +6,10 @@ Stage order: extract -> pose -> pick -> review -> strip -> render -> post -> pub
 `rig` replaces extract + pose when the motion comes from a rig clip instead of a
 filmed one; `clip` (the clip render feature) sits between rig and pick and
 replaces strip + render when the frames come from a generated clip; `base` is
-the standing-sprite variant; `run` chains the whole thing in one command.
+the standing-sprite variant; `concept` (the character concept feature) comes
+before `base` in the studio's chain - text or sketch to candidate base
+characters, one of which is picked as the unit's reference; `run` chains the
+whole thing in one command.
 """
 
 STAGE_ORDER = [
@@ -21,5 +24,6 @@ STAGE_ORDER = [
     "post",
     "publish",
     "base",
+    "concept",
     "run",
 ]

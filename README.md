@@ -45,13 +45,13 @@ extracted from real footage**. Same ComfyUI plumbing, different output contract.
 | Frames per action | 33+, a smooth cycle | 2–6 auto-picked key poses, owner can override |
 | Output | 512px greyscale RGBA sheet, runtime-tinted | 64×64 PNG per frame, palette-snapped, binary alpha, one sidecar per action |
 | Layering | separate cosmetic sheets (hair/eyes/clothes) | none — one sprite per unit |
-| Weights | ~120 GB (Wan 2.2, VACE, SAM3, GGUF) | 58 GiB, all Apache-2.0 (`gpu/models.lock`; 17 GiB of it is the clip render feature's Wan 2.2 Fun-Control 5B) |
+| Weights | ~120 GB (Wan 2.2, VACE, SAM3, GGUF) | 58 GiB, all Apache-2.0 (`gpu/models.lock`; 17 GiB of it is the clip render feature's Wan 2.2 Fun-Control 5B, 162 MB the character concept feature's `tarn59` pixel-art LoRA for Z-Image-Turbo) |
 | Post-processing | inside ComfyUI (BiRefNet) | deterministic CPU chain outside ComfyUI (rembg → pixeloe → pixel-art-fixer → ImageMagick `-remap`) |
 
 ## The `anim` CLI — the whole flow
 
 Everything CPU-side is one command. It runs on **Docker Desktop**; the only stages
-that touch a GPU are `render`, `clip` and `base`, over HTTP.
+that touch a GPU are `render`, `clip`, `base` and `concept`, over HTTP.
 
 ```bash
 cd tools/anim-pipeline
@@ -113,6 +113,7 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
 | `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
+| `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>` and `--existing [png]` | `work/<slug>_concept/candidates/NN.png` + `job.json`; `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
 | `run <clip>` | a filmed clip | all of the above | stops politely before `render` when the GPU is off. |
 
 ### The clip route — the clip render feature
@@ -188,6 +189,47 @@ the occupied neighbours are 8700 openproject, 8770 research-digest, 8787
 bg3-modded-wiki). It is bound to `0.0.0.0` because the owner opens it from the
 Mac — a `curl` from the Fedora host to its own LAN IP routes via `lo` and proves
 nothing about LAN reach.
+
+### Character concept — the character concept feature
+
+The studio's first question is *who* the character is, before any pose ([#273](http://192.168.1.158:8700/work_packages/273)).
+`concept` answers it with candidates the owner chooses from — generated ones and, side by
+side, the art that already exists:
+
+```bash
+# four candidates from text, the published knight.png registered as 00 to compare against
+docker compose run --rm anim concept --unit knight --count 4 --existing \
+  --prompt "a plate-armoured knight with a closed great helm, a kite shield on the left arm and a longsword in the right hand"
+
+# the same, steered by a sketch (any dark-on-light drawing; sent as a scribble condition)
+docker compose run --rm anim concept --unit knight --sketch scans/knight.png --prompt "…"
+
+# choose: the candidate becomes work/knight_base/render/concept_pick.png
+docker compose run --rm anim concept --unit knight --pick 03        # or --pick existing
+docker compose run --rm anim post knight_base --parts && docker compose run --rm anim publish knight_base
+```
+
+- **No skeleton.** `base` is the pose stack because a standing sprite has to match the rig;
+  a concept is earlier than that, so it is plain text-to-image on the same int8 Z-Image with
+  **`tarn59/pixel_art_style_lora_z_image_turbo`** (Apache-2.0, 162 MB, `gpu/models.lock`) at
+  0.8 (`--lora-strength`; 0 drops the node). The prompt is `config.CONCEPT_PROMPT`: the
+  LoRA's trigger ("Pixel art style."), your description, then the base pass's framing and
+  flat-white-background rules so `post`'s matte has something to key on.
+- **One `/prompt` and one seed per candidate** (base seed + index; the base seed is derived
+  from unit + prompt + sketch unless `--seed` is given), so any one candidate can be re-made
+  alone. `job.json` records the prompt, every seed, the LoRA and strength, the sketch, the
+  workflow hash (per candidate as sent, and the set's with seed 0) and the locked models.
+- **The sketch is a scribble.** The Fun ControlNet Union picks the condition from the image
+  alone, so the sketch is sent as white strokes on black (a dark-on-light scan is inverted,
+  transparency counts as paper), letterboxed into the cell, at `--sketch-strength` 0.6.
+- **Where the pick lands.** Every later stage reads the unit's reference from the base job —
+  `clip` takes `work/<slug>_base/render/<render.final>`, `post --parts` extracts the part
+  palettes there, `post` + `publish` make the 64 px sprite — so `--pick` lays that job out
+  (`base.prepare`, at the candidate's size) and writes `render/concept_pick.png` with
+  `render.final` pointing at it and a provenance record from the concept job. `anim base` is
+  untouched; an earlier base render's files stay on disk and the note says what was replaced;
+  picking again changes the pick. The manual test page:
+  <http://192.168.1.158:8090/sprite-studio/character-concept/>.
 
 ## Rig input mode — the rig motion input feature
 
@@ -369,7 +411,7 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | `COMFYUI_URL` | `http://host.docker.internal:8188` | the GPU image service. From the host or the Mac: `http://192.168.1.158:8188` |
 | `ANIM_CAPTURE_DIR` | `/work/capture` | the watched drop folder for filmed clips |
 | `ANIM_WORK_DIR` | `/work/work` | per-job scratch; everything regenerable |
-| `ANIM_WORKFLOW_DIR` | `/work/gpu/workflows` | the API-format workflows `render`, `clip` and `base` POST |
+| `ANIM_WORKFLOW_DIR` | `/work/gpu/workflows` | the API-format workflows `render`, `clip`, `base` and `concept` POST |
 | `ANIM_MODELS_LOCK` | `/work/gpu/models.lock` | repo + revision + sha256 per weight, copied into the sidecar |
 | `ANIM_ASSETS_DIR` | `/assets` | game-02's published assets (read-write) |
 | `ANIM_GAME02_DIR` | `/game02` | the game-02 repo, read-only, so `publish` can run its audit here |
@@ -421,7 +463,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 393 passed, 4 skipped (2026-09-20)
+docker compose run --rm anim-pipeline pytest        # 421 passed, 4 skipped (2026-09-20)
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake
@@ -469,7 +511,7 @@ documented; they are the starting point for a later full-cycle animation tier.
 | `gpu/workflows/base_sprite.json` | Generates a unit's standing sprite from a canned skeleton when no reference sprite exists yet. |
 | `gpu/workflows/clip_render.json` | The clip render feature: Wan 2.2 Fun-Control 5B, reference image + control video → one PNG per frame (`SaveImage` on the decoded batch instead of the template's `SaveVideo`). Translated from the official `video_wan2_2_5B_fun_control` template. |
 | `gpu/workflows/NOTES.md` | Which node names and input keys were verified against source, and what is still `TODO-verify`. |
-| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base`. |
+| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base concept`. |
 | `anim/rigkit.py` + `anim/stages/rig.py` + `rigs/` | **The rig motion input feature** — a CC0 rigged character's clips as the motion source, sampled with `pygltflib` + numpy, mapped to OpenPose-18, projected in profile facing right. Replaces filming for the anchor unit; makes the spike's TripoSG / Mixamo path unnecessary. |
 
 ## Configuration — one knob for the ComfyUI URL

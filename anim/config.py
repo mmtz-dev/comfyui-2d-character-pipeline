@@ -327,6 +327,51 @@ def clip_prompt(action: str) -> str:
     return CLIP_PROMPT.format(phrase=phrase)
 
 
+# ---------------------------------------------------------------------------
+# The character concept feature - `anim concept`, Z-Image-Turbo + the pixel LoRA
+# ---------------------------------------------------------------------------
+# Text (or a sketch) to N candidate front-facing base characters, one of which
+# the owner picks as the unit's reference (sprite-studio.md S2 "Base
+# character"). No skeleton: the concept is a text-to-image pass with the
+# pixel-art style LoRA on the same int8 Z-Image the pose stack loads, and an
+# optional sketch through the Fun ControlNet Union as a scribble. Square, and
+# the base pass's tall side, so the candidate is as big as a base render:
+# nothing downstream reads this size (the pick lands as a base render and
+# `post` trims to the opaque box), so a square is free here - the square-aspect
+# rule is Qwen-Image-Edit's, which this pass never touches.
+CONCEPT_CELL = (768, 768)
+CONCEPT_COUNT = 4
+# tarn59/pixel_art_style_lora_z_image_turbo (gpu/models.lock; Apache-2.0).
+# Trigger and strength band from the model card and its Civitai mirror
+# (docs/research/2026-09-20-pixel-art-loras.md): "Pixel art style.", 0.6-1.0.
+# Strength 0 drops the LoRA node from the graph (ComfyUI rejects a missing file
+# even at 0 - see anim.comfy.bypass).
+CONCEPT_LORA: dict[str, Any] = {
+    "repo": "tarn59/pixel_art_style_lora_z_image_turbo",
+    "file": "pixel_art_style_z_image_turbo.safetensors",
+    "trigger": "Pixel art style.",
+    "strength": 0.8,
+}
+# The Union model picks the condition from the image alone (no mode input):
+# a sketch goes in as white strokes on black, which is its scribble condition.
+# 0.6 is the low end of the card's 0.65-1.0 band on purpose - a sketch is a
+# hint for the silhouette, not a pose to trace.
+CONCEPT_SKETCH_STRENGTH = 0.6
+# One prompt shape for every unit: the trigger first, the owner's description
+# in the middle, the base pass's framing and background rules after it so the
+# matte in `post` has a flat white field to key on.
+CONCEPT_PROMPT = (
+    "{trigger} a single front-view pixel art character sprite of {description}, "
+    "facing the viewer, standing at rest, full body in frame, feet at the bottom "
+    "edge, chunky readable silhouette, bold dark outline, flat shaded, plain flat "
+    "white background, no ground shadow, no floor")
+
+
+def concept_prompt(description: str, trigger: str | None = None) -> str:
+    trigger = CONCEPT_LORA["trigger"] if trigger is None else trigger
+    return CONCEPT_PROMPT.format(trigger=trigger, description=description.strip()) \
+        .replace("  ", " ").strip()
+
 
 # The part palette lock feature - what each unit is made of, and where it is
 # ---------------------------------------------------------------------------

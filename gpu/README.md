@@ -170,14 +170,14 @@ sudo systemctl stop docker      # TTY again; optional
 |---|---|
 | `compose.yml` | The service. Project name `anim-pipeline-gpu`, image pinned by digest. |
 | `extra_model_paths.yaml` | Exposes the pre-existing checkpoint library read-only so nothing is duplicated. |
-| `models.lock` | **Resolved lockfile** — repo, revision, filename, size, sha256, licence for all 12 weights (58.23 GiB). Regenerate with `relock_models.py` (it writes next to itself, from any CWD); do not hand-edit — the KNOWN DISCREPANCY note is part of the generator. |
+| `models.lock` | **Resolved lockfile** — repo, revision, filename, size, sha256, licence for all 13 weights (58.38 GiB). Regenerate with `relock_models.py` (it writes next to itself, from any CWD); do not hand-edit — the KNOWN DISCREPANCY note is part of the generator. |
 | `userscripts/` | Start-up scripts the image runs inside the venv on every start (`10-nunchaku.sh`). |
 | `relock_models.py` | The only writable source for `models.lock`. Cross-checks two HF endpoints and refuses to write on any disagreement, gated repo, or non-commercial licence. |
-| `download_models.sh` | Downloads the weights **on Docker Desktop** (no GPU needed). Idempotent, resumable, verifies every file against `models.lock`. |
+| `download_models.sh` | Downloads the weights **on Docker Desktop** (no GPU needed). Idempotent, resumable, verifies every file against `models.lock`. `--only <text>` restricts it to the rows whose installed filename contains the text — one new weight without walking the other 58 GiB. |
 | `hf_download.py` | Runs inside the throwaway `python:3.12-slim` container that `download_models.sh` starts. |
 | `custom_nodes.txt` | The two custom node packs with pinned commits, plus the list of packs deliberately **not** installed. |
 | `install_custom_nodes.sh` | Clones/verifies them into the basedir at those pins. Idempotent. |
-| `workflows/` | The three API-format ComfyUI workflows. See `workflows/NOTES.md`. |
+| `workflows/` | The five API-format ComfyUI workflows. See `workflows/NOTES.md`. |
 
 ## Layout on disk
 
@@ -190,7 +190,7 @@ sudo systemctl stop docker      # TTY again; optional
 │   │   ├── text_encoders/           qwen_3_4b_fp8_mixed, qwen_2.5_vl_7b_fp8_scaled
 │   │   ├── vae/                     z_image_ae, qwen_image_vae
 │   │   ├── model_patches/           Z-Image Fun ControlNet Union 2.1 2602 (full) + lite
-│   │   └── loras/                   Qwen-Image-2512 Pixel-Art LoRA
+│   │   └── loras/                   pixel_art_style_z_image_turbo (the character concept feature); the Qwen-Image-2512 LoRA is parked (see Known issues)
 │   ├── custom_nodes/                ComfyUI-nunchaku, ComfyUI-Image-Saver (pinned)
 │   ├── input/  output/  user/
 └── models/Image Models/             -> container /shared-models  (READ-ONLY)
@@ -207,9 +207,21 @@ fp8/nvfp4 builds — nvfp4 will not run at all.
 Qwen-Image-Edit at fp8 with an fp8 text encoder needs ~27.9 GB and does not fit
 in 24 GB; that is the whole reason for the INT4 build.
 
+## Weights by feature
+
+| Feature | Files | Size |
+|---|---|---|
+| the pose pass (`pose_pass.json`, `base_sprite.json`) | Z-Image-Turbo int8 convrot, Qwen3-4B fp8 mixed, Z-Image VAE, Fun ControlNet Union 2.1 2602 full (+ lite, for A/B) | 19.5 GiB |
+| the identity pass (`identity_pass.json`, currently unused) | Nunchaku Qwen-Image-Edit-2509 INT4 r128 lightning, Qwen2.5-VL-7B fp8, Qwen-Image VAE | 20.8 GiB |
+| the character concept feature (`concept_pass.json`) | the pose pass's Z-Image stack + **`tarn59/pixel_art_style_lora_z_image_turbo`** (`loras/pixel_art_style_z_image_turbo.safetensors`, 162 MB, Apache-2.0; trigger "Pixel art style.", strength 0.6–1.0, default 0.8 in `anim/config.py`) | +0.16 GiB |
+| the clip render feature (`clip_render.json`) | Wan 2.2 Fun-Control 5B bf16, Wan 2.2 VAE, umT5-XXL fp8 | 16.9 GiB |
+| parked | prithivMLmods Qwen-Image-2512 Pixel-Art LoRA (fails verification, see below) | 1.1 GiB, not installed |
+
+Install one new row without re-walking the rest: `gpu/download_models.sh --only <filename part>`.
+
 ## Known issues
 
-**The optional Pixel-Art LoRA does not install.** (And ComfyUI would reject a graph
+**The optional Qwen Pixel-Art LoRA does not install.** (And ComfyUI would reject a graph
 that names it while it is missing, even at strength 0 — so `anim render` leaves the
 node out unless `--lora-strength` is given.) `prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA`
 advertises one sha256 through the HF API but serves bytes that hash to another. Verified
@@ -235,7 +247,7 @@ source of truth for what should be there.
 
 ## Licences
 
-All nine weight files are **Apache-2.0** and ungated — checked against the HF
+All thirteen weight files are **Apache-2.0** and ungated — checked against the HF
 API by `relock_models.py`, which refuses to write a lock row for anything else.
 Both custom node packs are Apache-2.0 / MIT. The container image is MIT.
 

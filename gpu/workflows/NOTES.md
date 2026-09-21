@@ -1,6 +1,6 @@
 # Workflow notes — verification status
 
-Four API-format ComfyUI workflows (the flat `{node_id: {class_type, inputs, _meta}}`
+Five API-format ComfyUI workflows (the flat `{node_id: {class_type, inputs, _meta}}`
 dict that `POST /prompt` accepts). They are **not** UI workflows; drag one into the
 editor and you get an ad-hoc auto-arranged graph.
 
@@ -173,6 +173,46 @@ video decode.
 
 ---
 
+## `concept_pass.json` — the character concept feature (2026-09-20)
+
+Z-Image-Turbo text-to-image with the pixel-art style LoRA, and an optional sketch through
+the Fun ControlNet Union as a **scribble**. Same loaders, sampler settings and text encoder
+as `base_sprite.json` (int8 convrot, `lumina2`, AuraFlow shift 3, 8 steps, cfg 1, euler);
+what differs is the node between the UNET and the ControlNet, and that the ControlNet is
+optional.
+
+### CONFIRMED — read from the node definition / the running install
+
+| `class_type` | Inputs used | Where / what |
+|---|---|---|
+| `LoraLoaderModelOnly` | `model`, `lora_name`, `strength_model` | `nodes.py`; the three keys `identity_pass.json` already uses. Read from `/object_info` on ComfyUI 0.35.0: `strength_model` is FLOAT −100..100 step 0.01. The file list is the union of `/basedir/models/loras/` and the read-only shared `lora/` folder — `pixel_art_style_z_image_turbo.safetensors` appeared in it the moment `download_models.sh --only pixel_art_style` wrote the file (ComfyUI's folder cache is mtime-based), **no restart needed**. |
+| `ZImageFunControlnet` | `model`, `model_patch`, `vae`, `strength`, `image` | as in `base_sprite.json`, with `model` fed from the LoRA node so the style is patched in before the control layers. |
+| `EmptySD3LatentImage` | `768 × 768` | square. The square-aspect rule is Qwen-Image-Edit's (issue #243); this pass never reaches that model, and nothing downstream reads the size — the pick is trimmed to its opaque box by `post`. |
+
+### Verified on the GPU — 2026-09-20
+
+- **The LoRA loads on the int8 convrot UNET and styles the output.** Four knights at 768², 8
+  steps: **109.9 s** for the first (Z-Image + Qwen3-4B paging in), then **8.7 / 8.8 / 8.9 s**
+  each. `/system_stats` after the run: 12.7 GB of 25.3 GB VRAM in use.
+- **The Union model reads a sketch as a scribble with no mode input.** The model card lists
+  Canny / Depth / Pose / MLSD / HED / Scribble / Gray for the 2602 build and the node has only
+  `image` + `strength`, so the condition is chosen by what the image looks like. `anim concept`
+  sends the sketch as **white strokes on black** (inverting a dark-on-light scan), strength
+  0.6: the pose, sword hand and shield arm followed the lines across two seeds (10.9 s/image).
+  Canny was the alternative — it would mean running an edge detector on a drawing that is
+  already lines, and the scribble condition is the one trained for exactly that input.
+- **Without a sketch the ControlNet is not in the graph.** `anim concept` bypasses the apply
+  node and then `comfy.prune_orphans` drops the now-unreferenced `ModelPatchLoader` and
+  `LoadImage`, so the provenance hash and `models_lock.for_workflow` describe the graph the
+  image actually came from (no control model listed, no never-uploaded filename validated).
+
+### Patch points
+
+sketch filename (`LoadImage`), control `strength`, LoRA `lora_name` + `strength_model`,
+positive prompt, cell size, seed, output prefix — see the table below.
+
+---
+
 ## Deliberate design choices
 
 **Why `pose_pass` and `identity_pass` are two separate `/prompt` jobs.** Z-Image
@@ -224,6 +264,7 @@ skeleton instead of a posed character.
 | `identity_pass.json` | image1 reference sprite, image2 skeleton strip, image3 pose-pass output, LoRA strength, positive prompt, seed, output prefix |
 | `base_sprite.json` | standing skeleton filename, control `strength`, unit-description prompt, cell size, seed, output prefix |
 | `clip_render.json` | reference image filename, control video filename, clip size (width/height/length), positive prompt, negative prompt, seed (+ steps/cfg on the same node), output prefix |
+| `concept_pass.json` | sketch filename (scribble control; node removed when there is no sketch), control `strength`, Pixel-Art LoRA `lora_name` + `strength_model` (node removed at strength 0), positive prompt, cell size (square), seed, output prefix |
 
 `LoadImage` filenames resolve against the container's `/basedir/input/`, so the CPU
 pipeline must copy its strips there before enqueuing.

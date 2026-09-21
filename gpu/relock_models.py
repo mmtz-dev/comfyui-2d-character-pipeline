@@ -76,6 +76,17 @@ WANT = [
      "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors",
      "loras", "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors"),
 
+    # --- the character concept feature: the pixel-art style LoRA for Z-Image ---
+    # tarn59's Z-Image-Turbo LoRA (Apache-2.0, ungated, ~162 MB), the owner's
+    # pick from docs/research/2026-09-20-pixel-art-loras.md: the most-used
+    # Z-Image pixel-art LoRA found, a single clean trigger phrase ("Pixel art
+    # style.", config.CONCEPT_LORA) and a 0.6-1.0 strength band. Loaded by
+    # concept_pass.json through LoraLoaderModelOnly on the same int8 Z-Image
+    # the pose stack uses, so no second diffusion model is needed.
+    ("tarn59/pixel_art_style_lora_z_image_turbo",
+     "pixel_art_style_z_image_turbo.safetensors",
+     "loras", "pixel_art_style_z_image_turbo.safetensors"),
+
     # --- stage 3, the clip render feature: Wan 2.2 Fun-Control 5B ---
     # The 5B line first (owner's decision, 2026-09-17): ~10 GB bf16, fits the
     # 24 GB A5000 without quantisation or block swapping, and is the model the
