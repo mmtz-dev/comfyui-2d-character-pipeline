@@ -8,7 +8,7 @@ from anim import __version__, cli
 from anim.stages import STAGE_ORDER
 
 EXPECTED = ["extract", "pose", "rig", "clip", "pick", "review", "strip", "render",
-            "post", "publish", "base", "concept", "bakeoff", "run"]
+            "post", "publish", "base", "concept", "bakeoff", "palette", "run"]
 
 
 def test_every_stage_in_the_plan_is_registered():

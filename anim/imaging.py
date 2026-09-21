@@ -304,15 +304,21 @@ def largest_integer_scale(img: Image.Image, cell: tuple[int, int]) -> int:
 # ---------------------------------------------------------------------------
 # Verification - run on every published frame, never skipped
 # ---------------------------------------------------------------------------
-def verify_frame(img: Image.Image, palette: list[RGB],
+def verify_frame(img: Image.Image, palette: list[RGB] | None,
                  canvas: tuple[int, int] = config.CANVAS) -> list[str]:
-    """Return the reasons this frame is not publishable. Empty list == good."""
+    """Return the reasons this frame is not publishable. Empty list == good.
+
+    `palette` None skips the membership check - only for a `post --no-snap`
+    preview, which is never published; every real frame is checked.
+    """
     problems: list[str] = []
     if img.size != tuple(canvas):
         problems.append(f"dimensions are {img.size[0]}x{img.size[1]}, "
                         f"contract.canvas is {canvas[0]}x{canvas[1]}")
     if not alpha_is_binary(img):
         problems.append("alpha is not binary (must be 0 or 255 only)")
+    if palette is None:
+        return problems
     members = set(palette)
     stray = sorted(opaque_colours(img) - members)
     if stray:

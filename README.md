@@ -110,11 +110,12 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
 | `render <job>` | strip | `render/pose_pass.png`, `identity_pass.png`, `provenance.json` | **a GPU stage.** Two `/prompt` jobs, not one graph. Seed is derived from the clip hash + action + picks unless `--seed` is given, so a re-run reproduces. |
 | `clip <job>` | every skeleton (+ `depth/` if `rig` wrote it) | `clip/frames/%04d.png`, `clip/control.mp4`, `clip/clip.json`, `clip/provenance.json` | **a GPU stage — the clip render feature.** Renders the whole rig clip as one Wan 2.2 Fun-Control 5B video with the unit's `base` render as the identity reference and the skeleton PNGs as the control video, one generated frame per rig frame (padded to 4n+1 by holding the last; `clip.json.frame_map`). `--control auto|pose|depth|blend` (auto = blend when `depth/` exists) and `--depth-gain` decide what the control video carries. Rig the job at the clip cell first: `rig … --width 512 --height 768` (768×768 for a lying death). Measured 2026-09-17: 9–55 s of GPU per action. Then `pick` as usual and `post --input clip`. See "The clip route" below. |
-| `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
+| `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. **The snap is the only quantisation in the pipeline** (the palette feature): `-remap` to the project palette, or to the unit's sub-palette when `palette_units/<slug>.json` exists; `--no-snap` is a raw-colour preview (matted, downscaled, recanvassed, not remapped) that `publish` refuses. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
 | `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block; a phased pick adds `fps`, `loop`, `phases` and `durations_ms` to the block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
 | `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>` and `--existing [png]` | `work/<slug>_concept/candidates/NN.png` + `job.json`; `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
 | `bakeoff --unit <slug> --action attack` | the two rigs' attack clips | `work/bakeoff_<slug>_attack/{bakeoff.json,page/,report.md}` + one job per cell `work/bakeoff_<slug>_attack_<cell>/` | **a GPU stage — the frame route bake-off feature.** One action through both candidate routes for the in-between frames on both candidate rigs — four cells `V-kaykit`, `V-quaternius`, `K-kaykit`, `K-quaternius` — as ordinary `rig → clip → pick → post --parts` (V) and `rig → pick → strip → render → post --parts` (K) jobs called as a library, one seed, then one page with an animated 12 fps preview per row and one metric table. Resumable per cell (`--cells`, `--force`, `--page-only`); seconds per stage and VRAM per cell in `bakeoff.json`. The owner rules on the page; the stage picks nothing. See "The frame route bake-off" below. |
+| `palette --lospec <slug>` \| `--file <path>` | a Lospec slug (`https://lospec.com/palette-list/<slug>.json`) or a `.hex` / `.gpl` / one-row `.png` | `palette.gpl` + `.hex` + `.png` + `.json` beside `ANIM_PALETTE` | **the palette feature.** Installs the project palette — the `-remap` source of truth `post` reads. `--unit <slug> --colours '#…,#…'` or `--from-sprite <png>` writes the unit's sub-palette to `palette_units/<slug>.json`; `--list` prints what is installed; `--into <path>` targets another `.gpl`. Same input, same bytes. See "The project palette" below. |
 | `run <clip>` | a filmed clip | all of the above | stops politely before `render` when the GPU is off. |
 
 ### The clip route — the clip render feature
@@ -217,6 +218,58 @@ docker compose run --rm anim post knight_strike --parts
 - Read `anim/partkit.py` for the measured reasons behind each choice (why negatives are used
   to choose SAM's candidate rather than fed to it, why no box, why Oklab).
 
+### The project palette — the palette feature
+
+One project palette, from Lospec, per-unit sub-palettes, **snapped at export**: `concept`,
+`base`, `render` and `clip` generate in free colour, and `post` is the one place a pixel
+is remapped (sprite-studio.md §2). [#282](http://192.168.1.158:8700/work_packages/282).
+
+```bash
+# the project palette - by Lospec slug (the JSON endpoint), or from a file
+docker compose run --rm anim palette --lospec lospec-2000
+docker compose run --rm anim palette --file /assets_src/palette_candidates/grim32/grim32.gpl
+docker compose run --rm anim palette --list
+
+# a unit's sub-palette: what the knight may use, out of the project's colours
+docker compose run --rm anim palette --unit knight --from-sprite /assets/2d/units/knight.png
+docker compose run --rm anim palette --unit knight --colours '#141415,#444443,#c9c2a3'
+docker compose run --rm anim palette --unit knight --clear
+
+# a raw-colour preview of a job, no snap (never publishable)
+docker compose run --rm anim post knight_strike --no-snap
+```
+
+- **The files.** `anim palette` writes the same set game-02's `install_palette.py` does —
+  `palette.gpl` (the human-readable source), `palette.hex` (Lospec's format, one `rrggbb`
+  per line), `palette.png` (the one-row image `magick -dither None -remap` consumes) — plus
+  `palette.json` (name, author, source slug / file, the colours as hex, `fetched_at`), all
+  beside whatever `ANIM_PALETTE` names (`/assets_src/palette.gpl`). Written in place, and
+  the `.gpl` carries no date, so re-running with the same input changes no bytes. Checked
+  2026-09-21: `--lospec lospec-2000` reproduces the installed `palette.hex` and `palette.png`
+  byte for byte; the `.gpl` differs only in its header comments.
+- **Lospec.** `GET https://lospec.com/palette-list/<slug>.json` →
+  `{"name", "author", "colors": ["rrggbb", …]}`; a wrong slug is a 404 and the stage says
+  so, no network is a clear message with the `--file` fallback. `ANIM_LOSPEC_URL` overrides
+  the template (the tests point it at a `file://` directory).
+- **Sub-palettes** live one file per unit in `palette_units/<slug>.json` next to the
+  project palette — with the other art decisions (the palette, `timing.json`), not in
+  `work/`, because "the knight is these 56 of the 182" is a decision, not scratch. Every
+  colour must be a member of the project palette: a typed list with an outsider is refused,
+  a sprite's outsider snaps to its nearest member and the record says which. A unit with
+  no file gets the whole project palette — exactly the path every job took before the
+  feature, byte for byte.
+- **What `post` does with it.** The `-remap` palette becomes the unit's subset, the
+  verification checks against the same subset, and the part palette lock (which runs
+  *after* the remap, order unchanged) is narrowed to it — a base sprite posted before the
+  sub-palette existed may carry outsiders, and each moves to its nearest member so the
+  lock cannot reintroduce them. `report.json.palette` records `colours` (what was snapped
+  to), `project_colours`, `unit_palette` and `snap`. A sub-palette that names a colour the
+  project palette no longer has stops `post` with the command that fixes it.
+- **The API.** `GET /settings` shows the palette expanded (`{path, name, colours, source}`),
+  `GET /palette` the full record, `POST /palette {"lospec": …}` / `{"file": …}` /
+  `{"unit": …, "colours" | "from_sprite" | "clear"}` runs the stage through the run manager
+  (a CPU run, `202` + the run), `GET /palette/units/{unit}` one unit's file.
+
 ### The review page
 
 The click-to-pick sheet is served by the pipeline API (below), not by a stage:
@@ -274,7 +327,10 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `POST /jobs` `{"stage": "pick", "args": {...}}` | run a stage in the background → `202` + the run, `Location: /runs/{id}`. `args` keys are the stage's `--help` names (`job`, `n`, `force`, `slug`, `audit: false` → `--no-audit`); or `"argv": ["knight_strike", "-n", "3"]` verbatim. Unknown keys and bad values are a `400` in argparse's own words |
 | `GET /runs` · `GET /runs/{id}?tail=N` | every run this API knows, newest first; one run with its log |
 | `GET /runs/{id}/events` | `text/event-stream`: `log` per line, `progress` when the percent changes, one `done` (`status`, `returncode`). A stream opened after the run ended replays the whole log |
-| `GET /settings` · `PUT /settings` | `work/project.json`: `palette` (path or null), `frame_budgets` (`{action: 1..12}`), `curation` (`gates` \| `every` \| `end`), `frame_size` (`[w, h]`). Just the store — the palette, keyframe phase, curation and export features read it |
+| `GET /settings` · `PUT /settings` | `work/project.json`: `palette`, `frame_budgets` (`{action: 1..12}`), `curation` (`gates` \| `every` \| `end`), `frame_size` (`[w, h]`). `palette` is stored as a path (null = `ANIM_PALETTE`) and shown expanded — `{path, name, colours, source}` read from the palette files; a PUT takes the path string or that object back. The keyframe phase, curation and export features read the rest |
+| `GET /palette` | the project palette record (`palette.json`, or one derived from a bare `.gpl`) plus `units`; `404` with the fix when nothing is installed |
+| `POST /palette` `{"lospec": "endesga-32"}` \| `{"file": "/path.hex"}` \| `{"unit": "knight", "colours": [...] \| "from_sprite": "/path.png" \| "clear": true}` | run `anim palette …` in the background (a CPU run) → `202` + the run, `--into` the settings' palette path |
+| `GET /palette/units` · `GET /palette/units/{unit}` | the units that have a sub-palette; one unit's `palette_units/<unit>.json` (`404`: the whole project palette applies) |
 | `GET /health` | `ok`, the work dir, the active GPU run; `?probe=1` also asks ComfyUI (3 s timeout) |
 | `GET /` | the web pixel editor (`web/dist/`, see below), else a page listing the jobs and runs |
 | `GET /jobs/{job}/review` | the click-to-pick page |
@@ -615,7 +671,8 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | `ANIM_MODELS_LOCK` | `/work/gpu/models.lock` | repo + revision + sha256 per weight, copied into the sidecar |
 | `ANIM_ASSETS_DIR` | `/assets` | game-02's published assets (read-write) |
 | `ANIM_GAME02_DIR` | `/game02` | the game-02 repo, read-only, so `publish` can run its audit here |
-| **`ANIM_PALETTE`** | `/assets_src/palette.gpl` | the `-remap` source of truth. Currently Resurrect 64 as a **provisional working default** — see below |
+| **`ANIM_PALETTE`** | `/assets_src/palette.gpl` | the `-remap` source of truth — the project palette (Lospec 2000, 182 colours, installed 2026-09-14). `anim palette` rewrites it and its `.hex` / `.png` / `.json`; `palette_units/` beside it holds the unit sub-palettes. See "The project palette" |
+| `ANIM_LOSPEC_URL` | `https://lospec.com/palette-list/{slug}.json` | where `anim palette --lospec` fetches from; the tests point it at a `file://` directory |
 | `ANIM_EXTRACT_FPS` | `12` | the decode-rate cap (and the rate the game plays frames back at) |
 | `ANIM_POSE_MODEL` | `wholebody` | `wholebody` is DWPose (134 joints); `body` is the lighter 18-joint rig |
 | `ANIM_POSE_MODE` | `balanced` | `lightweight` \| `balanced` \| `performance` |
@@ -654,12 +711,13 @@ curl http://192.168.1.158:8188/system_stats                   # should name the 
 
 Never `docker context use`. Everything else in this repo stays on Docker Desktop.
 
-**2. The owner picks the palette.** `assets_src/palette.gpl` exists (Resurrect 64,
-installed 2026-09-13 as a *provisional* working default so the pipeline can run) but the
-pick is still open: the owner is exploring with the art bible's palette explorer, and
-`game-02-tactical-rpg/assets_src/install_palette.py <slug>` is how a new pick gets
-installed (it rewrites `.gpl`/`.hex`/`.png` in place). To try a staged candidate without
-installing it, point the pipeline at it:
+**2. The owner picks the palette.** `assets_src/palette.gpl` is Lospec 2000 (182 colours,
+installed 2026-09-14 by `game-02-tactical-rpg/assets_src/install_palette.py`, which the file's
+own header says). Changing it is `anim palette --lospec <slug>` or `--file <path>` from this
+repo (or `install_palette.py` from game-02's — both write the same `.gpl`/`.hex`/`.png` set in
+place, and `anim palette` adds `palette.json`); frames do not re-snap themselves, so re-run
+`anim post` + `anim publish` afterwards. To try a staged candidate without installing it,
+point the pipeline at it:
 
 ```bash
 ANIM_PALETTE=/assets_src/palette_candidates/grim32/grim32.gpl \
@@ -672,7 +730,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 488 passed, 4 skipped (2026-09-21)
+docker compose run --rm anim-pipeline pytest        # 514 passed, 4 skipped (2026-09-21)
 cd web && npm test                                  # 26 passed - the editor panel's pure parts
 ```
 
@@ -721,7 +779,8 @@ documented; they are the starting point for a later full-cycle animation tier.
 | `gpu/workflows/base_sprite.json` | Generates a unit's standing sprite from a canned skeleton when no reference sprite exists yet. |
 | `gpu/workflows/clip_render.json` | The clip render feature: Wan 2.2 Fun-Control 5B, reference image + control video → one PNG per frame (`SaveImage` on the decoded batch instead of the template's `SaveVideo`). Translated from the official `video_wan2_2_5B_fun_control` template. |
 | `gpu/workflows/NOTES.md` | Which node names and input keys were verified against source, and what is still `TODO-verify`. |
-| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base concept bakeoff run`. |
+| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base concept bakeoff palette run`. |
+| `anim/palettekit.py` + `anim/stages/palette.py` | **The palette feature** — the project palette from a Lospec slug or a `.hex` / `.gpl` file, the per-unit sub-palettes in `palette_units/`, and the one snap in `post`. |
 | `anim/api/` | **The pipeline API feature** — FastAPI over `work/` on `:8720` (`anim-api` in `compose.yml`): jobs, frames, picks, runs with SSE progress, project settings; serves the review page and, once built, the editor. Deps in `requirements-api.txt`, their own Docker layer. |
 | `anim/rigkit.py` + `anim/stages/rig.py` + `rigs/` | **The rig motion input feature** — a CC0 rigged character's clips as the motion source, sampled with `pygltflib` + numpy, mapped to OpenPose-18, projected in profile facing right. Replaces filming for the anchor unit; makes the spike's TripoSG / Mixamo path unnecessary. |
 

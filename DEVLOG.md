@@ -81,6 +81,87 @@ top-down. Piskel's own Save / Export drawer still writes to the browser or a dow
 
 ---
 
+## 2026-09-21 — the palette feature: one project palette from Lospec, unit sub-palettes, snapped at export
+
+**What.** `anim palette` — [#282](http://192.168.1.158:8700/work_packages/282), the sprite
+studio's palette row (sprite-studio.md §2: *one project Lospec palette, per-character sub-picks,
+snapped at export; file import and fetch by slug*). New: `anim/palettekit.py` (parse `.hex` /
+`.gpl` / one-row `.png`, the `.gpl` writer, the Lospec fetch, the four-file install, the per-unit
+files) and `anim/stages/palette.py` (`--lospec <slug>` / `--file <path>` / `--list` / `--into`;
+`--unit <slug>` with `--colours` / `--from-sprite` / `--clear`). `config.LOSPEC_URL`
+(`ANIM_LOSPEC_URL`). `post` gains the unit sub-palette (`palettekit.unit_colours`) and `--no-snap`;
+`publish` refuses a `--no-snap` job; `imaging.verify_frame(palette=None)` skips the membership
+check for that preview only. The API: `GET /settings` shows `palette` expanded (`{path, name,
+colours, source}`) and `PUT` takes the path or that object back; `GET /palette`, `POST /palette`
+(a CPU run through the run manager, `--into` the settings' path), `GET /palette/units[/{unit}]`.
+pytest: 483 → **509 passed**, 4 skipped; the two opt-in `ANIM_POST_REGRESSION=1` tests
+(`knight_hit` with rembg, `knight_death` with chroma, byte-compared with the published frames)
+pass too, and a scratch run of the fixture job on this branch and on the branch point gives the
+same frame hashes with both Grim32 and the installed palette. Nothing re-rendered, nothing
+published, OpenProject and `TODO.md` untouched.
+
+**The real fetch.** `anim palette --lospec lospec-2000` (the slug in the installed `.gpl`'s
+`Name:` header, which `install_palette.py` wrote from a pasted hex list on 2026-09-14) into a
+scratch dir: 182 colours, `palette.hex` and `palette.png` **byte-identical** to
+`game-02-tactical-rpg/assets_src/`'s, the colour rows of `palette.gpl` identical, and the `.gpl`
+header comments different — Lospec's JSON gives this palette an empty `author`, where the
+hand-installed file says "Lospec community", and the pasted-list origin line is now a
+`# Source: lospec lospec-2000` line and the page URL. So the installed palette *is* the Lospec
+one, and the endpoint is `https://lospec.com/palette-list/<slug>.json` →
+`{"name", "author", "colors": ["rrggbb", …]}` (a wrong slug is a 404 with
+`{"error": "palette not found"}`; checked 2026-09-21). The README's "Resurrect 64, provisional"
+paragraph was two palettes out of date — the source (the file's header) wins, and the README now
+says Lospec 2000.
+
+**Where a sub-palette lives: `palette_units/<slug>.json` beside the project palette, not
+`parts.json`.** The brief offered `work/<unit>_base/post/parts.json` or a unit file. `parts.json`
+is *derived* data — the colours SAM found inside each part of one base render, regenerated
+whenever the base is re-posted, and per part, not per unit. A sub-palette is a *decision* —
+"the knight is these 56 of the 182" — made before any base exists and outliving every re-render,
+so it belongs with the other art decisions that already sit in `assets_src/` (the palette,
+`timing.json`), one JSON per unit so two API runs on two units cannot race on one file. `post`
+applies it in both places that matter: the unit-level `-remap` snaps to the subset, and the part
+palettes are narrowed to it (an outsider moves to its nearest member in Oklab, the lock's own
+metric — `post.narrow_part_palettes`), so the lock can only ever snap to the unit's own colours.
+The alternative — writing the subset into `parts.json` as a synthetic part — would have made the
+lock the only consumer and left the unit-level remap on the whole palette, which is the step that
+actually decides most pixels. A unit with no file takes the pre-feature path exactly.
+
+**Remap before the lock, unchanged.** `post` already ran `-remap` before the part lock; that order
+stays. The lock's candidates are then members of whatever the remap used, and with a sub-palette
+the remap already excludes the borrowed browns, so the lock has less to correct. The other order
+(lock the HD cell, then remap) would have snapped part pixels to colours the remap could then move
+again. Every existing job with no sub-palette and no flag produces the same bytes it did — that
+is what the hash comparison against the branch point and the published-frame regression pin.
+
+**Snap at export was already true; now it is checked.** `test_generation_never_quantises_only_post_does`
+asserts no stage before `post` names `-remap` or `.quantize(`. `--no-snap` exists because the
+studio's curation board will want to show the raw render beside the snapped one; the preview is
+matted, downscaled and recanvassed so it is the same shape as the real thing, `report.json` and
+`job.json` say `snap: false`, and `publish` refuses it rather than trusting the owner to remember.
+`--no-snap --parts` is refused outright: the lock is a snap.
+
+**Idempotent by leaving the date out.** `install_palette.py` stamps its `.gpl` with the day; this
+writer does not, so `--lospec x` twice is a no-op in git and the test compares bytes. The one
+moving field is `palette.json`'s `fetched_at`, which is data the API shows, not a diff on the
+palette. The `.hex` and `.png` are byte-compatible with `install_palette.py`'s so either tool can
+install and the other reads the result.
+
+**`GET /settings` changes shape for `palette`.** It was a path string; the brief asks for
+`{path, name, colours, source}`, so the store keeps the path and `load()` expands it from the
+palette files. A client that GETs, edits another field and PUTs the whole document back would
+otherwise have sent the object where a string was expected, so `validate()` accepts both (an
+object needs a `path`). The web editor branch reads `settings.palette` — this is the one shape
+change it has to absorb at merge.
+
+**Not done.** No `anim palette` in `anim run` (the palette is a project setting, not a per-clip
+step); no re-post of the existing jobs to a sub-palette (none is set — `--from-sprite` on the
+published knight gives 56 colours, recorded here for the second gate to decide on); the
+spritesheet export ([#283](http://192.168.1.158:8700/work_packages/283)) is where the snap gets
+its generic-contract home.
+
+---
+
 ## 2026-09-21 — the keyframe phase feature: pick against start → wind-up → action → wind-down → end → loop
 
 **What.** `anim pick --phases` — [#276](http://192.168.1.158:8700/work_packages/276), the fifth

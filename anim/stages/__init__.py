@@ -10,8 +10,9 @@ the standing-sprite variant; `concept` (the character concept feature) comes
 before `base` in the studio's chain - text or sketch to candidate base
 characters, one of which is picked as the unit's reference; `bakeoff` (the
 frame route bake-off feature) runs one action through both in-between routes
-on both rigs and writes the page the owner rules on; `run` chains the whole
-thing in one command.
+on both rigs and writes the page the owner rules on; `palette` (the palette
+feature) installs the project palette from Lospec or a file and the per-unit
+sub-palettes `post` snaps to; `run` chains the whole thing in one command.
 """
 
 STAGE_ORDER = [
@@ -28,5 +29,6 @@ STAGE_ORDER = [
     "base",
     "concept",
     "bakeoff",
+    "palette",
     "run",
 ]

@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
+from anim import config, imaging, palettekit
 from anim.api import jobs as jobs_api
 from anim.api import runs as runs_api
 from anim.api import settings as settings_api
@@ -27,6 +28,7 @@ from anim.api.app import create_app
 from anim.job import Job
 from anim.stages import pick as pick_stage
 from anim.stages.review import ReviewApp
+from test_palette import ENDESGA_32
 
 # What `[*python, stage, *argv]` runs when the test is about the manager and
 # not about a stage: prints two steps and exits, `FAKE_DELAY` seconds apart.
@@ -436,9 +438,14 @@ def test_percent_comes_only_from_step_and_progress_lines():
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
-def test_settings_default_then_round_trip(api, work_dir):
-    assert api.get("/settings").json() == settings_api.DEFAULTS
-    body = {"palette": "/assets_src/palette_candidates/grim32/grim32.gpl",
+def test_settings_default_then_round_trip(api, work_dir, palette):
+    fresh = api.get("/settings").json()
+    assert {k: v for k, v in fresh.items() if k != "palette"} == \
+        {k: v for k, v in settings_api.DEFAULTS.items() if k != "palette"}
+    assert fresh["palette"]["path"] == str(config.PALETTE), \
+        "no stored path: the CLI's palette, shown expanded"
+    assert set(fresh["palette"]) == {"path", "name", "colours", "source"}
+    body = {"palette": str(palette),
             "frame_budgets": {"Walk": 8, "attack": 12}, "curation": "every",
             "frame_size": [32, 32]}
     response = api.put("/settings", json=body)
@@ -446,11 +453,21 @@ def test_settings_default_then_round_trip(api, work_dir):
     stored = response.json()
     assert stored["frame_budgets"] == {"walk": 8, "attack": 12}, "actions lower-cased"
     assert stored["curation"] == "every" and stored["frame_size"] == [32, 32]
+    assert stored["palette"]["path"] == str(palette)
+    assert stored["palette"]["colours"] == [palettekit.hex_of(c)
+                                            for c in imaging.read_palette(palette)]
+    assert stored["palette"]["name"] and stored["palette"]["source"]["kind"] == "file"
     assert api.get("/settings").json() == stored
-    assert json.loads((work_dir / "project.json").read_text()) == stored
+    on_disk = json.loads((work_dir / "project.json").read_text())
+    assert on_disk["palette"] == str(palette), "stored as the path"
+    assert {k: v for k, v in on_disk.items() if k != "palette"} == \
+        {k: v for k, v in stored.items() if k != "palette"}
+    # what GET answered, PUT back unchanged: the object form is accepted
+    assert api.put("/settings", json=stored).json() == stored
     partial = api.put("/settings", json={"curation": "end"}).json()
     assert partial["curation"] == "end"
     assert partial["frame_budgets"] == {}, "a PUT is the whole document"
+    assert partial["palette"]["path"] == str(config.PALETTE)
 
 
 @pytest.mark.parametrize("body, word", [
@@ -460,13 +477,105 @@ def test_settings_default_then_round_trip(api, work_dir):
     ({"frame_size": [64]}, "frame_size"),
     ({"frame_size": [64, 0]}, "frame_size"),
     ({"palette": ""}, "palette"),
+    ({"palette": {"name": "x"}}, "palette"),
     ({"dither": True}, "unknown"),
 ])
-def test_bad_settings_are_a_400(api, body, word):
+def test_bad_settings_are_a_400(api, body, word, work_dir):
     response = api.put("/settings", json=body)
     assert response.status_code == 400
     assert word in response.json()["detail"]
-    assert api.get("/settings").json() == settings_api.DEFAULTS, "nothing written"
+    assert not (work_dir / "project.json").exists(), "nothing written"
+
+
+# ---------------------------------------------------------------------------
+# The palette feature
+# ---------------------------------------------------------------------------
+@pytest.fixture
+def lospec_dir(tmp_path, monkeypatch):
+    """A file:// stand-in for lospec.com, honoured by the subprocess too."""
+    root = tmp_path / "lospec"
+    root.mkdir()
+    (root / "endesga-32.json").write_text(json.dumps(ENDESGA_32))
+    monkeypatch.setenv("ANIM_LOSPEC_URL", f"file://{root}/{{slug}}.json")
+    monkeypatch.setattr(config, "LOSPEC_URL", f"file://{root}/{{slug}}.json")
+    return root
+
+
+def test_palette_routes_read_what_the_stage_wrote(api, work_dir, tmp_path):
+    target = tmp_path / "proj" / "palette.gpl"
+    api.put("/settings", json={"palette": str(target)})
+    missing = api.get("/palette")
+    assert missing.status_code == 404 and "POST /palette" in missing.json()["detail"]
+    assert api.get("/palette/units").json() == {"units": [], "path": str(target)}
+    assert api.get("/palette/units/knight").status_code == 404
+
+    record = palettekit.install([(0, 0, 0), (255, 255, 255), (60, 78, 128)],
+                                name="Tiny", source={"kind": "file", "file": "tiny.hex"},
+                                target=target)
+    got = api.get("/palette").json()
+    assert got == {**record, "path": str(target), "units": []}
+    assert api.get("/settings").json()["palette"] == {
+        "path": str(target), "name": "Tiny",
+        "colours": ["#000000", "#ffffff", "#3c4e80"],
+        "source": {"kind": "file", "file": "tiny.hex"}}
+
+    unit = palettekit.write_unit_palette("knight", [(0, 0, 0)], source={"kind": "colours"},
+                                         target=target)
+    assert api.get("/palette/units/knight").json() == {
+        **unit, "path": str(target.parent / "palette_units" / "knight.json")}
+    assert api.get("/palette").json()["units"] == ["knight"]
+    assert api.get("/palette/units/Bad%20Name").status_code == 400, "not a slug"
+
+
+def test_post_palette_becomes_an_anim_palette_run(fake_api, work_dir, tmp_path):
+    target = tmp_path / "proj" / "palette.gpl"
+    fake_api.put("/settings", json={"palette": str(target)})
+    response = fake_api.post("/palette", json={"lospec": "endesga-32"})
+    assert response.status_code == 202, response.text
+    run = response.json()
+    assert run["stage"] == "palette" and run["gpu"] is False
+    assert run["argv"] == ["--lospec", "endesga-32", "--into", str(target)]
+    assert response.headers["location"] == f"/runs/{run['id']}"
+    wait_for(fake_api, run["id"])
+
+    run = fake_api.post("/palette", json={"file": "/tmp/x.hex", "name": "X"}).json()
+    assert run["argv"] == ["--file", "/tmp/x.hex", "--name", "X", "--into", str(target)]
+    wait_for(fake_api, run["id"])
+    run = fake_api.post("/palette", json={"unit": "knight",
+                                          "colours": ["#000000", "#ffffff"]}).json()
+    assert run["argv"] == ["--into", str(target), "--unit", "knight",
+                           "--colours", "#000000,#ffffff"]
+    wait_for(fake_api, run["id"])
+    run = fake_api.post("/palette", json={"unit": "knight", "from_sprite": "k.png"}).json()
+    assert run["argv"][-2:] == ["--from-sprite", "k.png"]
+    wait_for(fake_api, run["id"])
+    run = fake_api.post("/palette", json={"unit": "knight", "clear": True}).json()
+    assert run["argv"][-3:] == ["--unit", "knight", "--clear"]
+    wait_for(fake_api, run["id"])
+
+    for body in ({}, {"lospec": "a", "file": "b"}, {"unit": "knight"}):
+        assert fake_api.post("/palette", json=body).status_code == 400, body
+
+
+def test_post_palette_runs_the_real_stage_with_the_network_mocked(api, work_dir,
+                                                                  tmp_path, lospec_dir):
+    target = tmp_path / "proj" / "palette.gpl"
+    api.put("/settings", json={"palette": str(target)})
+    run = api.post("/palette", json={"lospec": "endesga-32"}).json()
+    final = wait_for(api, run["id"])
+    assert final["status"] == "done", "\n".join(final["log"])
+    assert any(line.startswith("palette: Endesga 32") and "32 colour(s)" in line
+               for line in final["log"]), final["log"]
+    got = api.get("/palette").json()
+    assert got["name"] == "Endesga 32" and got["source"]["slug"] == "endesga-32"
+    assert got["colours"][0] == "#be4a2f" and len(got["colours"]) == 32
+    assert imaging.read_palette(target)[0] == (0xBE, 0x4A, 0x2F)
+
+    run = api.post("/palette", json={"lospec": "no-such"}).json()
+    final = wait_for(api, run["id"])
+    assert final["status"] == "failed"
+    assert any("could not reach" in line or "no Lospec palette" in line
+               for line in final["log"]), final["log"]
 
 
 # ---------------------------------------------------------------------------

@@ -63,13 +63,25 @@ same function, so the two routes differ only in where the pixels came from;
 `report.json` says which (`route`), and `publish` picks the matching
 provenance file from it.
 
+**Snap at export, not at generation (the palette feature).** This chain is the
+ONLY place a pixel is quantised - `concept`, `base`, `render` and `clip` all
+generate in free colour, and `-remap` runs here, once, on the fitted sprite.
+What it remaps TO is the project palette (`ANIM_PALETTE`, installed by `anim
+palette`) or, when the unit has a sub-palette (`palette_units/<slug>.json`,
+`anim palette --unit`), that subset - so a knight cannot borrow the hound's
+browns. `--no-snap` skips the remap (and the part lock, which is a snap too)
+for a preview in raw colour, still matted, downscaled and recanvassed; the
+report and job.json record `snap: false` and `publish` refuses such a job.
+
 **The part palette lock (`--parts`, the part palette lock feature).** Off by
 default, and with it off the chain above produces exactly the bytes it did
 before the feature existed. On, each HD cell is masked into the unit's parts
 (`config.UNIT_PARTS`: sword, shield, helmet, arms, torso, legs for the knight)
 by SAM 2.1 prompted from the rig's joints and prop outlines, the masks ride
 the same trim/downscale as the pixels, and after the unit-level snap every
-pixel of a part is re-snapped to *that part's* palette. The palettes come
+pixel of a part is re-snapped to *that part's* palette (narrowed to the unit's
+sub-palette when it has one: the lock runs AFTER the unit-level remap, so its
+candidates are members of whatever that remap used). The palettes come
 from the unit's accepted base sprite: `post --parts` on a `base` job is the
 EXTRACT mode (no action -> nothing to lock to) and writes `post/parts.json`,
 which `publish` carries into the sprite's sidecar as `generation.parts`; every
@@ -89,7 +101,7 @@ from typing import Any, Callable
 import numpy as np
 from PIL import Image
 
-from anim import config, imaging, partkit, posekit
+from anim import config, imaging, palettekit, partkit, posekit
 from anim.job import Job
 from anim.util import have, read_json, tool_version, write_json_in_place
 from anim.util import run as run_tool
@@ -260,7 +272,8 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
                  downscale: str = DEFAULT_DOWNSCALE,
                  part_masks: partkit.PartMasks | None = None,
                  part_palettes: dict[str, Any] | None = None,
-                 parts_out: dict[str, Any] | None = None
+                 parts_out: dict[str, Any] | None = None,
+                 snap: bool = True
                  ) -> tuple[Image.Image, list[str]]:
     """One generated cell -> one finished 64x64 frame. Pure; no disk state.
 
@@ -270,6 +283,9 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
     given - EXTRACTS the colours each part shows. What happened lands in
     `parts_out` (an out-param so the return shape every caller relies on stays
     `(frame, steps)`). With `part_masks` None, nothing below changes.
+
+    `snap=False` (the palette feature's `--no-snap`) leaves the fitted colours
+    as they are: no `-remap`, and no part lock either since that is a snap.
     """
     canvas = tuple(canvas or config.CANVAS)
     if downscale not in DOWNSCALES:
@@ -313,8 +329,12 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
                                Image.NEAREST)
     steps.append(f"fit -> {fitted.width}x{fitted.height}")
 
-    snapped = palette_snap(fitted, palette_png)
-    steps.append("magick -dither None -remap")
+    if snap:
+        snapped = palette_snap(fitted, palette_png)
+        steps.append("magick -dither None -remap")
+    else:
+        snapped = fitted.convert("RGB")
+        steps.append("palette snap off (--no-snap): raw colours")
 
     mask = alpha.resize(snapped.size, Image.NEAREST)
     rgba = snapped.convert("RGBA")
@@ -322,7 +342,7 @@ def process_cell(cell: Image.Image, *, target_height: int, palette_png: Path,
     rgba = imaging.binarise_alpha(rgba)
     steps.append("re-apply binary mask")
 
-    if part_masks is not None:
+    if part_masks is not None and snap:
         small = partkit.downscale_labels(part_masks.labels, rgba.size, trim_box)
         if part_palettes is not None:
             rgba, part_report = partkit.lock(rgba, small, part_masks.names,
@@ -391,6 +411,26 @@ def load_part_palettes(slug: str, explicit: Path | None = None, *,
         f"no part palettes for {slug!r} (tried {tried}). Run "
         f"`anim post {slug}_base --parts` on the accepted base sprite first, "
         f"publish it, or pass --parts-from.")
+
+
+def narrow_part_palettes(palettes: dict[str, list[list[int]]],
+                         allowed: list[tuple[int, int, int]]
+                         ) -> tuple[dict[str, list[list[int]]], int]:
+    """Every part colour a member of `allowed` (the unit's sub-palette), the
+    outsiders moved to their nearest member in Oklab like the lock itself
+    does. Returns the palettes and how many colours moved."""
+    members = set(allowed)
+    moved = 0
+    out: dict[str, list[list[int]]] = {}
+    for name, colours in palettes.items():
+        rows = [tuple(int(v) for v in c) for c in colours]
+        strays = [c for c in rows if c not in members]
+        if strays:
+            snapped = partkit.nearest_colours(np.asarray(rows, dtype=np.uint8), allowed)
+            rows = [tuple(int(v) for v in row) for row in snapped]
+            moved += len(strays)
+        out[name] = [list(c) for c in palettekit.dedupe(rows)]
+    return out, moved
 
 
 def _mask_cells(job: Job, *, slug: str, cells: list[Cell],
@@ -511,25 +551,33 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
          parts: bool | None = None, parts_from: Path | None = None,
          segmenter: partkit.Segmenter | None = None,
          assets_dir: Path | None = None,
-         work_dir: Path | None = None) -> dict[str, Any]:
+         work_dir: Path | None = None, snap: bool = True) -> dict[str, Any]:
     job = Job.open(job_name, work_dir)
     manifest = job.read_manifest()
     if matte not in MATTES:
         raise ValueError(f"unknown matte {matte!r}; known: {sorted(MATTES)}")
+    if not snap and parts:
+        raise ValueError("--no-snap is a raw-colour preview; there is no palette "
+                         "to lock parts to. Drop --parts or --no-snap.")
     route = "clip" if is_clip_source(source) else "strip"
     if route == "clip":
         cells, source_label = clip_cells(job, MATTES[matte])
     else:
         cells, source_label = strip_cells(job, manifest, source, MATTES[matte])
 
+    slug = manifest.get("slug", "unit")
+    action = manifest.get("action") or ""
     palette_path = Path(palette) if palette else config.PALETTE
-    colours = imaging.read_palette(palette_path)
+    project_colours = imaging.read_palette(palette_path)
+    # The palette feature: the unit's sub-palette when it has one, else the
+    # whole project palette. Both the -remap and the verification use the
+    # same list, so a frame can only ever hold the unit's colours. A unit with
+    # no file takes exactly the path every job took before the feature.
+    colours, unit_palette = palettekit.unit_colours(slug, project_colours,
+                                                    palette_path)
     chroma = imaging.chroma_key_for(colours)
     job.post_dir.mkdir(parents=True, exist_ok=True)
     palette_png = imaging.palette_png(colours, job.post_dir / "palette.png")
-
-    slug = manifest.get("slug", "unit")
-    action = manifest.get("action") or ""
     # `base` has no action, so its stem is just the slug - and its frames must
     # not come out as "knight__0.png".
     stem = f"{slug}_{action}" if action else slug
@@ -550,6 +598,13 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         if action:   # an action locks to the base sprite; the base extracts
             part_palettes, palettes_from = load_part_palettes(
                 slug, parts_from, assets_dir=assets_dir, work_dir=work_dir)
+            if unit_palette is not None:
+                # A base posted before the sub-palette existed may carry
+                # colours outside it; each moves to its nearest member so
+                # the lock cannot reintroduce them.
+                part_palettes, moved = narrow_part_palettes(part_palettes, colours)
+                if moved:
+                    palettes_from += f" (narrowed to the unit palette: {moved} colour(s) moved)"
         for stale in (job.post_dir / "parts").glob(f"{stem}_*.png"):
             stale.unlink()
 
@@ -564,8 +619,8 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
                                     part_masks=(part_masks[cell_index]
                                                 if part_masks else None),
                                     part_palettes=part_palettes,
-                                    parts_out=parts_out)
-        problems = imaging.verify_frame(frame, colours)
+                                    parts_out=parts_out, snap=snap)
+        problems = imaging.verify_frame(frame, colours if snap else None)
         problems_total += len(problems)
         name = f"{stem}_{cell_meta['index']}.png"
         if not problems:
@@ -604,7 +659,12 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         "downscale": downscale,
         "target_height": target_height,
         "palette": {"path": str(palette_path), "colours": len(colours),
-                    "chroma_key": list(chroma)},
+                    "chroma_key": list(chroma), "snap": snap,
+                    "project_colours": len(project_colours),
+                    "unit_palette": ({"path": str(palettekit.unit_palette_path(
+                                          slug, palette_path)),
+                                      "colours": len(colours)}
+                                     if unit_palette is not None else None)},
         "tools": {
             "magick": tool_version("magick", "-version"),
             "pixelfixer": tool_version("pixelfixer", "--help"),
@@ -670,7 +730,10 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
                            + f"\nSee {job.report_path}")
     job.update_manifest(post={"frames": len(records), "palette": str(palette_path),
                               "matte": matte, "downscale": downscale,
-                              "route": route, "parts": bool(part_masks)})
+                              "route": route, "parts": bool(part_masks),
+                              "snap": snap,
+                              "unit_palette": (report["palette"]["unit_palette"] or {}
+                                               ).get("path")})
     return report
 
 
@@ -693,6 +756,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-pixelfixer", dest="pixelfixer",
                         action="store_false",
                         help="skip the grid-repair step")
+    parser.add_argument("--no-snap", dest="snap", action="store_false",
+                        help="the palette feature: a raw-colour preview - "
+                             "matted, downscaled and recanvassed but NOT "
+                             "remapped to the palette (and no part lock). "
+                             "`publish` refuses a job posted this way")
     parser.add_argument("--downscale", default=DEFAULT_DOWNSCALE,
                         choices=sorted(DOWNSCALES),
                         help="box = area-average straight to the target height "
@@ -712,17 +780,22 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="part palettes to lock to (a post/parts.json or a "
                              "unit sidecar); default: the published sprite's "
                              "sidecar, then work/<slug>_base/post/parts.json")
-    parser.set_defaults(pixelfixer=True)
+    parser.set_defaults(pixelfixer=True, snap=True)
 
 
 def run_stage(args: argparse.Namespace) -> int:
     report = post(args.job, palette=args.palette, matte=args.matte,
                   source=args.source, use_pixelfixer=args.pixelfixer,
                   downscale=args.downscale, parts=args.parts,
-                  parts_from=Path(args.parts_from) if args.parts_from else None)
+                  parts_from=Path(args.parts_from) if args.parts_from else None,
+                  snap=args.snap)
+    unit = report["palette"]["unit_palette"]
+    which = (f"{report['palette']['colours']}-colour unit sub-palette of "
+             f"{report['palette']['project_colours']}" if unit
+             else f"{report['palette']['colours']}-colour palette")
     print(f"post: {len(report['frames'])} frame(s) at "
           f"{config.CANVAS[0]}x{config.CANVAS[1]}, "
-          f"{report['palette']['colours']}-colour palette")
+          + (which if report["palette"]["snap"] else "NO palette snap (preview)"))
     for record in report["frames"]:
         print(f"  {record['file']}  {record['colours']} colour(s)")
         for name, info in (record.get("parts") or {}).items():

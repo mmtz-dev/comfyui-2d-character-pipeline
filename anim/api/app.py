@@ -16,7 +16,12 @@ Routes (all JSON unless said otherwise):
     GET  /runs                             every run this API knows, newest first
     GET  /runs/{run}                       status + log
     GET  /runs/{run}/events                text/event-stream: log, progress, done
-    GET  /settings   PUT /settings         work/project.json
+    GET  /settings   PUT /settings         work/project.json (palette shown expanded)
+    GET  /palette                          the project palette record (palette.json)
+    POST /palette  {"lospec"} | {"file"} | {"unit", "colours" | "from_sprite"}
+                                           run `anim palette` in the background -> 202 + the run
+    GET  /palette/units                    the units that have a sub-palette
+    GET  /palette/units/{unit}             one unit's sub-palette (404: the whole palette applies)
     GET  /health                           {"ok": true, "work_dir": ..., "comfyui": reachable?}
     GET  /                                 web/dist/ when built, else the jobs page
     GET  /jobs/{job}/review                the click-to-pick page
@@ -38,7 +43,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, \
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from anim import __version__, comfy, config
+from anim import __version__, comfy, config, palettekit
 from anim.api import jobs as jobs_api
 from anim.api import pages, settings
 from anim.api.runs import RunManager, RunRefused
@@ -57,6 +62,50 @@ class RunRequest(BaseModel):
 
 class PicksRequest(BaseModel):
     picks: list[int] = Field(default_factory=list)
+
+
+class PaletteRequest(BaseModel):
+    """`POST /palette` (the palette feature). One of `lospec` / `file` for the
+    project palette, or `unit` with `colours` / `from_sprite` for a unit's
+    sub-palette; `clear` with `unit` removes it. Becomes `anim palette ...`
+    through the run manager like any stage."""
+
+    lospec: str | None = None
+    file: str | None = None
+    name: str | None = None
+    author: str | None = None
+    unit: str | None = None
+    colours: list[str] | str | None = None
+    from_sprite: str | None = None
+    clear: bool = False
+
+    def args(self) -> dict[str, Any]:
+        args: dict[str, Any] = {}
+        if self.unit:
+            args["unit"] = self.unit
+            if self.clear:
+                args["clear"] = True
+            elif self.colours:
+                args["colours"] = (",".join(self.colours) if isinstance(self.colours, list)
+                                   else self.colours)
+            elif self.from_sprite:
+                args["from_sprite"] = self.from_sprite
+            else:
+                raise HTTPException(400, "a unit needs `colours`, `from_sprite` or `clear`")
+        elif self.lospec and self.file:
+            raise HTTPException(400, "give `lospec` or `file`, not both")
+        elif self.lospec:
+            args["lospec"] = self.lospec
+        elif self.file:
+            args["file"] = self.file
+            if self.name:
+                args["name"] = self.name
+            if self.author:
+                args["author"] = self.author
+        else:
+            raise HTTPException(400, "give `lospec`, `file`, or `unit` with "
+                                     "`colours` / `from_sprite` / `clear`")
+        return args
 
 
 def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
@@ -196,6 +245,45 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
             return settings.save(work_dir, body)
         except settings.SettingsError as exc:
             raise HTTPException(400, str(exc)) from None
+
+    # --- the palette feature ----------------------------------------------
+    @app.get("/palette")
+    def get_palette() -> dict[str, Any]:
+        path = settings.palette_path(work_dir)
+        record = palettekit.load(path)
+        if record is None:
+            raise HTTPException(404, f"no project palette at {path}; POST /palette "
+                                     f"with a Lospec slug or a file")
+        return {**record, "path": str(path), "units": palettekit.list_unit_palettes(path)}
+
+    @app.post("/palette", status_code=202)
+    def set_palette(body: PaletteRequest, response: Response) -> Any:
+        args = body.args()
+        args["target"] = str(settings.palette_path(work_dir))
+        try:
+            run = manager.start("palette", args=args)
+        except RunRefused as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"error": str(exc), **exc.extra})
+        response.headers["Location"] = f"/runs/{run.id}"
+        return run.record()
+
+    @app.get("/palette/units")
+    def list_unit_palettes() -> dict[str, Any]:
+        path = settings.palette_path(work_dir)
+        return {"units": palettekit.list_unit_palettes(path), "path": str(path)}
+
+    @app.get("/palette/units/{unit}")
+    def get_unit_palette(unit: str) -> dict[str, Any]:
+        path = settings.palette_path(work_dir)
+        try:
+            record = palettekit.read_unit_palette(unit, path)
+        except palettekit.PaletteError as exc:
+            raise HTTPException(400, str(exc)) from None
+        if record is None:
+            raise HTTPException(404, f"{unit!r} has no sub-palette; the whole project "
+                                     f"palette applies")
+        return {**record, "path": str(palettekit.unit_palette_path(unit, path))}
 
     # --- the pages ---------------------------------------------------------
     if web_dist.is_dir() and (web_dist / "index.html").exists():
