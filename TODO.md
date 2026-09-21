@@ -26,17 +26,9 @@ The animation-principle transforms, applied where the pipeline can actually appl
 
 anim matrix <unit>: every (action × direction) cell through the chosen route, resumable, one seed per unit.
 
-### the web pixel editor feature · [#280](http://192.168.1.158:8700/work_packages/280)
-
-The shell of the studio: a fork of Piskel (MIT, vanilla JS — layers, onion-skin, timeline, palette, pencil/bucket/shapes/selection, GIF/sheet export)…
-
 ### the curation board feature · [#281](http://192.168.1.158:8700/work_packages/281)
 
 Where the human says yes or no. An (action × direction) grid of frame strips with accept / reject / regenerate-with-new-seed per frame, writing…
-
-### the palette feature · [#282](http://192.168.1.158:8700/work_packages/282)
-
-One project palette, from Lospec, snapped at export — generation stays free.
 
 ### the spritesheet export feature · [#283](http://192.168.1.158:8700/work_packages/283)
 
@@ -64,9 +56,11 @@ Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid
 
 ## manual test: the frame route bake-off feature · [#290](http://192.168.1.158:8700/work_packages/290)
 
-## manual test: the pipeline API feature · [#292](http://192.168.1.158:8700/work_packages/292)
+## manual test: the web pixel editor feature · [#293](http://192.168.1.158:8700/work_packages/293)
+
+## manual test: the palette feature · [#294](http://192.168.1.158:8700/work_packages/294)
 
 ---
 
-*16 open · 6 closed. Counts and contents come straight from
+*15 open · 9 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
