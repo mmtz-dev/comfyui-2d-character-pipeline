@@ -121,7 +121,7 @@ def test_run_prints_the_review_url(clip, work_dir, patched_pose, monkeypatch,
     run_stage.run_stage(_args(clip, comfyui_url="http://127.0.0.1:1",
                               reference=str(reference_sprite)))
     out = capsys.readouterr().out
-    assert f"http://{config.LAN_HOST}:{config.REVIEW_PORT}/" in out
+    assert f"http://{config.LAN_HOST}:{config.API_PORT}/jobs/knight_strike/review" in out
     assert "anim review knight_strike" in out
 
 

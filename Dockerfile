@@ -108,6 +108,11 @@ RUN SAM2_BUILD_CUDA=0 pip install --no-cache-dir --no-build-isolation "sam2==1.1
 COPY requirements-dev.txt /opt/anim/requirements-dev.txt
 RUN pip install --no-cache-dir -r /opt/anim/requirements-dev.txt
 
+# The pipeline API (fastapi + uvicorn), same reasoning: its own cheap layer so
+# a framework bump never touches the torch layer.
+COPY requirements-api.txt /opt/anim/requirements-api.txt
+RUN pip install --no-cache-dir -r /opt/anim/requirements-api.txt
+
 # The CLI package. Installed with -e so a second agent can edit the mounted
 # source and re-run without rebuilding the image.
 COPY pyproject.toml /opt/anim/pyproject.toml

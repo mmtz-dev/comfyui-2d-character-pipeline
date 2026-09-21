@@ -21,8 +21,8 @@ Piskel in a Vite + TypeScript shell, served by a FastAPI service on `:8720`) wit
 pipeline as a panel inside it — text or sketch → base character → 8 side + 8 top-down
 facings → idle / walk / run / jump / attack → 12 fps keyframe phases → curated,
 palette-snapped sheets + Godot `SpriteFrames`. The rig → clip → post stages below stay the
-engine and stay runnable headless; the `review` page on `:8710` is retired once the API
-lands. Design: `games-design-wiki/shared/sprite-studio.md`. Work: the OpenProject project
+engine and stay runnable headless; the API landed 2026-09-21 (`anim-api`, below) and the
+`review` page on `:8710` is retired. Design: `games-design-wiki/shared/sprite-studio.md`. Work: the OpenProject project
 [Sprite Studio](http://192.168.1.158:8700/projects/sprite-studio), printed into
 [`TODO.md`](TODO.md) (generated — do not edit). Branch: `feat/sprite-studio`.
 
@@ -106,7 +106,7 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `pose <job>` | frames | `pose/keypoints.json`, `pose/skel_%04d.png` | rtmlib DWPose over onnxruntime, CPU. Inference happens **once per clip** and is cached; `pick`, `review` and `strip` re-read it. Rendered with rtmlib's own `draw_skeleton(openpose_skeleton=True)` at the cell size, line width scaled to the canvas. |
 | `rig <glb> --clip <name>` | a rig clip | `job.json`, `frames/%04d.png`, `pose/keypoints.json`, `pose/skel_%04d.png`, `depth/%04d.png` | **replaces `extract` + `pose`** when the motion is a rig clip. Samples the clip at the extract fps, maps the bones to OpenPose-18, projects in profile **facing right by detection**, one scale per rig; the skeleton PNGs go through the very same `posekit.draw`, with the unit's props (sword, shield) drawn on as white outlines. Also writes a **depth frame** per sample — the skinned mesh plus the props as solids, z-buffered under the same projection (the rig props feature); `--depth props` draws the prop solids only, body-occluded, for a model that paints the mannequin when given the body; `--depth none` / `--no-depth` skips it. `--yaw 0|45|…|315` and `--elevation side|top` view the rig from any of the 16 direction cells (the camera direction feature) — the job is then `<unit>_<action>_<dir>`. `--list` prints the clips, `--props` overrides the kit. See "Rig input mode". |
 | `pick <job>` | keypoints | `picks.json` | peaks of deviation-from-rest + reversals + both endpoints, de-duplicated in torso lengths. Also records the **timing shape** (`timing`: one weight per frame + the anchor frame — the strip timing feature): the per-verb template in `config.ACTION_TIMING` by default, or the clip's own frame gaps with `--timing clip`. **Refuses to overwrite a hand-edited `picks.json`** (picks *or* timing) unless `--force`. |
-| `review <job>` | frames + picks | rewrites `picks.json` | the click-to-pick page — see below. |
+| `review <job>` | frames + picks | rewrites `picks.json` | prints where the click-to-pick page is — it lives on the API now (`/jobs/<job>/review`), see "The review page" below. `ReviewApp` in the module is what the API drives. |
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
 | `render <job>` | strip | `render/pose_pass.png`, `identity_pass.png`, `provenance.json` | **a GPU stage.** Two `/prompt` jobs, not one graph. Seed is derived from the clip hash + action + picks unless `--seed` is given, so a re-run reproduces. |
 | `clip <job>` | every skeleton (+ `depth/` if `rig` wrote it) | `clip/frames/%04d.png`, `clip/control.mp4`, `clip/clip.json`, `clip/provenance.json` | **a GPU stage — the clip render feature.** Renders the whole rig clip as one Wan 2.2 Fun-Control 5B video with the unit's `base` render as the identity reference and the skeleton PNGs as the control video, one generated frame per rig frame (padded to 4n+1 by holding the last; `clip.json.frame_map`). `--control auto|pose|depth|blend` (auto = blend when `depth/` exists) and `--depth-gain` decide what the control video carries. Rig the job at the clip cell first: `rig … --width 512 --height 768` (768×768 for a lying death). Measured 2026-09-17: 9–55 s of GPU per action. Then `pick` as usual and `post --input clip`. See "The clip route" below. |
@@ -169,27 +169,86 @@ docker compose run --rm anim post knight_strike --parts
 
 ### The review page
 
+The click-to-pick sheet is served by the pipeline API (below), not by a stage:
+
 ```bash
-ANIM_JOB=knight_strike docker compose up review
+docker compose up -d anim-api
 # then, from the Mac:
-open http://192.168.1.158:8710/
+open http://192.168.1.158:8720/                      # every job, its stages, recent runs
+open http://192.168.1.158:8720/jobs/knight_strike/review
 ```
 
 A contact sheet of every extracted frame, picks highlighted, dark ground and
-`image-rendering: pixelated`. Clicking a frame toggles it and rewrites
-`picks.json` immediately; the other picks keep their own frame numbers. Re-run
-`anim strip` afterwards and the new picks are what gets composed.
+`image-rendering: pixelated`. Clicking a frame toggles it and `PUT`s the whole
+list to `/jobs/<job>/picks`, which rewrites `picks.json` immediately through the
+same `ReviewApp` the old page used — byte for byte the same file (a test checks).
+The other picks keep their own frame numbers. Re-run `anim strip` afterwards
+and the new picks are what gets composed.
 
 **The "Request regenerate" button does not touch the GPU.** It sets
 `rerender_requested` in `job.json` and stops. A page that could start a 24 GB
 model load is a page a stray browser prefetch can fire, and the GPU service is
-on the other Docker engine and usually not running at all.
+on the other Docker engine and usually not running at all. Starting a render on
+purpose is `POST /jobs {"stage": "render", …}` — explicit, one at a time.
 
-Port **8710** was free on 2026-09-13 (`ss -tlnp` and `docker ps` both checked;
-the occupied neighbours are 8700 openproject, 8770 research-digest, 8787
-bg3-modded-wiki). It is bound to `0.0.0.0` because the owner opens it from the
-Mac — a `curl` from the Fedora host to its own LAN IP routes via `lo` and proves
-nothing about LAN reach.
+`anim review <job>` still exists and prints the URL; the stdlib server it used to
+start on `:8710` is gone, as is the `review` compose service.
+
+## The pipeline API — the pipeline API feature
+
+FastAPI over `work/`, so the editor ([#280](http://192.168.1.158:8700/work_packages/280))
+and the curation board ([#281](http://192.168.1.158:8700/work_packages/281)) drive the
+same `work/<job>/` files the CLI writes. **No database**: a job is its directory, a run is
+the CLI in a subprocess plus a log under `work/_runs/`, the project settings are
+`work/project.json`.
+
+```bash
+docker compose up -d anim-api              # http://192.168.1.158:8720/  (docs at /docs)
+curl -s http://192.168.1.158:8720/jobs | jq '.[].name'
+curl -s -X POST http://192.168.1.158:8720/jobs \
+     -H 'Content-Type: application/json' \
+     -d '{"stage": "pick", "args": {"job": "knight_strike", "n": 3}}'
+curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
+```
+
+| Method, path | What |
+|---|---|
+| `GET /jobs` | every directory under `work/` with a `job.json`: name, unit, action, direction cell, stages done (derived from the files, not a status field), updated, newest first |
+| `GET /jobs/{job}` | `job.json` as written, plus the stage list, the current picks and how many PNGs each set has |
+| `GET /jobs/{job}/frames` | every PNG set — `frames`, `pose`, `depth`, `clip`, `strip`, `render`, `post`, `candidates` — each entry with its URL |
+| `GET /jobs/{job}/frames/{set}/{n}.png` | the PNG; `n` is the index in that listing (0-based, the same numbers `picks.json` uses), never a filename from the URL |
+| `GET /jobs/{job}/picks` | the review state (`ReviewApp.state()`) |
+| `PUT /jobs/{job}/picks` `{"picks": [...]}` | rewrite `picks.json` exactly as the review page did; sorted, de-duplicated, out-of-range dropped, a hand `timing` kept |
+| `POST /jobs/{job}/regenerate` | flag `rerender_requested` in `job.json`. Never the GPU |
+| `POST /jobs` `{"stage": "pick", "args": {...}}` | run a stage in the background → `202` + the run, `Location: /runs/{id}`. `args` keys are the stage's `--help` names (`job`, `n`, `force`, `slug`, `audit: false` → `--no-audit`); or `"argv": ["knight_strike", "-n", "3"]` verbatim. Unknown keys and bad values are a `400` in argparse's own words |
+| `GET /runs` · `GET /runs/{id}?tail=N` | every run this API knows, newest first; one run with its log |
+| `GET /runs/{id}/events` | `text/event-stream`: `log` per line, `progress` when the percent changes, one `done` (`status`, `returncode`). A stream opened after the run ended replays the whole log |
+| `GET /settings` · `PUT /settings` | `work/project.json`: `palette` (path or null), `frame_budgets` (`{action: 1..12}`), `curation` (`gates` \| `every` \| `end`), `frame_size` (`[w, h]`). Just the store — the palette, keyframe phase, curation and export features read it |
+| `GET /health` | `ok`, the work dir, the active GPU run; `?probe=1` also asks ComfyUI (3 s timeout) |
+| `GET /` | `web/dist/` when the editor is built (`ANIM_WEB_DIST`), else a page listing the jobs and runs |
+| `GET /jobs/{job}/review` | the click-to-pick page |
+
+**The GPU rule.** `base`, `render`, `clip`, `concept`, `bakeoff` and `run` (which renders
+when it can) reach ComfyUI. They start **only from an explicit `POST /jobs`** — nothing in the
+API polls or prefetches — and **one at a time**: a second is `409` with the id of the one
+running. CPU stages run concurrently up to `ANIM_API_CPU_SLOTS` (default 2), then `409` too.
+`review` is a page, not a stage, and cannot be posted.
+
+**How a run works.** `POST /jobs` becomes `python -m anim <stage> <argv>` in a subprocess
+with `ANIM_WORK_DIR` set to the API's `work/` and stdout streamed line by line into
+`work/_runs/<id>.log`; `<id>.json` beside it is the status. So the API never re-implements a
+stage's arguments or steps — a stage that gains a flag gains it here for free — and a stage
+that dies hard (an ONNX segfault, a torch OOM) cannot take the API down. Percent comes from
+lines a stage already prints: `[n/m] …` (what `anim run` prints per step) or `progress: 42%`.
+After a restart the runs on disk are listed again; one that was still active belonged to a
+process that no longer exists and is reported `lost`.
+
+Port **8720** is the sprite studio's (`sprite-studio.md` §2); free on 2026-09-21 (`ss -ltn`;
+the neighbours are 8700 openproject, 8770 research-digest, 8787 bg3-modded-wiki). Bound to
+`0.0.0.0` because the owner opens it from the Mac — a `curl` from the Fedora host to its own
+LAN IP routes via `lo` and proves nothing about LAN reach. Same image and mounts as the
+`anim` service, so a run through the API writes exactly what `docker compose run --rm anim`
+would.
 
 ### Character concept — the character concept feature
 
@@ -463,8 +522,10 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | `ANIM_POSE_MODE` | `balanced` | `lightweight` \| `balanced` \| `performance` |
 | `ANIM_POSE_KPT_THR` | `0.4` | below this a joint counts as absent, for the picker and the renderer |
 | `ANIM_PICK_DEDUP` | `0.12` | minimum distance between two picks, **in torso lengths** |
-| `ANIM_REVIEW_PORT` | `8710` | the LAN port; keep in step with the published port in `compose.yml` |
-| `ANIM_REVIEW_BIND` | `0.0.0.0` | the Mac has to reach it |
+| `ANIM_API_PORT` | `8720` | the pipeline API's LAN port; keep in step with the published port in `compose.yml` |
+| `ANIM_API_BIND` | `0.0.0.0` | the Mac has to reach it |
+| `ANIM_API_CPU_SLOTS` | `2` | CPU stages the API runs at once; GPU stages are always one at a time |
+| `ANIM_WEB_DIST` | `/work/web/dist` | the built editor, served at `/` when it exists |
 | `ANIM_LAN_HOST` | `192.168.1.158` | only ever used to print a clickable URL |
 
 Two tables in `config.py` are code rather than environment, because they are
@@ -505,7 +566,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 433 passed, 4 skipped (2026-09-21)
+docker compose run --rm anim-pipeline pytest        # 464 passed, 4 skipped (2026-09-21)
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake
@@ -553,7 +614,8 @@ documented; they are the starting point for a later full-cycle animation tier.
 | `gpu/workflows/base_sprite.json` | Generates a unit's standing sprite from a canned skeleton when no reference sprite exists yet. |
 | `gpu/workflows/clip_render.json` | The clip render feature: Wan 2.2 Fun-Control 5B, reference image + control video → one PNG per frame (`SaveImage` on the decoded batch instead of the template's `SaveVideo`). Translated from the official `video_wan2_2_5B_fun_control` template. |
 | `gpu/workflows/NOTES.md` | Which node names and input keys were verified against source, and what is still `TODO-verify`. |
-| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base concept`. |
+| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base concept bakeoff run`. |
+| `anim/api/` | **The pipeline API feature** — FastAPI over `work/` on `:8720` (`anim-api` in `compose.yml`): jobs, frames, picks, runs with SSE progress, project settings; serves the review page and, once built, the editor. Deps in `requirements-api.txt`, their own Docker layer. |
 | `anim/rigkit.py` + `anim/stages/rig.py` + `rigs/` | **The rig motion input feature** — a CC0 rigged character's clips as the motion source, sampled with `pygltflib` + numpy, mapped to OpenPose-18, projected in profile facing right. Replaces filming for the anchor unit; makes the spike's TripoSG / Mixamo path unnecessary. |
 
 ## Configuration — one knob for the ComfyUI URL

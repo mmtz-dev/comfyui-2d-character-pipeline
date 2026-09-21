@@ -4,6 +4,87 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-21 — the pipeline API feature: FastAPI on :8720 over work/, the review server retired
+
+**What.** [#279](http://192.168.1.158:8700/work_packages/279), the sprite studio's eighth
+feature: `anim/api/` — a FastAPI service (`anim-api` in `compose.yml`, port **8720**, same
+image and mounts as the CLI, `uvicorn --factory anim.api.app:create_app`) that reads and
+writes the same `work/<job>/` files the CLI does, so the editor (#280) and the curation board
+(#281) have something to talk to. Endpoints: `GET /jobs`, `GET /jobs/{job}`, `/frames`,
+`/frames/{set}/{n}.png`, `GET|PUT /jobs/{job}/picks`, `POST /jobs/{job}/regenerate`,
+`POST /jobs` (run a stage), `GET /runs`, `GET /runs/{id}`, `GET /runs/{id}/events` (SSE),
+`GET|PUT /settings`, `GET /health`, and `/` + `/jobs/{job}/review` as pages. The stdlib
+`http.server` that `anim review` started on `:8710` is gone, and so is the `review` compose
+service; `anim review <job>` now prints the API URL. `ReviewApp` stays — the API drives it.
+New: `anim/api/{app,jobs,runs,settings,pages}.py`, `requirements-api.txt` (fastapi, uvicorn;
+own Docker layer after the dev deps for the same reason pytest has one), `tests/test_api.py`
+(TestClient, no socket; 26 functions, 36 cases with the parametrised ones; test_review.py lost its 7 HTTP-skin cases and gained 2 — 464 passed / 4 skipped, was 433 / 4). `httpx` in
+`requirements-dev.txt` for the client. Config:
+`REVIEW_PORT`/`REVIEW_BIND` → `API_PORT`/`API_BIND` + `API_CPU_SLOTS` + `WEB_DIST`.
+Brought up once on Docker Desktop (`docker compose -p anim-api-wt up -d anim-api`), `/jobs`
+and `/` curled from the host, taken down.
+
+**A run is the CLI in a subprocess, not a thread calling `run_stage`.** `POST /jobs
+{"stage": "pick", "args": {"job": "knight_strike", "n": 3}}` becomes
+`python -m anim pick -n 3 knight_strike` with `ANIM_WORK_DIR` pointed at the API's `work/`,
+stdout streamed line by line into `work/_runs/<id>.log`. The argv is built from the stage's
+own argparse definition (`anim.api.runs.argv_for`: positionals in parser order, a true
+`store_true` adds its flag, a false `store_false` adds its — `audit: false` → `--no-audit`)
+and then parsed by the real parser, so a bad request is a `400` in argparse's words. That is
+the "layer, never a copy" rule made concrete: the API knows no stage's arguments; a stage
+that gains a flag gains it in the API with no change. The alternative — a thread calling
+`run_stage(args)` in-process — was rejected because the stages *print* their progress (two
+threads share one stdout), a stage that dies hard (an ONNX segfault, a torch OOM) would take
+the API down with it, and a GPU stage holds a `requests` call open for minutes that a thread
+cannot be told to abandon. The cost is a Python start per run (importing `anim.cli` pulls
+every stage: torch, onnxruntime — a few seconds); acceptable against stages that take
+seconds to minutes.
+
+**The GPU rule** (sprite-studio.md §2 "Build base": explicit, one at a time). `base`,
+`render`, `clip`, `concept`, `bakeoff` and `run` (it renders when it can) are the GPU set;
+a second one while one is active is `409` with the running run's id. Nothing in the API
+polls ComfyUI — even `/health` only probes it on `?probe=1`. CPU stages run concurrently up
+to `ANIM_API_CPU_SLOTS` (2: `pose` and `post` each want every core), then `409` as well;
+a queue would have hidden which request was waiting on what.
+
+**SSE hand-rolled, not `sse-starlette`.** The stream is one sync generator over the
+manager's `Condition`: `log` per line, `progress` when the percent changes, one `done`, a
+`: keepalive` comment every 15 s of silence; a client that connects after the run ended
+gets the whole log and then `done`, so a reloaded page misses nothing. `sse-starlette` would
+have given the same three frames plus a dependency to licence-check and a ping thread of its
+own; the whole thing is 30 lines here. **Percent** comes from lines the stages already print
+— `[n/m] …` (what `anim run` prints per step) and `progress: 42%` — and nothing else, so a
+line like "strength 80%" cannot move the bar. Most stages report no percent today; the
+progress event is there for `run`, and for the action matrix (#278) when it prints its
+cells.
+
+**Runs persist as files, jobs stay files.** `work/_runs/<id>.json` + `.log`, written in
+place like everything else; a run still `running` in a file at startup belonged to a process
+that no longer exists and is reported `lost`, and does not hold the GPU. A directory is a
+job only if it has a `job.json` — `_runs`, `_exp`, `sheets` and `gate_parts.json` are not
+listed. Stage status is *derived* from the files (`picks.json` exists → `pick` ran), never
+from a status field, so a job re-run from the CLI or hand-edited reads the same over the
+API as on disk.
+
+**Picks are byte-compatible with the old page** because they go through the same
+`ReviewApp.set_picks`; `tests/test_api.py` drives a copied job through `ReviewApp` directly
+and compares `picks.json` bytes with what the `PUT` wrote. The frame URLs index the job's
+own listing (`/jobs/x/frames/frames/3.png` is `job.frames()[3]`), never a filename from the
+URL, which is the old `image()` guard kept.
+
+**Settings are just the store.** `work/project.json`: `palette`, `frame_budgets`
+(`{action: 1..12}`, the bible's cap), `curation` (`gates | every | end`), `frame_size`. GET
+merges the file over the defaults; PUT validates and writes the whole document. Nothing
+reads it yet — the palette (#282), keyframe phase (#276), curation (#281) and export (#283)
+features will; the CLI's `config.py` values stay in force until they do.
+
+**Undone / for the next features.** No cancel endpoint (a run is a process; `kill` is a
+one-liner when #281 needs it). No auth — LAN only, like everything on this host. The
+fallback pages are the smallest client of the API and will be replaced by `web/dist/`
+(#280); the static mount is already there.
+
+---
+
 ## 2026-09-20 — the frame route bake-off feature: two routes × two rigs on the knight's attack, the page is the owner's
 
 **What.** `anim bakeoff --unit knight --action attack` — [#274](http://192.168.1.158:8700/work_packages/274),
