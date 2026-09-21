@@ -24,6 +24,7 @@ from anim import comfy, config, partkit
 from anim.job import Job
 from anim.stages import bakeoff as bakeoff_stage
 from anim.stages import clip as clip_stage
+from anim.stages import pick as pick_stage
 from fixtures import synthetic
 from fixtures.fakecomfy import FakeComfy
 from fixtures.fakeparts import FakeSegmenter
@@ -322,3 +323,20 @@ def test_the_crossfade_holds_the_keys_and_blends_between():
     mid = frames[2].getpixel((0, 0))
     assert 100 < mid[0] < 160 and 100 < mid[2] < 160
     assert frames[5].getpixel((0, 0)) == (0, 0, 255, 255)   # past the last key: held
+
+
+def test_the_phase_labels_come_from_the_attack_template(ran):
+    """The keyframe phase feature: the column labels and the crossfade keys
+    are the attack row of config.ACTION_PHASES, and each cell's picks.json
+    carries the tag per column with the even spread the owner judged."""
+    plan = pick_stage.phase_plan("attack")
+    assert bakeoff_stage.PHASES == tuple(plan.tags())
+    assert bakeoff_stage.PHASE_KEYS == tuple(plan.keys())
+    assert bakeoff_stage.BUDGET == plan.budget == config.ACTION_PHASES["attack"]["budget"]
+    for name in ("V-kaykit", "K-kaykit"):
+        job = Job.open(ran["state"]["cells"][name]["job"], ran["work_dir"])
+        record = json.loads(job.picks_path.read_text())
+        assert record["phases"]["spread"] == "even"
+        assert record["phases"]["tags"] == list(bakeoff_stage.PHASES)
+        assert record["timing"]["source"] == "phases:attack"
+        assert record["picks"] == record["auto"], "no hand-set spread any more"

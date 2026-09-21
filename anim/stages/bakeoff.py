@@ -23,8 +23,8 @@ THE FOUR CELLS. `V-kaykit`, `V-quaternius`, `K-kaykit`, `K-quaternius`:
         gate's variant (b), the only one with one sword in the sword hand on
         every strike frame), Wan 2.2 Fun-Control 5B conditioned on the unit's
         base render, then the generated clip DOWNSAMPLED to the action's frame
-        budget: `pick` is hand-set to an even spread of 12 over the rig frames
-        (`even_spread`), then `post --input clip --parts`.
+        budget: `pick --phases` with the even spread (`even_spread`: 12 over
+        the rig frames, tagged by phase), then `post --input clip --parts`.
 
   Route K - keyframe stills -> tween.   The strip route's pose pass (Z-Image-
         Turbo + the Fun ControlNet Union on a 4 x 1 skeleton strip, the
@@ -95,9 +95,9 @@ its error and the others still run - one bad cell must not cost the page.
 WHAT IT DOES NOT DO. It does not publish, does not touch OpenProject, does not
 change `pick`, `clip`, `strip`, `render` or `post` - every cell is those
 stages called as a library, and every cell job can be re-run by hand with
-the same commands. The phase labels on the page are the 12-budget template
-(start / wind-up / action / wind-down / end by column); the keyframe phase
-feature (#276) makes them per-action.
+the same commands. The phase labels on the page are the attack row of the
+keyframe phase feature's template (config.ACTION_PHASES, by column); the
+frames themselves are still the even spread the owner judged.
 """
 
 from __future__ import annotations
@@ -129,10 +129,14 @@ HELP = "two routes x two rigs on one action -> one page + metric table (a GPU st
 BAKEOFF_SCHEMA = "anim.bakeoff/1"
 REPO = Path(__file__).resolve().parents[2]
 
-# The attack's frame budget (sprite-studio.md S2 "Frame budget": cap 12, attack
-# 12). The keyframe phase feature (#276) moves the per-action table into
-# config; until then this stage carries the one number it needs.
-BUDGET = 12
+# The attack's phase plan from the keyframe phase feature's table
+# (config.ACTION_PHASES: cap 12, attack 12): the budget, the phase label per
+# column and the five key columns the crossfade blends between all come from
+# it. The two routes still sample the clip EVENLY (`spread="even"`) - the
+# owner judged those frames and a re-run must produce the same numbers; the
+# labels are the template's.
+PLAN = pick_stage.phase_plan("attack")
+BUDGET = PLAN.budget
 # The second gate's seed (2026-09-17), so V-quaternius is the same render as
 # that page's variant (b) and the two pages can be read against each other.
 SEED = 3139000483690707
@@ -143,11 +147,9 @@ RIGS: dict[str, dict[str, Any]] = {
     "quaternius": {"glb": REPO / "rigs" / "quaternius" / "UAL1_Standard.glb",
                    "label": "Quaternius UAL (realistic proportions)"},
 }
-# The studio's action names against the pipeline's verbs and each rig's clip.
-ACTIONS: dict[str, dict[str, Any]] = {
-    "attack": {"verb": "strike",
-               "clips": {"kaykit": "1H_Melee_Attack_Chop", "quaternius": "Sword_Attack"}},
-}
+# The studio's action names against the pipeline's verbs and each rig's clip
+# (config.STUDIO_ACTIONS); the bake-off runs the one the epic named.
+ACTIONS: dict[str, dict[str, Any]] = {"attack": config.STUDIO_ACTIONS["attack"]}
 # Route V: the second gate's variant (b).
 V_CONTROL = "blend"
 V_DEPTH_GAIN = 0.35
@@ -169,11 +171,10 @@ POSE_PROMPTS: dict[str, str] = {
                "bold dark outline, flat shaded, plain flat white background, no ground "
                "shadow, no floor"),
 }
-# The 12-budget phase template: which column is which phase, and the five
-# phase keys the crossfade baseline blends between.
-PHASES: tuple[str, ...] = ("start", "wind-up", "wind-up", "wind-up", "action", "action",
-                           "action", "wind-down", "wind-down", "wind-down", "end", "end")
-PHASE_KEYS: tuple[int, ...] = (0, 2, 5, 8, 11)
+# Which column is which phase, and the five phase keys the crossfade
+# baseline blends between - the attack template's, per column.
+PHASES: tuple[str, ...] = tuple(PLAN.tags())
+PHASE_KEYS: tuple[int, ...] = tuple(PLAN.keys())
 # Proxy thresholds (fractions of the cell height / of the largest blob).
 SWORD_REACH = 0.12
 SWORD_ISLAND = 0.15
@@ -220,21 +221,23 @@ def plan(unit: str, action: str, *, rigs: dict[str, dict[str, Any]] | None = Non
     return cells
 
 
+def _plan(budget: int) -> pick_stage.PhasePlan:
+    return PLAN if budget == PLAN.budget else pick_stage.phase_plan("attack", budget=budget)
+
+
 def even_spread(frames: int, budget: int = BUDGET) -> list[int]:
     """`budget` frame indices spread evenly over `frames`, both ends included
-    (all of them when there are no more than `budget`)."""
+    (all of them when there are no more than `budget`) - the phase picker's
+    even spread."""
     if frames <= 0:
         raise ValueError("a clip needs at least one frame")
-    if frames <= budget:
-        return list(range(frames))
-    return pick_stage._even_spread(list(range(frames)), budget)
+    return pick_stage.phase_frames(frames, _plan(budget), spread="even")
 
 
 def phase_times(duration: float, budget: int = BUDGET) -> list[float]:
-    """`budget` sample instants across [0, duration], both ends included."""
-    if budget < 2:
-        return [0.0]
-    return [round(float(t), 6) for t in np.linspace(0.0, max(0.0, duration), budget)]
+    """`budget` sample instants across [0, duration], both ends included -
+    the phase picker's even instants."""
+    return pick_stage.phase_instants(duration, _plan(budget), spread="even")
 
 
 def frame_files(job: Job, manifest: dict[str, Any] | None = None) -> list[Path]:
@@ -429,11 +432,21 @@ def _vram_used_gb(client: comfy.ComfyClient) -> float | None:
     return round((total - free) / 2 ** 30, 1) if total else None
 
 
+def _phased_picks(job: Job, *, verb: str, budget: int) -> list[int]:
+    """`pick` against the attack template with the even spread: the phase
+    tag per column and the phase timing land in picks.json, the frames are
+    the ones the routes have always used."""
+    record = pick_stage.pick(job.name, n=budget, action=verb, force=True,
+                             phases=True, spread="even", work_dir=job.root.parent)
+    return list(record["picks"])
+
+
 def _hand_set_picks(job: Job, picks: list[int], *, verb: str) -> None:
-    """`pick` as usual, then the even spread in force with the auto picks
-    kept beside it - a hand-set pick, exactly as the review page leaves one."""
+    """`pick` as usual, then `picks` in force with the auto picks kept
+    beside it - a hand-set pick, exactly as the review page leaves one. The
+    K route's 4-cell chunks are set this way."""
     record = pick_stage.pick(job.name, n=len(picks), action=verb, force=True,
-                             work_dir=job.root.parent)
+                             phases=False, work_dir=job.root.parent)
     record["picks"] = list(picks)
     write_json_in_place(job.picks_path, record)
     job.update_manifest(picks=list(picks))
@@ -462,8 +475,7 @@ def run_v_cell(cell: Cell, *, unit: str, verb: str, seed: int, matte: str,
     gpu_seconds = float(record.get("seconds") or 0.0)
     vram = _vram_used_gb(client)
 
-    picks = even_spread(int(record["frames"]), budget)
-    _hand_set_picks(job, picks, verb=verb)
+    picks = _phased_picks(job, verb=verb, budget=budget)
 
     t0 = time.monotonic()
     recorder = RecordingSegmenter(segmenter or partkit.Sam2Segmenter())
@@ -543,7 +555,7 @@ def run_k_cell(cell: Cell, *, unit: str, verb: str, seed: int, matte: str,
                         job_name=cell.job, cell=tuple(K_CELL), depth="full",
                         times=times, work_dir=work_dir)
     frames = len(job.skeletons())
-    _hand_set_picks(job, list(range(frames)), verb=verb)
+    _phased_picks(job, verb=verb, budget=budget)     # every sampled instant, tagged
     # The 12-cell layout the page and the metrics slice by; its skeleton strip
     # is not rendered.
     layout = strip_stage.strip(job.name, reference=reference, work_dir=work_dir,
@@ -1050,7 +1062,7 @@ The ruling is the owner's — this page is evidence, and the two counts are prox
 <b>not found</b>: frames where SAM 2.1, prompted from the rig, found no pixels for the part (reported, never invented).
 <b>one sword, sword hand</b> (proxy for the second gate's check 3): the sword mask is one blob (islands under {int(SWORD_ISLAND * 100)} % of the largest ignored), its nearest pixel to the right wrist is within {int(SWORD_REACH * 100)} % of the cell height, and it is no nearer the left wrist.
 <b>one figure</b> (proxy for check 1): the matte is one blob (islands under {int(FIGURE_ISLAND * 100)} % ignored) and at most one helmet mask.
-Both proxies are computed on the HD cells before the downscale, from the same masks the lock used. The phase labels are the {budget}-budget template; the keyframe phase feature (#276) makes them per-action.</p>
+Both proxies are computed on the HD cells before the downscale, from the same masks the lock used. The phase labels are the attack row of the keyframe phase template (start / wind-up / action / wind-down / end, <code>config.ACTION_PHASES</code>); the frames are an even spread of the clip, not the template's shaped one.</p>
 <footer>Generated by <code>anim bakeoff --unit {state['unit']} --action {state['action']}</code>. Every cell is
 <code>rig → clip → pick → post --input clip --parts</code> (V) or <code>rig → pick → strip → render → post --parts</code> (K), called as library functions; the jobs are under <code>work/{bakeoff_name(state['unit'], state['action'])}_*</code>.</footer>
 <script>

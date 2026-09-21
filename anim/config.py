@@ -187,6 +187,181 @@ def timing_for_action(action: str, n: int) -> tuple[list[int], int] | None:
 
 
 # ---------------------------------------------------------------------------
+# The keyframe phase feature - the studio's phase template and frame budgets
+# ---------------------------------------------------------------------------
+# sprite-studio.md S2 "Animation": 12 fps, cap 12 frames, defaults idle 6 /
+# walk 8 / run 8 / jump 10 / attack 12, and every clip picked against ONE
+# shape - start -> wind-up -> action -> wind-down -> end -> (loop). This is the
+# studio's contract for a clip; ACTION_FRAMES above stays the art bible's 2-6
+# key-pose contract for the strips game-02 plays today. `pick --phases` reads
+# this table, `pick` without it reads that one.
+#
+# A row has: `budget` (frames in the finished clip, at most PHASE_CAP), `loop`
+# (a cycle whose last frame leads back into its first, or a one-shot that
+# starts and ends at rest), `split` (the share of the budget each phase gets,
+# in PHASE_NAMES order) and `span` (the share of the SOURCE clip's duration
+# each phase covers, same order). Split and span are two different things on
+# purpose - the ease. A one-shot rig clip holds the rest pose for its first
+# fifth and recovers slowly over its last, so `start` and `end` cover a lot of
+# the clip's TIME and get few FRAMES; the action covers a quarter of the time
+# and gets a third of the frames. Frames per unit of clip time is the sample
+# density, and dense-at-the-action / sparse-at-rest is what "ease in, ease
+# out" means for a picker. A one-shot also spends ONE frame of its budget on
+# anticipation: the wind-up gets an extra frame on top of its split, so the
+# beat before the action is never a single cell. Loops get no anticipation
+# frame; a cycle has no beat to anticipate.
+#
+# The five names are the studio's, and each maps to the pipeline verb the
+# rest of the stages, the sidecar and game-02 know (attack <-> strike; the
+# other four are the same word) plus the clip each vendored rig ships for it.
+PHASE_NAMES: tuple[str, ...] = ("start", "wind-up", "action", "wind-down", "end")
+PHASE_FPS = 12
+PHASE_CAP = 12
+ACTION_PHASES: dict[str, dict[str, Any]] = {
+    "idle": {"budget": 6, "loop": True,
+             "split": (0.15, 0.20, 0.30, 0.20, 0.15),
+             "span": (0.20, 0.20, 0.20, 0.20, 0.20)},
+    "walk": {"budget": 8, "loop": True,
+             "split": (0.10, 0.25, 0.30, 0.25, 0.10),
+             "span": (0.20, 0.20, 0.20, 0.20, 0.20)},
+    "run": {"budget": 8, "loop": True,
+            "split": (0.10, 0.25, 0.30, 0.25, 0.10),
+            "span": (0.20, 0.20, 0.20, 0.20, 0.20)},
+    "jump": {"budget": 10, "loop": False,
+             "split": (0.08, 0.22, 0.35, 0.25, 0.10),
+             "span": (0.15, 0.20, 0.30, 0.20, 0.15)},
+    "attack": {"budget": 12, "loop": False,
+               "split": (0.08, 0.20, 0.37, 0.20, 0.15),
+               "span": (0.20, 0.20, 0.25, 0.20, 0.15)},
+}
+STUDIO_ACTIONS: dict[str, dict[str, Any]] = {
+    "attack": {"verb": "strike",
+               "clips": {"kaykit": "1H_Melee_Attack_Chop", "quaternius": "Sword_Attack"}},
+    "idle": {"verb": "idle", "clips": {"kaykit": "Idle", "quaternius": "Idle_Loop"}},
+    "walk": {"verb": "walk", "clips": {"kaykit": "Walking_A", "quaternius": "Walk_Loop"}},
+    "run": {"verb": "run", "clips": {"kaykit": "Running_A", "quaternius": "Jog_Fwd_Loop"}},
+    # The UAL ships the jump as three clips (Jump_Start / Jump_Loop / Jump_Land)
+    # and no whole one; the studio's jump on that rig waits for a clip joiner.
+    "jump": {"verb": "jump", "clips": {"kaykit": "Jump_Full_Short", "quaternius": None}},
+}
+# Per-project override, beside the palette in the customer game's assets_src/
+# (the one other art decision that lives there). Rows merge over the defaults
+# - `{"attack": {"budget": 10}}` changes the budget and keeps the split - and
+# an optional `"units": {"<slug>": {"<action>": {...}}}` block overrides per
+# unit. Keys may be the studio name or the pipeline verb. Missing file: the
+# defaults above.
+TIMING_FILE = Path(os.environ.get("ANIM_TIMING", "/assets_src/timing.json"))
+# The loop-closure tolerances: a loop's last pick must land within this of its
+# first - mean joint displacement in torso lengths when the keypoints are
+# there (0.12, the picker's own "same pose" threshold, PICK_DEDUP), else the
+# mean absolute pixel difference of the two frames as a fraction of full
+# scale.
+LOOP_TOLERANCE = float(os.environ.get("ANIM_LOOP_TOL", "0.12"))
+LOOP_PIXEL_TOLERANCE = float(os.environ.get("ANIM_LOOP_PIXEL_TOL", "0.08"))
+
+
+def studio_action(action: str) -> str | None:
+    """The studio's name for an action given either spelling ("strike" and
+    "attack" both give "attack"), or None when the studio has no such action."""
+    key = action.strip().lower()
+    if key in STUDIO_ACTIONS:
+        return key
+    for name, row in STUDIO_ACTIONS.items():
+        if row["verb"] == key:
+            return name
+    return None
+
+
+def phases_default(action: str) -> bool:
+    """Whether `pick` picks against the phase template unless told otherwise.
+
+    On only for a studio action the art bible does NOT budget - attack, run,
+    jump. `strike`, `idle` and `walk` are art-bible verbs with existing jobs
+    and 2-6 pose budgets, and those must keep producing the same bytes, so
+    they stay on the old picker until `--phases` asks (the action matrix asks
+    for every cell).
+    """
+    key = action.strip().lower()
+    return studio_action(key) is not None and key not in ACTION_FRAMES
+
+
+def _phase_vector(value: Any, what: str) -> tuple[float, ...]:
+    if isinstance(value, dict):
+        missing = [n for n in PHASE_NAMES if n not in value]
+        if missing:
+            raise ValueError(f"timing.json {what} is missing {missing}")
+        value = [value[n] for n in PHASE_NAMES]
+    values = tuple(float(v) for v in value)
+    if len(values) != len(PHASE_NAMES) or any(v < 0 for v in values) or sum(values) <= 0:
+        raise ValueError(f"timing.json {what} must be {len(PHASE_NAMES)} non-negative "
+                         f"shares, one per phase {list(PHASE_NAMES)}")
+    return values
+
+
+def _merge_phase_row(base: dict[str, Any], override: dict[str, Any] | None,
+                     what: str) -> dict[str, Any]:
+    row = dict(base)
+    for key, value in (override or {}).items():
+        if key == "budget":
+            row["budget"] = int(value)
+        elif key == "loop":
+            row["loop"] = bool(value)
+        elif key in ("split", "span"):
+            row[key] = _phase_vector(value, f"{what}.{key}")
+        else:
+            raise ValueError(f"timing.json {what}: unknown key {key!r}; one of "
+                             f"budget, loop, split, span")
+    return row
+
+
+def read_timing_file(path: Path | None = None) -> dict[str, Any]:
+    """The project's timing.json, or {} when there is none."""
+    path = Path(path) if path is not None else TIMING_FILE
+    if not path.exists():
+        return {}
+    import json
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must hold an object of action rows")
+    return data
+
+
+def phases_for_action(action: str, *, slug: str | None = None,
+                      timing_file: Path | None = None) -> dict[str, Any] | None:
+    """The phase row for one action - defaults, then the project's timing.json
+    action row, then its unit row - or None when the studio has no such action.
+
+    The row that comes back names the studio action (`action`) and the
+    pipeline verb (`verb`) beside budget / loop / split / span. The budget is
+    checked against PHASE_CAP here, so an over-budget override fails at
+    lookup and not twelve frames into a render.
+    """
+    name = studio_action(action)
+    if name is None:
+        return None
+    verb = STUDIO_ACTIONS[name]["verb"]
+    row = dict(ACTION_PHASES[name])
+    data = read_timing_file(timing_file)
+    source = "template"
+    for key in (name, verb):
+        if key in data and key != "units":
+            row = _merge_phase_row(row, data[key], key)
+            source = "timing.json"
+    units = data.get("units") or {}
+    if slug:
+        unit = units.get(slug.strip().lower()) or {}
+        for key in (name, verb):
+            if key in unit:
+                row = _merge_phase_row(row, unit[key], f"units.{slug}.{key}")
+                source = f"timing.json:{slug.strip().lower()}"
+    if not 1 <= row["budget"] <= PHASE_CAP:
+        raise ValueError(f"{name}: budget {row['budget']} is outside 1..{PHASE_CAP} "
+                         f"(the studio caps a clip at {PHASE_CAP} frames)")
+    return {"action": name, "verb": verb, "source": source, **row}
+
+
+# ---------------------------------------------------------------------------
 # The scale ladder (art bible S3) - sprite height inside the 64px canvas
 # ---------------------------------------------------------------------------
 # `post` scales each unit to its band before the bottom-center recanvas, which

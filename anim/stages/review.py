@@ -71,6 +71,11 @@ class ReviewApp:
     def state(self) -> dict[str, Any]:
         record = self._picks_record()
         picks = list(record.get("picks") or [])
+        # The keyframe phase feature: the tag per pick, as the picker left
+        # them (a toggle shifts the picks off the tags, so they are looked up
+        # by the picker's own list, not by position in the edited one).
+        block = record.get("phases") or None
+        tags = dict(zip(record.get("auto") or [], (block or {}).get("tags") or []))
         return {
             "job": self.job.name,
             "action": self.manifest.get("action", ""),
@@ -81,9 +86,11 @@ class ReviewApp:
             "auto": list(record.get("auto") or []),
             "edited": picks != list(record.get("auto") or []),
             "rerender_requested": bool(self.manifest.get("rerender_requested")),
+            "phases": block,
             "frames": [
                 {"index": i, "file": path.name, "picked": i in picks,
                  "order": picks.index(i) if i in picks else None,
+                 "phase": tags.get(i),
                  "skeleton": (self.job.pose_dir / f"skel_{i + 1:04d}.png").exists()}
                 for i, path in enumerate(self.frames)
             ],
@@ -147,6 +154,29 @@ class ReviewApp:
 # ---------------------------------------------------------------------------
 # The page
 # ---------------------------------------------------------------------------
+def _phases_tags(block: dict[str, Any] | None) -> str:
+    """The keyframe phase feature's header tags: the plan in one line and,
+    for a loop, whether it closes - the picker's verdict, never the page's."""
+    if not block:
+        return ""
+    plan = block.get("plan") or {}
+    frames = plan.get("frames") or {}
+    shape = " / ".join(f"{k} {v}" for k, v in frames.items())
+    out = (f'<span class="tag">phases: {html.escape(str(plan.get("action", "")))} '
+           f'{plan.get("budget", "")} · {shape}</span>')
+    closure = block.get("closure")
+    if closure:
+        ok = closure.get("ok")
+        cls, word = (("ok", "loop closes") if ok else
+                     ("bad", "loop does not close") if ok is False else
+                     ("warn", "loop closure unknown"))
+        distance, tolerance = closure.get("distance"), closure.get("tolerance")
+        detail = (f' ({closure.get("metric")} {distance} vs {tolerance})'
+                  if distance is not None else "")
+        out += f'<span class="tag {cls}">{word}{html.escape(detail)}</span>'
+    return out
+
+
 def _render_page(state: dict[str, Any]) -> str:
     """One self-contained HTML page. No CDN, no build step, no framework.
 
@@ -159,10 +189,12 @@ def _render_page(state: dict[str, Any]) -> str:
         classes = "card picked" if frame["picked"] else "card"
         badge = (f'<span class="badge">{frame["order"] + 1}</span>'
                  if frame["order"] is not None else "")
+        phase = (f'<span class="ph">{html.escape(frame["phase"])}</span>'
+                 if frame.get("phase") else "")
         cards.append(
             f'<button class="{classes}" data-index="{frame["index"]}" '
             f'onclick="toggle({frame["index"]})">'
-            f'{badge}'
+            f'{badge}{phase}'
             f'<img src="/frames/{html.escape(frame["file"])}" alt="frame '
             f'{frame["index"]}" loading="lazy">'
             f'<span class="n">{frame["index"]}</span></button>')
@@ -170,6 +202,7 @@ def _render_page(state: dict[str, Any]) -> str:
               if state["edited"] else '<span class="tag">auto</span>')
     flagged = ('<span class="tag warn">regenerate requested</span>'
                if state["rerender_requested"] else "")
+    phases = _phases_tags(state.get("phases"))
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -201,6 +234,10 @@ def _render_page(state: dict[str, Any]) -> str:
   .badge {{ position:absolute; right:4px; top:4px; background:#f0c070; color:#15171c;
             font-size:11px; font-weight:700; border-radius:999px;
             width:18px; height:18px; line-height:18px; text-align:center; }}
+  .card .ph {{ position:absolute; left:4px; top:4px; font-size:10px; color:#d7dae0;
+               background:#000a; padding:0 4px; border-radius:3px; }}
+  .tag.ok {{ background:#1f3a24; color:#8fd18f; }}
+  .tag.bad {{ background:#4a1d1d; color:#f08080; }}
   footer {{ padding:0 16px 24px; }}
   @media (max-width:420px) {{ main {{ grid-template-columns:repeat(auto-fill,minmax(90px,1fr)); }} }}
 </style></head><body>
@@ -208,7 +245,7 @@ def _render_page(state: dict[str, Any]) -> str:
   <h1>{html.escape(state['job'])}</h1>
   <span class="muted">{html.escape(state['slug'])} / {html.escape(state['action'])}
     &middot; {len(state['frames'])} frames @ {state['fps']} fps</span>
-  {edited}{flagged}
+  {edited}{flagged}{phases}
   <span class="muted" id="picks">picks: {', '.join(str(p) for p in state['picks']) or '(none)'}</span>
   <button class="act" onclick="regen()">Request regenerate</button>
 </header>

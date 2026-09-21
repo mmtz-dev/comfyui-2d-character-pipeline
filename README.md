@@ -105,13 +105,13 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `extract <clip>` | a filmed clip | `frames/%04d.png`, `job.json` | fps is a **cap**, not a target; a 10 fps clip stays at 10. Rotation is honoured by never passing `-noautorotate`. `--crop` (off by default) crops every frame to **one** person-centred box — use it when the figure sits small in the frame, because the skeleton is letterboxed into the cell and headroom is wasted resolution. |
 | `pose <job>` | frames | `pose/keypoints.json`, `pose/skel_%04d.png` | rtmlib DWPose over onnxruntime, CPU. Inference happens **once per clip** and is cached; `pick`, `review` and `strip` re-read it. Rendered with rtmlib's own `draw_skeleton(openpose_skeleton=True)` at the cell size, line width scaled to the canvas. |
 | `rig <glb> --clip <name>` | a rig clip | `job.json`, `frames/%04d.png`, `pose/keypoints.json`, `pose/skel_%04d.png`, `depth/%04d.png` | **replaces `extract` + `pose`** when the motion is a rig clip. Samples the clip at the extract fps, maps the bones to OpenPose-18, projects in profile **facing right by detection**, one scale per rig; the skeleton PNGs go through the very same `posekit.draw`, with the unit's props (sword, shield) drawn on as white outlines. Also writes a **depth frame** per sample — the skinned mesh plus the props as solids, z-buffered under the same projection (the rig props feature); `--depth props` draws the prop solids only, body-occluded, for a model that paints the mannequin when given the body; `--depth none` / `--no-depth` skips it. `--yaw 0|45|…|315` and `--elevation side|top` view the rig from any of the 16 direction cells (the camera direction feature) — the job is then `<unit>_<action>_<dir>`. `--list` prints the clips, `--props` overrides the kit. See "Rig input mode". |
-| `pick <job>` | keypoints | `picks.json` | peaks of deviation-from-rest + reversals + both endpoints, de-duplicated in torso lengths. Also records the **timing shape** (`timing`: one weight per frame + the anchor frame — the strip timing feature): the per-verb template in `config.ACTION_TIMING` by default, or the clip's own frame gaps with `--timing clip`. **Refuses to overwrite a hand-edited `picks.json`** (picks *or* timing) unless `--force`. |
+| `pick <job>` | keypoints | `picks.json` | peaks of deviation-from-rest + reversals + both endpoints, de-duplicated in torso lengths. Also records the **timing shape** (`timing`: one weight per frame + the anchor frame — the strip timing feature): the per-verb template in `config.ACTION_TIMING` by default, or the clip's own frame gaps with `--timing clip`. **`--phases`** (the keyframe phase feature; the default for `attack`, `run`, `jump`) picks against the studio's template instead — start → wind-up → action → wind-down → end → loop, the per-action budget from `config.ACTION_PHASES` (cap 12), ease as denser sampling around the action, one anticipation frame for a one-shot, a loop-closure check for a cycle — and tags every pick with its phase; `--no-phases` is the 2–6 key-pose picker for any action. See "Keyframe phases" below. **Refuses to overwrite a hand-edited `picks.json`** (picks *or* timing) unless `--force`. |
 | `review <job>` | frames + picks | rewrites `picks.json` | the click-to-pick page — see below. |
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
 | `render <job>` | strip | `render/pose_pass.png`, `identity_pass.png`, `provenance.json` | **a GPU stage.** Two `/prompt` jobs, not one graph. Seed is derived from the clip hash + action + picks unless `--seed` is given, so a re-run reproduces. |
 | `clip <job>` | every skeleton (+ `depth/` if `rig` wrote it) | `clip/frames/%04d.png`, `clip/control.mp4`, `clip/clip.json`, `clip/provenance.json` | **a GPU stage — the clip render feature.** Renders the whole rig clip as one Wan 2.2 Fun-Control 5B video with the unit's `base` render as the identity reference and the skeleton PNGs as the control video, one generated frame per rig frame (padded to 4n+1 by holding the last; `clip.json.frame_map`). `--control auto|pose|depth|blend` (auto = blend when `depth/` exists) and `--depth-gain` decide what the control video carries. Rig the job at the clip cell first: `rig … --width 512 --height 768` (768×768 for a lying death). Measured 2026-09-17: 9–55 s of GPU per action. Then `pick` as usual and `post --input clip`. See "The clip route" below. |
 | `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
-| `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
+| `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block; a phased pick adds `fps`, `loop`, `phases` and `durations_ms` to the block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
 | `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>` and `--existing [png]` | `work/<slug>_concept/candidates/NN.png` + `job.json`; `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
 | `bakeoff --unit <slug> --action attack` | the two rigs' attack clips | `work/bakeoff_<slug>_attack/{bakeoff.json,page/,report.md}` + one job per cell `work/bakeoff_<slug>_attack_<cell>/` | **a GPU stage — the frame route bake-off feature.** One action through both candidate routes for the in-between frames on both candidate rigs — four cells `V-kaykit`, `V-quaternius`, `K-kaykit`, `K-quaternius` — as ordinary `rig → clip → pick → post --parts` (V) and `rig → pick → strip → render → post --parts` (K) jobs called as a library, one seed, then one page with an animated 12 fps preview per row and one metric table. Resumable per cell (`--cells`, `--force`, `--page-only`); seconds per stage and VRAM per cell in `bakeoff.json`. The owner rules on the page; the stage picks nothing. See "The frame route bake-off" below. |
@@ -139,6 +139,56 @@ scales once per rig and a lying body is wider than 512). Wan has no square-aspec
 rule — that one is Qwen-Image-Edit's. Models: `wan2.2_fun_control_5B_bf16`,
 `umt5_xxl_fp8_e4m3fn_scaled`, `wan2.2_vae` in `gpu/models.lock` (all Apache-2.0).
 Evidence and the depth-control trials: `http://192.168.1.158:8090/clip-render/`.
+
+### Keyframe phases — the keyframe phase feature
+
+Every studio clip is picked against one shape, whatever route the frames came from — a Wan
+clip, a pose-pass strip, a filmed take ([#276](http://192.168.1.158:8700/work_packages/276)):
+
+```
+start → wind-up → action → wind-down → end → (loop)
+```
+
+```bash
+anim pick knight_attack                 # attack: the template is the default
+anim pick knight_strike --phases        # an art-bible verb, on request (the matrix does this)
+anim pick knight_attack --no-phases     # the 2–6 key-pose picker instead
+```
+
+- **Budgets** (`config.ACTION_PHASES`, cap 12): idle 6 · walk 8 · run 8 · jump 10 · attack 12.
+  Idle, walk and run loop; jump and attack are one-shots. `-n` overrides inside the cap.
+- **The split and the span.** Each row divides the *budget* between the five phases (`split`)
+  and, separately, the *source clip's time* (`span`). The action phase gets a third of the
+  frames for a quarter of the clip; the rest phases get one or two frames for a fifth of it
+  each. Frames per second of clip is the sample density, and dense-at-the-action /
+  sparse-at-rest is what ease in / ease out means for a picker. Attack comes out
+  `start 1 · wind-up 3 · action 4 · wind-down 2 · end 2`.
+- **Anticipation.** A one-shot spends one frame of its budget on the wind-up beyond its
+  split, so the beat before the action is never a single cell (`phases.anticipation` is that
+  pick's index). Loops get none.
+- **Loops.** A cycle's last pick stops short of the frame that is its first again (no doubled
+  cell on the wrap), and the **loop-closure check** measures the last pick's distance back to
+  the first — mean joint displacement in torso lengths from the keypoints, against
+  `ANIM_LOOP_TOL` (0.12, the picker's own "same pose" threshold); the mean pixel difference of
+  the two frames when a pose is missing, against `ANIM_LOOP_PIXEL_TOL` (0.08). The verdict is
+  in `picks.json` (`phases.closure`) and on the review page; a cycle that does not close is
+  reported, not fixed.
+- **What lands in `picks.json`.** A `phases` block — the plan, one tag per pick, the
+  anticipation index, the closure — and `timing` becomes the phase shape: one weight per
+  frame in 12 fps ticks, the anchor on the first action frame, `phases` and `durations_ms`
+  beside them. `publish` copies all of it into the sidecar's `contract.timing`.
+- **The hold rule.** A clip lasts budget / 12 s. When a phase's window held fewer source frames
+  than the phase was allotted (a 9-frame clip against a budget of 12 gives all nine), its
+  frames hold longer — each weighs allotted / picked ticks — so the phase still lasts its
+  share and the clip its budget. With every phase full, every weight is 1 (83 ms).
+- **Per-project override.** `ANIM_TIMING` (default `/assets_src/timing.json`, beside the
+  palette in the customer game's `assets_src/`): action rows merge over the defaults —
+  `{"attack": {"budget": 10}}` changes the budget and keeps the split — and a
+  `"units": {"hound": {"run": {…}}}` block overrides per unit. Keys may be the studio name or the
+  pipeline verb (`attack` ↔ `strike`; `config.STUDIO_ACTIONS` also names each rig's clip).
+- **Without `--phases`** an existing job's `picks.json` is byte-for-byte what it was (a golden
+  file in `tests/fixtures/` pins it). The bake-off's two routes now go through the same picker
+  with `spread="even"` — the phase labels and timing, the frames the owner judged.
 
 ### The part palette lock
 
@@ -249,7 +299,8 @@ mkdir -p ~/.cache/claude/visuals/sprite-studio/bake-off && \
 - **Route V — rig → Wan video.** What `anim clip` does: the rig clip at 12 fps, skeleton over
   full-body depth at gain 0.35 (the second gate's variant (b)), Wan 2.2 Fun-Control 5B against the
   unit's base render, then the clip *downsampled* to the attack's 12-frame budget by an even
-  spread of picks, `post --input clip --parts`.
+  spread of picks (`pick --phases` with `spread="even"` since the keyframe phase feature: the
+  same frames, now tagged by phase), `post --input clip --parts`.
 - **Route K — keyframe stills → rig-space tween.** The strip route's pose pass (Z-Image-Turbo +
   the Fun ControlNet Union), with the in-betweening done on the rig: the clip is sampled at
   exactly 12 instants (`rig(..., times=)`), so every frame is a still of the rig and "tween" means
@@ -463,13 +514,20 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | `ANIM_POSE_MODE` | `balanced` | `lightweight` \| `balanced` \| `performance` |
 | `ANIM_POSE_KPT_THR` | `0.4` | below this a joint counts as absent, for the picker and the renderer |
 | `ANIM_PICK_DEDUP` | `0.12` | minimum distance between two picks, **in torso lengths** |
+| `ANIM_TIMING` | `/assets_src/timing.json` | the project's phase-template overrides (the keyframe phase feature); absent means the defaults |
+| `ANIM_LOOP_TOL` | `0.12` | a loop's last pick must land within this of its first, in torso lengths |
+| `ANIM_LOOP_PIXEL_TOL` | `0.08` | the same check as a mean pixel difference (0–1) when a pose is missing |
 | `ANIM_REVIEW_PORT` | `8710` | the LAN port; keep in step with the published port in `compose.yml` |
 | `ANIM_REVIEW_BIND` | `0.0.0.0` | the Mac has to reach it |
 | `ANIM_LAN_HOST` | `192.168.1.158` | only ever used to print a clickable URL |
 
-Two tables in `config.py` are code rather than environment, because they are
+Four tables in `config.py` are code rather than environment, because they are
 design decisions and belong in review: `ACTION_FRAMES` (the art bible's key-pose
-budget per action — strike 4, hit 2, walk 6, …) and `UNIT_HEIGHT` (the scale
+budget per action — strike 4, hit 2, walk 6, …), `ACTION_TIMING` (the hold
+weights per `(action, n)` — the strip timing feature), `ACTION_PHASES` +
+`STUDIO_ACTIONS` (the studio's phase template: budget, loop, split and span per
+action, and each action's pipeline verb and rig clips — the keyframe phase
+feature; `timing.json` overrides it per project) and `UNIT_HEIGHT` (the scale
 ladder — `hound` 37 px, `knight` 53 px, `barrow_warden` 63 px).
 
 ## Manual steps — the two things the pipeline cannot do for itself
@@ -505,7 +563,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 433 passed, 4 skipped (2026-09-21)
+docker compose run --rm anim-pipeline pytest        # 452 passed, 4 skipped (2026-09-21)
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

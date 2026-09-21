@@ -4,6 +4,109 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-21 — the keyframe phase feature: pick against start → wind-up → action → wind-down → end → loop
+
+**What.** `anim pick --phases` — [#276](http://192.168.1.158:8700/work_packages/276), the fifth
+feature of the sprite studio epic. Every studio clip is now picked against one shape, whichever
+route the frames came from (a Wan clip, a pose-pass strip, a filmed take): the owner's five
+phases plus the loop flag, with the per-action budget from sprite-studio.md §2 (cap 12; idle 6 ·
+walk 8 · run 8 · jump 10 · attack 12). New in `config.py`: `ACTION_PHASES` (budget, loop, `split`,
+`span` per action), `STUDIO_ACTIONS` (the studio's five names against the pipeline's verbs —
+`attack ↔ strike` — and each vendored rig's clip), `ANIM_TIMING` / `phases_for_action` (the
+per-project `timing.json`), `ANIM_LOOP_TOL` / `ANIM_LOOP_PIXEL_TOL`. New in `pick.py`:
+`PhasePlan`, `allocate`, `phase_plan`, `phase_positions` / `phase_frames` / `phase_instants`,
+`phase_tags`, `loop_closure`, `phase_timing`, `phased_picks`; `pick()` grows `phases=` and a
+library-only `spread=`. `picks.json` gains a `phases` block (plan, one tag per pick, the
+anticipation index, the closure) and its `timing` becomes the phase shape; `publish` copies
+`fps` / `loop` / `phases` / `durations_ms` into `contract.timing` beside the weights and the
+anchor (game-02's audit checks those two and ignores the rest — run for real in the tests); the
+review page shows the tag on each card the picker chose and the loop's verdict in the header.
+`bakeoff.py`'s hand-spread of 12 is gone: both routes call `pick(..., phases=True,
+spread="even")`, and `PHASES` / `PHASE_KEYS` / `BUDGET` are the attack row of the template.
+pytest: 433 → **452 passed**, 4 skipped. Nothing re-rendered, nothing published, OpenProject
+untouched.
+
+**The table is `ACTION_PHASES`, not `ACTION_TIMING`.** The brief named the new table
+`config.ACTION_TIMING`; that name already belongs to the strip timing feature's hold weights,
+keyed by `(action, n)`, and is referenced by `pick`, `publish`, the README, this log and the
+tests. Renaming it would have changed a shipped feature's vocabulary to make room for a new one,
+so the phase table got its own name and the strip table kept its.
+
+**Ease as density, not as a curve.** Each row carries two five-way shares: `split`, how the
+*budget* is divided between the phases, and `span`, how the *source clip's time* is. The split
+turns into whole frames by largest remainder (every phase at least one; ties to the earlier
+phase), and the span cuts the clip into five windows; a phase's frames are spread evenly inside
+its own window (the start pinned to the clip's first frame, a one-shot's end to its last). Frames
+per second of clip therefore differs per phase — attack samples its action window at four frames
+for a quarter of the clip and its rest windows at one or two frames for a fifth each — and that
+non-uniform density *is* the ease in and out. The alternative was one easing curve (a smoothstep
+inverse warping a linspace) with no per-phase knob: simpler, but it hides the split the owner
+named and cannot say "the wind-up gets three frames". Two shares per row is the honest knob,
+and `timing.json` can retune either. Attack comes out `1 / 3 / 4 / 2 / 2`, jump `1 / 3 / 3 / 2 / 1`,
+walk and run `1 / 2 / 2 / 2 / 1`, idle `1 / 1 / 2 / 1 / 1`.
+
+**Anticipation is one frame of the budget.** A one-shot allocates its split over budget − 1 and
+gives the reserved frame to the wind-up, so the beat before the action is never a single cell
+(`phases.anticipation` is that pick's index — attack's is 3, the last wind-up cell before the
+first action cell). A loop has no beat to anticipate and gets none.
+
+**Loops stop short, then get checked.** A cycle's `end` window is `[a, 1)`, its last pick centred
+inside it rather than pinned to the clip's last frame — the frame after `end` is `start` again,
+and a cycle whose last cell repeats its first hitches on the wrap. The loop-closure check then
+measures the last pick's distance back to the first: `posekit.pose_distance` (mean joint
+displacement in torso lengths) against `ANIM_LOOP_TOL`, set to **0.12 — `PICK_DEDUP`, the
+picker's own "same pose" threshold** — and, when either frame has no pose, the mean absolute
+pixel difference of the two frames against `ANIM_LOOP_PIXEL_TOL` 0.08; neither available, the
+verdict is `null` and says so. The result is recorded and shown, never acted on: a cycle that
+does not close is the owner's call (re-time, or pick a different clip).
+
+**The hold rule.** A clip lasts budget / 12 s whatever the source. `phase_timing` gives every
+frame a weight in 12 fps ticks (1 = 83 ms) and puts the anchor on the first action frame. When a
+phase came back with fewer frames than it was allotted — a 9-frame clip against attack's 12
+returns all nine, tagged by the window each falls in — each of its frames weighs allotted /
+picked ticks, so the phase still lasts its share of the second and the clip its budget; a phase
+with no frames at all lends its share to the phase before it (the one after, for `start`). With
+every phase full, every weight is 1. `durations_ms` is the same shape in milliseconds for the
+exporter and the editor; the game keeps reading weights (`PackedFloat32Array`, so a fractional
+hold is fine).
+
+**Where `timing.json` lives.** `ANIM_TIMING`, default `/assets_src/timing.json` — beside the
+palette in the customer game's `assets_src/`, the one other art decision that already lives
+there. Rows merge over the defaults (`{"attack": {"budget": 10}}` keeps attack's split), a
+`units` block overrides per unit, and keys may be either spelling. The alternative was a
+`timing.json` in the unit's job dir (`work/<unit>_base/`), which the brief's hint pointed at:
+not chosen because `work/` is regenerable scratch and gitignored, and a project setting that
+vanishes with `rm -rf work/` is not a project setting. Per-unit config in this repo is otherwise
+a dict keyed by slug in `config.py` (`UNIT_HEIGHT`, `UNIT_PROPS`, `UNIT_PARTS`); the `units`
+block is that pattern in a file.
+
+**The default is on for `attack`, `run`, `jump` — not for `strike`, `idle`, `walk`.** The brief
+said "default on for studio actions, off keeps today's behaviour byte-for-byte for existing
+jobs", and those two clauses collide on `idle` and `walk`: both are art-bible verbs with 2- and
+6-pose budgets and existing jobs (and `test_rig.py`'s anchor list). So `config.phases_default`
+is on only for a studio name the art bible does not budget; `strike` / `idle` / `walk` stay on
+the key-pose picker until `--phases` asks, and the action matrix (#278) passes `phases=True` for
+every cell. A golden `tests/fixtures/picks_head_447ad25.json` — `picks.json` as HEAD wrote it
+for the canned fixture — pins the byte-for-byte promise; `new_picks` adds the `phases` key only
+when there is a block, so an old record keeps its exact keys.
+
+**The bake-off keeps its numbers.** `even_spread` and `phase_times` are now
+`pick.phase_frames(..., spread="even")` and `pick.phase_instants(..., spread="even")` — linspace
+and the old `_even_spread` to the frame (tested against it for 12–60 frames) — so a cell re-run
+would render the same instants the owner judged, and `PHASES` / `PHASE_KEYS` come from the
+attack plan (`1 / 3 / 4 / 2 / 2` by column, keys `0, 2, 6, 9, 11`; the old hand tuple was
+`1 / 3 / 3 / 3 / 2`, keys `0, 2, 5, 8, 11`). `bakeoff.json` on disk carries its own labels, so the
+published page is unchanged until `--page-only` is run. The shaped spread for the routes is one
+argument away; it was not switched on here because nothing was to be re-rendered.
+
+**Not done.** `STUDIO_ACTIONS["jump"]["clips"]["quaternius"]` is `None`: the UAL ships the jump
+as `Jump_Start` / `Jump_Loop` / `Jump_Land` and no whole clip, so the studio's jump on that rig
+waits for a clip joiner. The `run` and `jump` verbs have no `ACTION_TIMING` hold row and no
+`CLIP_ACTION_PHRASES` entry yet; the matrix feature adds the prompt phrases when it names its
+cells.
+
+---
+
 ## 2026-09-20 — the frame route bake-off feature: two routes × two rigs on the knight's attack, the page is the owner's
 
 **What.** `anim bakeoff --unit knight --action attack` — [#274](http://192.168.1.158:8700/work_packages/274),

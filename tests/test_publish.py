@@ -329,3 +329,52 @@ def test_a_hand_edited_shape_is_what_gets_published(posted_job, assets_tree,
                       .read_text())
     assert meta["contract"]["timing"] == {"weights": [1, 2, 6, 3], "anchor": 2}
     assert meta["generation"]["timing_source"] == "hand"
+
+
+# ---------------------------------------------------------------------------
+# The keyframe phase feature: the sidecar carries the phases and the holds
+# ---------------------------------------------------------------------------
+def test_the_sidecar_carries_the_phase_tags_and_the_per_frame_milliseconds():
+    from anim.stages.publish import resolve_timing, sidecar_for
+
+    shape = {"weights": [1, 1, 2, 1], "anchor": 2, "source": "phases:attack", "fps": 12,
+             "loop": False, "phases": ["start", "wind-up", "action", "end"],
+             "durations_ms": [83, 83, 167, 83]}
+    block, source = resolve_timing("strike", 4, {"timing": shape, "auto_timing": dict(shape)})
+    assert source == "phases:attack"
+    assert block == {"weights": [1, 1, 2, 1], "anchor": 2, "fps": 12, "loop": False,
+                     "phases": ["start", "wind-up", "action", "end"],
+                     "durations_ms": [83, 83, 167, 83]}
+    meta = sidecar_for(slug="knight", action="strike", frames=4, manifest={},
+                       provenance=None, picks=[0, 3, 6, 12], report=None,
+                       timing=block, timing_source=source)
+    timing = meta["contract"]["timing"]
+    assert list(timing) == ["weights", "anchor", "fps", "loop", "phases", "durations_ms"]
+    assert meta["generation"]["timing_source"] == "phases:attack"
+    # Picks toggled after the pick: a per-frame list that no longer fits is
+    # left out, exactly as a stale weights list would be.
+    stale = dict(shape, weights=[1, 1, 2, 1, 1], durations_ms=[83, 83, 167, 83, 83])
+    block, _ = resolve_timing("strike", 5, {"timing": stale, "auto_timing": dict(stale)})
+    assert block["durations_ms"] == [83, 83, 167, 83, 83] and "phases" not in block
+
+
+def test_a_phased_publish_passes_game_02s_audit(posted_job, assets_tree, audit_script):
+    """`pick --phases` on the four-frame job, then the real audit on the
+    sidecar it produces: weights and anchor still fit the frames, and the
+    extra keys are ignored by the audit as they are by the game."""
+    from anim.stages.publish import publish
+
+    record = pick_stage.pick(posted_job.name, phases=True, n=4, force=True,
+                             work_dir=posted_job.root.parent)
+    assert record["timing"]["source"] == "phases:attack"
+    result = publish(posted_job.name, assets_dir=assets_tree / "assets",
+                     audit_script=audit_script, work_dir=posted_job.root.parent)
+    meta = json.loads((assets_tree / "assets" / "2d" / "units" / "knight_strike.json")
+                      .read_text())
+    timing = meta["contract"]["timing"]
+    assert len(timing["weights"]) == len(timing["phases"]) == len(timing["durations_ms"]) == 4
+    assert timing["fps"] == 12 and timing["loop"] is False
+    assert timing["anchor"] == timing["phases"].index("action")
+    assert abs(sum(timing["weights"]) - 4) < 1e-6, "four frames, 4/12 s"
+    assert meta["generation"]["timing_source"] == "phases:attack"
+    assert result["audit"]["exit"] == 0, result["audit"]["output"]

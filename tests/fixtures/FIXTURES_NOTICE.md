@@ -17,6 +17,7 @@ cheapest way to have no licence problem:
 | the canned keypoints | `tests/conftest.py` → `keypoints_payload` | 13 frames of an arm swinging out and back, written by hand so the picker's expected answer is obvious by inspection (frame 6 is the extreme). |
 | the standing skeleton | `anim/data/stand_pose.json` | **synthesised joint coordinates, not traced from a photograph.** Ships in the package rather than in tests because `anim base` uses it in production. |
 | the fake ComfyUI | `tests/fixtures/fakecomfy.py` | a threaded `http.server` returning canned `/system_stats`, `/prompt`, `/history` and `/view` responses and a Pillow-made PNG. |
+| the golden `picks.json` | `tests/fixtures/picks_head_447ad25.json` | what `anim pick` wrote for the canned keypoints at commit `447ad25`, before the keyframe phase feature; `test_pick.py` asserts a pick without `--phases` still produces these exact bytes. Regenerate only if the old picker's output changes on purpose. |
 | the two-bone rig | `tests/test_rigkit.py` → `write_synthetic_glb` | a GLB with a `foot` and a `toes` node and one clip (`Turn`), written with pygltflib at test time, so the interpolation and projection maths have closed-form answers. |
 
 Nothing above is downloaded, traced, derived from a pack, or model output.

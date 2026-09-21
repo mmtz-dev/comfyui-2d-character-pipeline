@@ -33,9 +33,18 @@ per-verb template in config.ACTION_TIMING, or the clip's frame gaps with
 predates the feature, else UNIFORM - in which case no block is written at all
 and the game supplies both the even weights and the default anchor, so that
 rule has exactly one home. `generation.timing_source` records which:
-"hand", "clip", "template:<action>" or "uniform". A hand `timing` whose length
-no longer matches the frames (picks toggled after it was written) is dropped
-with a warning rather than published broken.
+"hand", "clip", "template:<action>", "phases:<action>" or "uniform". A hand
+`timing` whose length no longer matches the frames (picks toggled after it
+was written) is dropped with a warning rather than published broken.
+
+A phased pick (the keyframe phase feature, `anim pick --phases`) records
+more than weights and anchor, and the block carries it: `fps` (12), `loop`,
+`phases` (the tag per frame: start / wind-up / action / wind-down / end) and
+`durations_ms` (each weight in milliseconds at that fps - 83 per tick; a
+phase that came back short of its share holds its frames longer, so the clip
+still lasts budget / 12 s). The audit checks weights and anchor and ignores
+the rest; a per-frame list that no longer fits the frames is left out with
+the same rule as the weights.
 
 FRAMES ARE COPIED IN PLACE. Never written to a temp name and renamed. Docker
 Desktop's file share caches by inode, so a rename leaves a new inode behind the
@@ -115,6 +124,9 @@ TOOL = f"tools/anim-pipeline (anim {__version__}) - the pose-to-pixel animation 
 FORK_URL = "https://github.com/mmtz-dev/comfyui-2d-character-pipeline"
 MODEL_LICENSE = "Apache-2.0"
 FRAME_RE = re.compile(r"^_\d+$")
+# What a phased pick's timing carries beyond weights + anchor, in the order
+# they are written (the keyframe phase feature).
+PHASE_KEYS = ("fps", "loop", "phases", "durations_ms")
 
 
 def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any],
@@ -135,9 +147,15 @@ def sidecar_for(*, slug: str, action: str, frames: int, manifest: dict[str, Any]
         "scale_from_source": 1,
     }
     if timing:
-        # Only the two fields the game reads; `source` lives in generation.
+        # The two fields the game reads; `source` lives in generation. A
+        # phased pick (the keyframe phase feature) adds the tag per frame and
+        # the per-frame milliseconds at PHASE_FPS beside them - the audit and
+        # the game ignore keys they do not know.
         contract["timing"] = {"weights": [w for w in timing["weights"]],
                               "anchor": int(timing["anchor"])}
+        for key in PHASE_KEYS:
+            if timing.get(key) is not None:
+                contract["timing"][key] = timing[key]
     passes = (provenance or {}).get("passes") or []
     final = passes[-1] if passes else {}
     models = (provenance or {}).get("models") or []
@@ -233,6 +251,11 @@ def resolve_timing(action: str, frames: int,
         weights = list(timing.get("weights") or [])
         if len(weights) == frames:
             block = {"weights": weights, "anchor": timing.get("anchor")}
+            for key in PHASE_KEYS:
+                value = timing.get(key)
+                if value is None or (isinstance(value, list) and len(value) != frames):
+                    continue
+                block[key] = value
             if timing != record.get("auto_timing"):
                 return block, "hand"
             return block, str(timing.get("source") or "hand")
