@@ -14,7 +14,9 @@ on both rigs and writes the page the owner rules on; `palette` (the palette
 feature) installs the project palette from Lospec or a file and the per-unit
 sub-palettes `post` snaps to; `export` (the spritesheet export feature) packs
 a unit's accepted frames into sheets + atlas.json + a Godot SpriteFrames, with
-`publish` as its game-02 adapter; `run` chains the whole thing in one command.
+`publish` as its game-02 adapter; `curate` (the curation board feature) is the
+board from the shell - accept / reject / regenerate a unit's cells and gates;
+`run` chains the whole thing in one command.
 """
 
 STAGE_ORDER = [
@@ -33,5 +35,6 @@ STAGE_ORDER = [
     "concept",
     "bakeoff",
     "palette",
+    "curate",
     "run",
 ]

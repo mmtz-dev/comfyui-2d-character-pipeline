@@ -21,6 +21,10 @@
 body.studio-collapsed {
   --studio-w: 34px;
 }
+/* The Board tab: a grid of frame strips needs the room. */
+body.studio-board:not(.studio-collapsed) {
+  --studio-w: min(1040px, 78vw);
+}
 
 /* Piskel, moved right. Same selectors as its layout.css, ours loaded later. */
 .main-wrapper {
@@ -284,4 +288,198 @@ body.studio-collapsed .studio-head {
   background: var(--studio-ok);
   border-top-right-radius: 3px;
   pointer-events: none;
+}
+
+/* --- tabs ------------------------------------------------------------- */
+.studio-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 0 0;
+}
+.studio-tab {
+  font: inherit;
+  font-weight: 600;
+  background: none;
+  border: 1px solid var(--studio-line);
+  border-bottom: none;
+  border-radius: 4px 4px 0 0;
+  color: var(--studio-muted);
+  padding: 4px 12px;
+  cursor: pointer;
+}
+.studio-tab.active {
+  color: var(--studio-gold);
+  background: var(--studio-line);
+}
+.studio-section[hidden] {
+  display: none;
+}
+
+/* --- the curation board (the curation board feature) ------------------- */
+.board-gates {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 6px 0 2px;
+  font-size: 12px;
+}
+.board-gates-text {
+  color: var(--studio-fg);
+}
+.board-gate.accepted {
+  color: var(--studio-ok);
+  border-color: #2f5a3d;
+}
+.board-gate.pending {
+  color: var(--studio-gold);
+  border-color: #6a4a12;
+}
+.board-legacy {
+  color: var(--studio-muted);
+  font-style: italic;
+}
+.board-grid {
+  margin-top: 8px;
+  overflow: auto;
+}
+.board-table {
+  border-collapse: separate;
+  border-spacing: 4px;
+  font-size: 12px;
+}
+.board-table th {
+  color: var(--studio-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+  text-align: left;
+  padding: 2px 4px;
+  vertical-align: top;
+}
+.board-table td {
+  vertical-align: top;
+  padding: 0;
+}
+.board-cell {
+  background: var(--studio-bg);
+  border: 1px solid var(--studio-line);
+  border-radius: 6px;
+  padding: 6px;
+  min-width: 220px;
+}
+.board-cell.empty {
+  color: var(--studio-muted);
+  text-align: center;
+  min-width: 60px;
+  padding: 14px 6px;
+}
+.board-cell.status-accepted {
+  border-color: #2f5a3d;
+}
+.board-cell.status-rejected {
+  border-color: #6a2f2f;
+}
+.board-cell.waiting {
+  box-shadow: inset 0 0 0 1px #6a4a12;
+}
+.board-cell-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  align-items: baseline;
+  margin-bottom: 4px;
+}
+.board-job {
+  color: var(--studio-fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  text-decoration: none;
+}
+.board-job:hover {
+  color: var(--studio-gold);
+}
+.board-status {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--studio-muted);
+}
+.board-status.accepted { color: var(--studio-ok); }
+.board-status.rejected { color: var(--studio-bad); }
+.board-status.pending { color: var(--studio-gold); }
+.board-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  min-height: 40px;
+}
+.board-frame {
+  position: relative;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 2px solid var(--studio-line);
+  border-radius: 3px;
+  background: #0b0c10;
+  cursor: pointer;
+  line-height: 0;
+}
+.board-frame img {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  display: block;
+  height: 128px;    /* a 64 px frame at x2; a source frame keeps its ratio */
+  width: auto;
+}
+.board-frame:hover:not(:disabled) {
+  border-color: var(--studio-gold);
+}
+.board-frame:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.board-frame.mark-accept {
+  border-color: var(--studio-ok);
+}
+.board-frame.mark-reject {
+  border-color: var(--studio-bad);
+}
+.board-frame.mark-reject img {
+  opacity: 0.35;
+}
+.board-frame-n {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  font: 600 10px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #15171c;
+  background: var(--studio-muted);
+  padding: 0 4px;
+  border-top-right-radius: 3px;
+}
+.board-frame-mark {
+  position: absolute;
+  right: 2px;
+  top: 0;
+  font: 700 14px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #fff;
+  text-shadow: 0 0 3px #000, 0 0 3px #000;
+}
+.board-meta {
+  margin: 2px 0 0;
+}
+.board-actions .studio-button {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+.board-actions .studio-button.ok {
+  color: var(--studio-ok);
+  border-color: #2f5a3d;
+}
+.board-actions .studio-button.bad {
+  color: var(--studio-bad);
+  border-color: #6a2f2f;
 }

@@ -78,6 +78,90 @@ pages are.
 
 ---
 
+## 2026-09-21 — the curation board feature: accept / reject / regenerate per frame and per cell, gates as a project setting
+
+**What.** [#281](http://192.168.1.158:8700/work_packages/281), the eighth feature of the sprite
+studio epic — where the human says yes or no. A **Board** tab in the editor's panel: one unit's
+grid, rows the five studio actions, columns the directions the unit has a job in, each cell that
+job's frame strip at ×2 with a mark per frame (click cycles accept → reject → clear) and accept /
+reject / regenerate for the cell; a header with the two gates, "waiting on you: …" and the mode
+selector. One module, `anim/curation.py`, is the whole rule set — the record
+`work/<unit>_curation.json`, the gate check, the board state — and both the API (`GET/PUT
+/curation/…`, a `423 Locked` on `POST /jobs`) and a new `anim curate <unit>` CLI write through
+it. `concept --pick` now accepts the base gate. `web/src/board.ts` is the pure half (grid,
+reducer, what-is-waiting) and `board-view.ts` the DOM; `panel.ts` grew a Pipeline / Board tab bar
+that widens the panel for the grid. pytest: 514 → **535 passed**, 4 skipped; vitest: 26 →
+**39 passed**. Smoked in a headless Chromium (Playwright 1.63 from a scratch dir, the cached
+chromium 1243) against the worktree's API on `:8721` with copies of `knight_strike` /
+`knightq_strike` / `knight_concept`: boot, Board tab, the strip from `post/`, frame 5 rejected
+and gone from `picks.json`, cell accepted and locked, mode → every, turnaround gate toggled,
+regenerate → confirm → `render --seed N knight_strike` queued through the run manager (it then
+hung on ComfyUI, which is off — the container was stopped). Screenshots stayed in the scratchpad.
+
+**Curation is a project setting, and the gate is one function.** `sprite-studio.md` §2 says
+so — default gates after the base and after the turnaround with a batch review at the end; also
+every step, or end only — and the settings store already had `curation: gates | every | end`
+waiting to be read. `curation.gate_blocks(unit, stage, action, direction)` is the one question
+asked in three places: the API's `POST /jobs` (→ `423 Locked` with the reason, `gate: true`),
+the board's regenerate (same, before the run manager's `409`), and `cli.main` for every stage
+with `--force` unset (prints the sentence, exits 2) — one hook in `main` rather than one per
+stage, so the action matrix is gated the day it lands (`matrix` is already in the set). In
+`gates` mode `clip` / `render` / `bakeoff` / `run` wait for the base gate and any cell outside
+`s0` for the turnaround gate; `every` adds "every earlier cell accepted"; `end` never blocks.
+CPU stages never wait — they are what makes the frames there are to judge, and gating `pick`
+on the previous cell would block the review it feeds. **`every` orders cells direction-major**
+(every action of `s0`, then `s45`, …): the side view is what game-02 ships and the top-down
+pitch is a later milestone, so finishing `s0` before opening a second direction is the order the
+owner actually works in. The alternative, action-major (idle in all 16 directions first), is
+how a turnaround is drawn and would fit the turnaround feature better; it would also leave
+`s0`'s attack waiting behind fifteen idles nobody has asked for yet. Documented, not chosen.
+
+**Legacy units are not gated.** Every knight job predates the board. A rule that refused
+`anim render knight_strike` until someone accepted a base nobody was ever asked about would be
+a regression dressed as a feature, so a unit with **no** `work/<unit>_curation.json` answers
+"gates accepted" and nothing blocks; only `concept --pick` writes a real record (base accepted,
+turnaround **pending** — the turnaround is drawn from the base, so a new base reopens it), and a
+board edit on a legacy unit creates its record with both gates accepted and `"origin":
+"legacy"`. The one thing that changes for the knight today is that `anim concept --unit knight
+--pick NN` would, from then on, hold a `knight_walk_s45` clip until the turnaround gate is
+accepted — which is the point.
+
+**One flat file per unit, beside the jobs.** `work/<unit>_curation.json`, not
+`work/<unit>/curation.json`: a unit has no directory of its own — its jobs are siblings named
+`<unit>_<verb>[_<dir>]` — and a `work/<unit>/` would list on `GET /jobs` as a job with no
+manifest. The flat file sits where `project.json` and `gate_parts.json` already sit and `ls
+work/*_curation.json` is the list of units under review. The alternative was a block inside
+each job's `job.json`; that scatters one decision (the gates) over N files and puts a cell's
+seed next to the seed the stage recorded, two writers of one fact.
+
+**A cell is a job; a rejected frame leaves `picks.json`.** The grid is `(studio action ×
+direction)` and a cell is the job `rig` names for it (`knight_strike` is `attack/s0`; the
+studio name and the pipeline verb are one key, `config.studio_action`). Two jobs on one cell —
+`knight_strike` and `knight_strike_phases` — resolve to the record's own choice, then the
+canonical name, then the newest, so a reload never swaps a cell's job. Frame marks are keyed by
+**source frame number**, the number `picks.json` uses, and a reject is written through
+`ReviewApp.set_picks` — the review page's own write, byte for byte the same file (a test twins
+the job and compares bytes). The rejected frame stays on the strip dimmed with a ✗ so it can be
+taken back: `post/` still holds its frame, and the strip's `post` mapping (post frame *k* is pick
+*k*) is kept whole by counting the rejects back in; only when `post/` no longer matches the
+picks at all (a re-pick since it ran) does the strip fall back to the source frames.
+Accepting a cell locks its frames (`409` on a mark, the buttons grey) — a decision that can be
+edited by accident is not a decision. Regenerate records the new seed and `regenerated_from`
+(the seed the stage recorded, so a re-run reproduces either) and only **after** the run manager
+accepted the run, so a refused request (`409` busy, `423` gated) records nothing; the CLI's
+`--regenerate` records and prints the `anim clip … --seed N` line instead, because a shell
+command that starts a 24 GB model load as a side effect is the thing the GPU rule exists to
+prevent.
+
+**Not in this feature.** The turnaround gate has no stage that accepts it yet (the turnaround
+feature will); `anim curate` cannot start the GPU; the board shows one unit at a time; there is
+no per-frame regenerate (a frame comes from a clip or a strip, so the cell is the unit of
+re-rendering); `settings.curation` stays the string it already was rather than a
+`{"mode": …}` object — the store, the tests and the README all had the string, and a second
+shape for one setting is a second thing to keep true.
+
+---
+
 ## 2026-09-21 — the web pixel editor feature: Piskel as the shell, the pipeline as a panel
 
 **What.** [#280](http://192.168.1.158:8700/work_packages/280), the sixth feature of the sprite

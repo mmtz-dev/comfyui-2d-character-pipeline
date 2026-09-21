@@ -120,6 +120,7 @@ docker compose run --rm anim export knight              # sheets + atlas + Sprit
 | `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>` and `--existing [png]` | `work/<slug>_concept/candidates/NN.png` + `job.json`; `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
 | `bakeoff --unit <slug> --action attack` | the two rigs' attack clips | `work/bakeoff_<slug>_attack/{bakeoff.json,page/,report.md}` + one job per cell `work/bakeoff_<slug>_attack_<cell>/` | **a GPU stage — the frame route bake-off feature.** One action through both candidate routes for the in-between frames on both candidate rigs — four cells `V-kaykit`, `V-quaternius`, `K-kaykit`, `K-quaternius` — as ordinary `rig → clip → pick → post --parts` (V) and `rig → pick → strip → render → post --parts` (K) jobs called as a library, one seed, then one page with an animated 12 fps preview per row and one metric table. Resumable per cell (`--cells`, `--force`, `--page-only`); seconds per stage and VRAM per cell in `bakeoff.json`. The owner rules on the page; the stage picks nothing. See "The frame route bake-off" below. |
 | `palette --lospec <slug>` \| `--file <path>` | a Lospec slug (`https://lospec.com/palette-list/<slug>.json`) or a `.hex` / `.gpl` / one-row `.png` | `palette.gpl` + `.hex` + `.png` + `.json` beside `ANIM_PALETTE` | **the palette feature.** Installs the project palette — the `-remap` source of truth `post` reads. `--unit <slug> --colours '#…,#…'` or `--from-sprite <png>` writes the unit's sub-palette to `palette_units/<slug>.json`; `--list` prints what is installed; `--into <path>` targets another `.gpl`. Same input, same bytes. See "The project palette" below. |
+| `curate <unit>` | `work/<unit>_curation.json` + the unit's jobs | the same file | **the curation board feature**, from the shell. `--accept-cell attack/s0`, `--reject-cell`, `--pending-cell` (reopen a locked cell), `--accept-frame attack/s0/3`, `--reject-frame` (also drops the frame from that job's `picks.json`, byte for byte as the review page does), `--clear-frame`, `--accept-gate base\|turnaround`, `--pending-gate`, `--regenerate attack/s0 [--seed N]` (records the seed and prints the `anim clip … --seed N` line; never the GPU), `--mode gates\|every\|end` (the project setting). With no flags, prints the board and what is waiting on you; with no unit, the units. See "The curation board" below. |
 | `run <clip>` | a filmed clip | all of the above | stops politely before `render` when the GPU is off. |
 
 ### The clip route — the clip render feature
@@ -386,13 +387,18 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `GET /jobs/{job}/picks` | the review state (`ReviewApp.state()`) |
 | `PUT /jobs/{job}/picks` `{"picks": [...]}` | rewrite `picks.json` exactly as the review page did; sorted, de-duplicated, out-of-range dropped, a hand `timing` kept |
 | `POST /jobs/{job}/regenerate` | flag `rerender_requested` in `job.json`. Never the GPU |
-| `POST /jobs` `{"stage": "pick", "args": {...}}` | run a stage in the background → `202` + the run, `Location: /runs/{id}`. `args` keys are the stage's `--help` names (`job`, `n`, `force`, `slug`, `audit: false` → `--no-audit`); or `"argv": ["knight_strike", "-n", "3"]` verbatim. Unknown keys and bad values are a `400` in argparse's own words |
+| `POST /jobs` `{"stage": "pick", "args": {...}}` | run a stage in the background → `202` + the run, `Location: /runs/{id}`. `args` keys are the stage's `--help` names (`job`, `n`, `force`, `slug`, `audit: false` → `--no-audit`); or `"argv": ["knight_strike", "-n", "3"]` verbatim. Unknown keys and bad values are a `400` in argparse's own words. **`423 Locked`** with the reason when the unit's curation gate blocks the stage (the curation board feature, below); `force: true` runs it anyway |
 | `GET /runs` · `GET /runs/{id}?tail=N` | every run this API knows, newest first; one run with its log |
 | `GET /runs/{id}/events` | `text/event-stream`: `log` per line, `progress` when the percent changes, one `done` (`status`, `returncode`). A stream opened after the run ended replays the whole log |
-| `GET /settings` · `PUT /settings` | `work/project.json`: `palette`, `frame_budgets` (`{action: 1..12}`), `curation` (`gates` \| `every` \| `end`), `frame_size` (`[w, h]`), `export` (`{"adapter": "generic" \| "game02"}`). `palette` is stored as a path (null = `ANIM_PALETTE`) and shown expanded — `{path, name, colours, source}` read from the palette files; a PUT takes the path string or that object back. The keyframe phase, curation and export features read the rest |
+| `GET /settings` · `PUT /settings` | `work/project.json`: `palette`, `frame_budgets` (`{action: 1..12}`), `curation` (`gates` \| `every` \| `end` — the curation board's mode, read by every gate check), `frame_size` (`[w, h]`), `export` (`{"adapter": "generic" \| "game02"}`). `palette` is stored as a path (null = `ANIM_PALETTE`) and shown expanded — `{path, name, colours, source}` read from the palette files; a PUT takes the path string or that object back. The keyframe phase, curation and export features read the rest |
 | `GET /palette` | the project palette record (`palette.json`, or one derived from a bare `.gpl`) plus `units`; `404` with the fix when nothing is installed |
 | `POST /palette` `{"lospec": "endesga-32"}` \| `{"file": "/path.hex"}` \| `{"unit": "knight", "colours": [...] \| "from_sprite": "/path.png" \| "clear": true}` | run `anim palette …` in the background (a CPU run) → `202` + the run, `--into` the settings' palette path |
 | `GET /palette/units` · `GET /palette/units/{unit}` | the units that have a sub-palette; one unit's `palette_units/<unit>.json` (`404`: the whole project palette applies) |
+| `GET /curation` | the units that have a cell job or a curation record, and the project's curation mode |
+| `GET /curation/{unit}` | the board: the gates, every cell (`attack/s0` …) with its job, status, frame marks, seed, the strip it shows (`post` when it matches the picks, else `clip` / `frames`) and the GPU stage a regenerate would run, plus `waiting` - what the owner has to decide |
+| `PUT /curation/{unit}/cells/{action}/{dir}` `{"status": "accepted" \| "rejected" \| "pending"}` and/or `{"frames": {"3": "reject", "5": "accept", "7": null}}` | mark frames (a reject leaves that job's `picks.json` through `ReviewApp.set_picks`, a cleared reject comes back), then set the cell. An accepted cell is locked: `409` on a frame mark until it is set pending again |
+| `POST /curation/{unit}/cells/{action}/{dir}/regenerate` `[{"seed": N}]` | record a new seed for the cell and run its GPU stage (`clip` on the clip route, else `render`) through the run manager → `202` + the cell with its run. A busy card is the `409`, a pending gate the `423`; a refused request records nothing |
+| `PUT /curation/{unit}/gates/{gate}` `{"state": "accepted" \| "pending"}` | `base` or `turnaround`; answers the board |
 | `GET /export/{unit}` | the last `anim export` of a unit under `work/_export/<unit>/`: `created`, `commit`, `frame_size`, `sheet_mode`, `sheets`, `animations` (frames, loop, fps, sheet, job), `warnings`, `files` with sizes; `404` with the `POST /jobs` line when there is none (the spritesheet export feature) |
 | `GET /health` | `ok`, the work dir, the active GPU run; `?probe=1` also asks ComfyUI (3 s timeout) |
 | `GET /` | the web pixel editor (`web/dist/`, see below), else a page listing the jobs and runs |
@@ -449,6 +455,7 @@ timeline tiles carry a text tag); a re-pull is "copy upstream's `src/` over, re-
 | Pipeline | `pick --phases` and `post` (CPU) start at a click; `clip`, `bakeoff` and `concept` (GPU) ask first — "this starts a GPU job". A `409` reads "GPU busy with `<id>`" and the panel follows that run instead |
 | Run | the run's log live over `/runs/{id}/events` (SSE) with a progress bar; recent runs are one click to follow |
 | Palette | the project palette from `GET /settings` (`palette.colours`, the palette feature's shape) goes into Piskel's palette list and is selected; a path-only or empty `palette` reads "no project palette" |
+| Board (a second tab) | the curation board — see "The curation board" below. The tab widens the panel; the Run section shows on both tabs |
 
 **Build.** `web/dist/` is generated, never committed. The Dockerfile's node stage runs
 `npm ci && npm run build` and bakes it into the image at `/opt/anim/web/dist`; the API
@@ -456,7 +463,7 @@ timeline tiles carry a text tag); a re-pull is "copy upstream's `src/` over, re-
 
 ```bash
 cd web && npm ci && npm run build     # -> web/dist, served by the running anim-api at once
-cd web && npm test                    # vitest: the panel's pure parts (frame sets, phase tags, SSE, palette, alpha)
+cd web && npm test                    # vitest: the panel's pure parts (frame sets, phase tags, SSE, palette, alpha, the board)
 cd web && npm run dev                 # http://localhost:5173, API routes proxied to :8720
 docker compose up -d --build anim-api # or rebuild the image and let it serve its own copy
 ```
@@ -507,6 +514,60 @@ docker compose run --rm anim post knight_base --parts && docker compose run --rm
   untouched; an earlier base render's files stay on disk and the note says what was replaced;
   picking again changes the pick. The manual test page:
   <http://192.168.1.158:8090/sprite-studio/character-concept/>.
+
+### The curation board — the curation board feature
+
+Where the human says yes or no ([#281](http://192.168.1.158:8700/work_packages/281)). The
+**Board** tab of the editor's panel is one unit's grid — rows the studio's five actions
+(attack, idle, walk, run, jump), columns the directions the unit has a job in — and every cell
+is that job's frame strip at ×2, nearest-neighbour. A cell is the job `rig` names for it
+(`<unit>_<verb>[_<dir>]`: `knight_strike` is `attack/s0`); when two jobs land on one cell the
+canonical name wins, then the newest.
+
+```
+http://192.168.1.158:8720/   → Board        (from the Mac)
+docker compose run --rm anim curate knight                              # the same board, printed
+docker compose run --rm anim curate knight --reject-frame attack/s0/5 --accept-cell attack/s0
+```
+
+- **Per frame:** click cycles accept → reject → clear. A rejected frame **leaves the job's
+  `picks.json`** through the same `ReviewApp.set_picks` the review page uses (byte for byte the
+  same file — a test checks), stays on the strip dimmed with a ✗ so you can take it back, and
+  `strip` / `post` compose without it the next time they run. Clearing the reject puts it back.
+- **Per cell:** accept locks the cell (its frames grey out until you reopen it); reject puts it
+  on the "waiting on you" list until it is regenerated; **regenerate** records a new seed in the
+  record and starts the cell's GPU stage — `clip` on the clip route, else `render` — through the
+  run manager behind the same "this starts a GPU job" confirm as the pipeline buttons, so one
+  at a time and a busy card is the `409` the panel follows. The cell goes back to pending with
+  its marks cleared; the run shows in the Run section and the board reloads when it ends.
+- **The record** is `work/<unit>_curation.json` (`anim.curation/1`): per cell `job`, `status`,
+  `frames` (`{"5": "reject"}`), `seed` / `regenerated_from` / `decided_at`, and the two gates.
+  One flat file beside the jobs rather than `work/<unit>/curation.json`, because a unit has no
+  directory of its own and a `work/<unit>/` would list as a job with no manifest. The API and
+  `anim curate` write it through one module, `anim/curation.py`.
+
+**The gates are a project setting** — `curation` in `work/project.json`, the mode selector on
+the board, `PUT /settings`, or `anim curate --mode …` (sprite-studio.md §2 "Curation"):
+
+| Mode | What waits for what |
+|---|---|
+| `gates` (default) | `clip`, `render`, `bakeoff` and `run` for a unit wait until its **base** gate is accepted; a cell outside `s0` (and the action matrix, when it lands) also waits for the **turnaround** gate. Review the cells in a batch |
+| `every` | the same gates, and a cell's GPU stage waits until **every earlier cell** that has a job is accepted — direction-major: every action of `s0`, then `s45`, … so the side view game-02 ships is finished before a second direction starts. The alternative, action-major (idle in every direction first), matches how a turnaround is drawn but would leave `s0` half-done while the top-down pitch is a later milestone |
+| `end` | nothing blocks; the board is a batch review at the end |
+
+CPU stages (`rig`, `pick`, `strip`, `post`) never wait: they make the frames there are to
+judge. A blocked `POST /jobs` is **`423 Locked`** with the reason (the panel shows it); the
+CLI prints the same sentence and exits 2, and `--force` on `clip`, `render`, `bakeoff` or
+`run` runs anyway. **`anim concept --pick` accepts the base gate** (choosing the base *is* the
+gate) and sets the turnaround back to pending, since the turnaround is drawn from the base;
+the turnaround feature will accept its own gate, and until then `anim curate <unit>
+--accept-gate turnaround` or the board's button does.
+
+**Legacy units are not gated.** A unit with no `work/<unit>_curation.json` — the knight and
+every job that predates the board — answers "gates accepted" and nothing blocks, so `anim
+render knight_strike` behaves as it did yesterday. Only `concept --pick` writes a real gate
+record; a board edit on a legacy unit creates its record with both gates accepted and
+`"origin": "legacy"`.
 
 ### The frame route bake-off — the frame route bake-off feature
 
@@ -793,8 +854,8 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 514 passed, 4 skipped (2026-09-21)
-cd web && npm test                                  # 26 passed - the editor panel's pure parts
+docker compose run --rm anim-pipeline pytest        # 559 passed, 4 skipped (2026-09-21)
+cd web && npm test                                  # 39 passed - the editor panel's pure parts
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

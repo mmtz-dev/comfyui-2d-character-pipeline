@@ -55,7 +55,7 @@ from typing import Any
 
 from PIL import Image, ImageOps
 
-from anim import comfy, config, imaging, models_lock
+from anim import comfy, config, curation, imaging, models_lock
 from anim.job import Job
 from anim.stages import base as base_stage
 from anim.stages import render as render_stage
@@ -437,8 +437,11 @@ def pick(slug: str, choice: str | int, *, work_dir: Path | None = None
                         "source": candidate["source"], "base_job": base_job.name,
                         "picked": provenance["created"]}
     job.write_manifest(manifest)
+    # The curation board feature: choosing the base IS the base gate. The
+    # turnaround, drawn from this base, goes back to pending.
+    gates = curation.accept_base_from_concept(slug, work_dir)["gates"]
     return {"candidate": candidate, "base_job": base_job.name,
-            "file": str(out), "replaced": replaced}
+            "file": str(out), "replaced": replaced, "gates": gates}
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +490,8 @@ def run_stage(args: argparse.Namespace) -> int:
         if result["replaced"]:
             print(f"  replaced the base render {result['replaced']} as "
                   f"{result['base_job']}'s render.final (the file is still there)")
+        print(f"  base gate accepted for {args.slug} (turnaround "
+              f"{result['gates']['turnaround']}) - work/{args.slug}_curation.json")
         print(f"  next: anim post {result['base_job']} [--parts], then "
               f"anim publish {result['base_job']}")
         return 0
