@@ -104,7 +104,7 @@ docker compose run --rm anim publish knight_strike --dry-run
 |---|---|---|---|
 | `extract <clip>` | a filmed clip | `frames/%04d.png`, `job.json` | fps is a **cap**, not a target; a 10 fps clip stays at 10. Rotation is honoured by never passing `-noautorotate`. `--crop` (off by default) crops every frame to **one** person-centred box — use it when the figure sits small in the frame, because the skeleton is letterboxed into the cell and headroom is wasted resolution. |
 | `pose <job>` | frames | `pose/keypoints.json`, `pose/skel_%04d.png` | rtmlib DWPose over onnxruntime, CPU. Inference happens **once per clip** and is cached; `pick`, `review` and `strip` re-read it. Rendered with rtmlib's own `draw_skeleton(openpose_skeleton=True)` at the cell size, line width scaled to the canvas. |
-| `rig <glb> --clip <name>` | a rig clip | `job.json`, `frames/%04d.png`, `pose/keypoints.json`, `pose/skel_%04d.png`, `depth/%04d.png` | **replaces `extract` + `pose`** when the motion is a rig clip. Samples the clip at the extract fps, maps the bones to OpenPose-18, projects in profile **facing right by detection**, one scale per rig; the skeleton PNGs go through the very same `posekit.draw`, with the unit's props (sword, shield) drawn on as white outlines. Also writes a **depth frame** per sample — the skinned mesh plus the props as solids, z-buffered under the same projection (the rig props feature); `--depth props` draws the prop solids only, body-occluded, for a model that paints the mannequin when given the body; `--depth none` / `--no-depth` skips it. `--list` prints the clips, `--props` overrides the kit. See "Rig input mode". |
+| `rig <glb> --clip <name>` | a rig clip | `job.json`, `frames/%04d.png`, `pose/keypoints.json`, `pose/skel_%04d.png`, `depth/%04d.png` | **replaces `extract` + `pose`** when the motion is a rig clip. Samples the clip at the extract fps, maps the bones to OpenPose-18, projects in profile **facing right by detection**, one scale per rig; the skeleton PNGs go through the very same `posekit.draw`, with the unit's props (sword, shield) drawn on as white outlines. Also writes a **depth frame** per sample — the skinned mesh plus the props as solids, z-buffered under the same projection (the rig props feature); `--depth props` draws the prop solids only, body-occluded, for a model that paints the mannequin when given the body; `--depth none` / `--no-depth` skips it. `--yaw 0|45|…|315` and `--elevation side|top` view the rig from any of the 16 direction cells (the camera direction feature) — the job is then `<unit>_<action>_<dir>`. `--list` prints the clips, `--props` overrides the kit. See "Rig input mode". |
 | `pick <job>` | keypoints | `picks.json` | peaks of deviation-from-rest + reversals + both endpoints, de-duplicated in torso lengths. Also records the **timing shape** (`timing`: one weight per frame + the anchor frame — the strip timing feature): the per-verb template in `config.ACTION_TIMING` by default, or the clip's own frame gaps with `--timing clip`. **Refuses to overwrite a hand-edited `picks.json`** (picks *or* timing) unless `--force`. |
 | `review <job>` | frames + picks | rewrites `picks.json` | the click-to-pick page — see below. |
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
@@ -112,7 +112,7 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `clip <job>` | every skeleton (+ `depth/` if `rig` wrote it) | `clip/frames/%04d.png`, `clip/control.mp4`, `clip/clip.json`, `clip/provenance.json` | **a GPU stage — the clip render feature.** Renders the whole rig clip as one Wan 2.2 Fun-Control 5B video with the unit's `base` render as the identity reference and the skeleton PNGs as the control video, one generated frame per rig frame (padded to 4n+1 by holding the last; `clip.json.frame_map`). `--control auto|pose|depth|blend` (auto = blend when `depth/` exists) and `--depth-gain` decide what the control video carries. Rig the job at the clip cell first: `rig … --width 512 --height 768` (768×768 for a lying death). Measured 2026-09-17: 9–55 s of GPU per action. Then `pick` as usual and `post --input clip`. See "The clip route" below. |
 | `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
 | `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
-| `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips; `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
+| `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
 | `run <clip>` | a filmed clip | all of the above | stops politely before `render` when the GPU is off. |
 
 ### The clip route — the clip render feature
@@ -207,12 +207,19 @@ docker compose run --rm anim strip knight_strike
 # the standing sprite from the same rig, same facing, same scale:
 docker compose run --rm anim base --unit knight \
     --rig rigs/kaykit-adventurers/Knight.glb --clip Idle --frame 0 --skeleton-only
+
+# the same clip seen from the front, and from straight above facing south:
+docker compose run --rm anim rig rigs/kaykit-adventurers/Knight.glb \
+    --clip 1H_Melee_Attack_Chop --unit knight --action strike --yaw 270   # -> work/knight_strike_s270
+docker compose run --rm anim rig rigs/kaykit-adventurers/Knight.glb \
+    --clip 1H_Melee_Attack_Chop --unit knight --action strike \
+    --yaw 270 --elevation top                                            # -> work/knight_strike_t270
 ```
 
 What `anim rig` writes is byte-for-byte the layout `extract` + `pose` leave behind
 (`job.json`, `frames/`, `pose/keypoints.json`, `pose/skel_*.png`), so `pick`, `review` and
 `strip` run unchanged — plus one directory a filmed clip never gets, `depth/`, which only
-`anim clip` reads. Five things are worth knowing:
+`anim clip` reads. Six things are worth knowing:
 
 - **Facing is detected, not assumed.** glTF says nothing about which way a character faces.
   The stage reads the rest pose's foot→toes vector and projects that direction onto +x, so the
@@ -265,6 +272,42 @@ What `anim rig` writes is byte-for-byte the layout `extract` + `pose` leave behi
   | optional | a bare animation library, a filmed clip, `--depth none`, or `--depth props` on a unit with no kit writes none; `job.depths()` is then `[]` |
 
   `anim base --rig` writes the same one frame as `depth/0001.png` at the portrait cell.
+
+- **The rig can be looked at from sixteen places (the camera direction feature).** The rig
+  route is the only motion source that gives direction control, so `--yaw` and `--elevation`
+  on `anim rig` and `anim base` rotate the posed joints, the skinned mesh and the props into
+  the view *before* the projection above — skeleton PNGs, keypoints and depth frames come out
+  for every cell from the same code, no new model, no new stage. The table is
+  `config.DIRECTIONS`: two pitches × eight facings at 45°, named by the pitch's initial and
+  the yaw. Yaw is the figure's turn about its own up axis, counter-clockwise from above, so
+  the compass reads the same in both pitches and matches a top-down game's eight directions:
+
+  | yaw | faces | `side` shows | `top`: faces |
+  |---|---|---|---|
+  | `0` | screen right | the right profile — **today's output, byte for byte** | east |
+  | `45` | away-right | back-right three-quarter | north-east |
+  | `90` | away | the back | north (up-screen) |
+  | `135` | away-left | back-left three-quarter | north-west |
+  | `180` | screen left | the left profile — what `--mirror` gives | west |
+  | `225` | toward-left | front-left three-quarter | south-west |
+  | `270` | the viewer | the front | south (down-screen) |
+  | `315` | toward-right | front-right three-quarter | south-east |
+
+  `top` looks straight down with the figure's yaw-0 left side up-screen (a knight facing east
+  has its shield arm to the north); the depth axis is then world up, so the head is the
+  nearest surface. **Pivot and scale.** The scale is the rig's one scale in every cell. In
+  `side` the floor row is absolute and each frame is centred horizontally on its own extent,
+  exactly as before; in `top` both screen axes are ground axes, so both get the ground rule —
+  centred on the joints' extent, pivot at the cell's centre — which is what keeps a lunge
+  from translating at t90 but not at t0, and keeps a body lying full-length inside the cell
+  at every yaw. (`anim post` trims and bottom-centres the pixels afterwards whichever rule
+  placed them.) The default `s0` keeps its job name; any other cell suffixes it
+  (`knight_strike_t270`) and is recorded in `job.json.motion_source` as `direction`, `yaw`,
+  `elevation`, next to `mirror` and the rig's true `forward`. `--mirror` is the s0 profile
+  reflected and predates the table; `--yaw 180` is the same picture, so the two are refused
+  together. Only a rig can be turned: `anim base` without `--rig` refuses a direction. The
+  OpenPose face points are drawn in every cell, nose included on the back view — whether the
+  pose ControlNet wants them hidden there is a turnaround-gate question, not decided here.
 
 The skeleton is a hint about limb angles only (art bible §3). The Knight is chibi — its head is
 ~45 % of its height, so the neck→nose limb is as long as torso + legs — and whether the pose
@@ -372,7 +415,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 312 passed, 4 skipped (2026-09-17)
+docker compose run --rm anim-pipeline pytest        # 393 passed, 4 skipped (2026-09-20)
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

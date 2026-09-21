@@ -214,6 +214,71 @@ def height_for_unit(slug: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# The camera direction feature - the 16 views the rig route can render
+# ---------------------------------------------------------------------------
+# Two pitches x eight facings, 45 degrees apart (sprite-studio.md S2). A cell
+# is named by the pitch's initial and the yaw: s0 .. s315, t0 .. t315.
+#
+# YAW is the character's turn about its own up axis, counter-clockwise seen
+# from above, from the art bible's rest facing - so the compass reads the same
+# in both pitches and matches a top-down game's eight directions:
+#
+#   yaw    faces          side view shows        top view: faces
+#     0    screen right   the right profile      east  (the party rule: s0 IS today's output)
+#    90    away           the back               north (up-screen)
+#   180    screen left    the left profile       west  (what --mirror used to give)
+#   270    the viewer     the front              south (down-screen)
+#
+# ELEVATION `side` is the profile camera every stage has used so far; `top`
+# looks straight down, with the character's yaw-0 left side up-screen, so a
+# figure facing east at t0 has its shield arm to the north. anim.rigkit
+# rotates the rig into the view before its projection; nothing after the rig
+# stage knows or cares which cell a job is.
+DIRECTION_YAWS: tuple[int, ...] = (0, 45, 90, 135, 180, 225, 270, 315)
+DIRECTION_ELEVATIONS: tuple[str, ...] = ("side", "top")
+DEFAULT_YAW = 0
+DEFAULT_ELEVATION = "side"
+DIRECTIONS: dict[str, tuple[int, str]] = {
+    f"{elevation[0]}{yaw}": (yaw, elevation)
+    for elevation in DIRECTION_ELEVATIONS for yaw in DIRECTION_YAWS}
+DEFAULT_DIRECTION = f"{DEFAULT_ELEVATION[0]}{DEFAULT_YAW}"
+
+
+def direction_name(yaw: int = DEFAULT_YAW, elevation: str = DEFAULT_ELEVATION) -> str:
+    """The cell name for a (yaw, elevation) pair: (45, "side") -> "s45".
+
+    Refuses anything outside the table, so a stage cannot write a direction
+    the turnaround and the action matrix will never ask for.
+    """
+    elevation = str(elevation).strip().lower()
+    if elevation not in DIRECTION_ELEVATIONS:
+        raise ValueError(f"unknown elevation {elevation!r}; one of "
+                         f"{list(DIRECTION_ELEVATIONS)}")
+    try:
+        yaw_value = int(yaw)
+    except (TypeError, ValueError):
+        raise ValueError(f"yaw must be one of {list(DIRECTION_YAWS)}, not {yaw!r}") from None
+    if yaw_value != yaw or yaw_value not in DIRECTION_YAWS:
+        raise ValueError(f"yaw {yaw!r} is not in the direction table; one of "
+                         f"{list(DIRECTION_YAWS)} (45-degree steps)")
+    return f"{elevation[0]}{yaw_value}"
+
+
+def direction(name: str) -> tuple[int, str]:
+    """A cell name back to its (yaw, elevation): "t135" -> (135, "top")."""
+    key = str(name).strip().lower()
+    if key not in DIRECTIONS:
+        raise ValueError(f"unknown direction {name!r}; one of {list(DIRECTIONS)}")
+    return DIRECTIONS[key]
+
+
+def is_default_direction(yaw: int = DEFAULT_YAW,
+                         elevation: str = DEFAULT_ELEVATION) -> bool:
+    """True for the view every job had before the camera direction feature."""
+    return direction_name(yaw, elevation) == DEFAULT_DIRECTION
+
+
+# ---------------------------------------------------------------------------
 # The skeleton props feature - what each unit holds, drawn onto its skeleton
 # ---------------------------------------------------------------------------
 # `anim rig` draws these onto the ControlNet image so the model is TOLD which

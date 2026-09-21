@@ -157,17 +157,56 @@ Only SKINNED primitives are posed. A static mesh parented to a bone (the
 KayKit Knight's helmet, and its four shields and three swords all sitting
 visible on the hand slots) is skipped: which of those a unit carries is what
 `config.UNIT_PROPS` says, and the generated props say it for every rig alike.
+
+DIRECTION - the camera direction feature
+----------------------------------------
+The rig is the one motion source that can be looked at from anywhere, so the
+sixteen cells of `config.DIRECTIONS` (two pitches x eight facings, 45 degrees
+apart) are a rotation of the posed rig BEFORE the projection above - the
+joints, the skinned mesh and the prop geometry alike, so every cell comes out
+with its skeleton PNG, its keypoints and its depth frame from the same code
+and no new model.
+
+`Projection.rotation` is a 3x3 whose rows are the view's right, up and near
+axes in world space. Yaw turns the character by +yaw about its up axis (+Y,
+counter-clockwise seen from above): yaw 0 is the profile facing right that
+every job had before the feature, yaw 90 the back (facing away), yaw 180 the
+left profile, yaw 270 the front. The `top` elevation then pitches the camera
+straight down about the screen's x axis, so screen-right stays the yaw-0
+forward and screen-up is the character's yaw-0 LEFT (a figure facing east has
+its shield arm to the north, as a top-down game expects); the depth axis is
+then world up, so the head is the nearest surface.
+
+THE PIVOT, PER ELEVATION. Side: unchanged - the floor row is absolute and each
+frame is centred horizontally on its own extent. Top: BOTH screen axes are
+ground axes, so both get the ground rule - the frame is centred on the
+joints' extent in x and in y, the pivot is the cell's centre. One rule for
+every yaw is what keeps a lunge from translating at t90 but not at t0, and it
+is what keeps a body lying full-length inside the cell in every cell (the
+alternative - anchoring the posed hips on a row set by the feet's rest-pose
+footprint, so a standing figure's near foot sits on the floor row - puts a
+fallen body at t270 through the bottom edge). The scale is the rig's one
+scale in every cell, so a top-down still is as many pixels per rig unit as
+its profile, and `anim post` trims and bottom-centres the pixels afterwards
+whichever rule placed them in the cell.
+
+`mirror` is the yaw-0 profile reflected and predates the table; yaw 180 is
+the same picture (the reflection of a profile IS the other profile), so the
+two are never combined - a direction says which way the figure faces, and
+`mirror` on top of one would say it twice.
 """
 
 from __future__ import annotations
 
 import base64
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 import numpy as np
+
+from anim import config
 
 # ---------------------------------------------------------------------------
 # OpenPose-18, spelled out so this module needs no rtmlib. tests/test_rigkit.py
@@ -850,10 +889,18 @@ class RigFrame:
     head_forward_local: np.ndarray   # forward expressed in the head bone's frame
     head_up_local: np.ndarray
     props: tuple[PropFrame, ...] = ()
+    # The camera direction feature: a cell of config.DIRECTIONS. The defaults
+    # are the profile every job had before it.
+    yaw: int = config.DEFAULT_YAW
+    elevation: str = config.DEFAULT_ELEVATION
 
     @property
     def height(self) -> float:
         return self.top_y - self.floor_y
+
+    @property
+    def direction(self) -> str:
+        return config.direction_name(self.yaw, self.elevation)
 
 
 def prop_frame(kind: str, rig: Rig, world: np.ndarray, jmap: JointMap,
@@ -889,12 +936,23 @@ def prop_frame(kind: str, rig: Rig, world: np.ndarray, jmap: JointMap,
 
 def reference_frame(rig: Rig, jmap: JointMap | None = None,
                     mirror: bool = False,
-                    props: Sequence[str] = ()) -> RigFrame:
+                    props: Sequence[str] = (),
+                    yaw: int = config.DEFAULT_YAW,
+                    elevation: str = config.DEFAULT_ELEVATION) -> RigFrame:
     """Facing, floor, standing height and head length, all from the rest pose.
 
     `props` names the props to attach (`PROP_KINDS`); they are laid out in the
-    same rest pose the facing is read from.
+    same rest pose the facing is read from. `yaw` and `elevation` name the
+    cell of `config.DIRECTIONS` to view from (the camera direction feature);
+    `mirror` is only accepted in the default cell - yaw 180 is the mirrored
+    profile (module docstring, DIRECTION).
     """
+    direction = config.direction_name(yaw, elevation)
+    if mirror and direction != config.DEFAULT_DIRECTION:
+        raise ValueError(
+            f"--mirror cannot be combined with a direction ({direction}): "
+            f"--yaw 180 is the flipped profile; a direction already says which "
+            f"way the figure faces")
     jmap = jmap or detect_map(rig.names)
     missing = jmap.missing(rig.names)
     if missing:
@@ -924,7 +982,8 @@ def reference_frame(rig: Rig, jmap: JointMap | None = None,
                     head_forward_local=r_head.T @ forward,
                     head_up_local=r_head.T @ up,
                     props=tuple(prop_frame(k, rig, world, jmap, forward)
-                                for k in props))
+                                for k in props),
+                    yaw=int(yaw), elevation=str(elevation).strip().lower())
 
 
 def prop_polygons(rig: Rig, world: np.ndarray, frame: RigFrame
@@ -1059,15 +1118,59 @@ def openpose_points(rig: Rig, world: np.ndarray, frame: RigFrame) -> np.ndarray:
     return out
 
 
+WORLD_UP = np.array([0.0, 1.0, 0.0])
+
+
+def direction_rotation(forward: np.ndarray, yaw: int = config.DEFAULT_YAW,
+                       elevation: str = config.DEFAULT_ELEVATION) -> np.ndarray:
+    """(3, 3): the view's right, up and near axes in world space, as rows, for
+    one cell of the direction table (module docstring, DIRECTION).
+
+    `forward` is the screen-right axis of the yaw-0 profile (the rig's facing,
+    already reflected for `mirror`). Row 0 dotted with a point is its screen
+    x, row 1 its screen up, row 2 its distance toward the viewer. The default
+    cell is exactly the basis the profile always used - forward, world up,
+    forward x up - so the yaw-0 side projection is unchanged to the bit.
+    """
+    forward = np.asarray(forward, dtype=float)
+    near0 = np.cross(forward, WORLD_UP)
+    if elevation == "top":
+        # Pitch the camera straight down about screen x: what was toward the
+        # viewer is now up-screen, and world up is toward the viewer.
+        axes = (forward, -near0, WORLD_UP)
+    else:
+        axes = (forward, WORLD_UP, near0)
+    if yaw == 0:
+        return np.stack(axes)
+    # Turning the character by +yaw about world up is turning the camera's
+    # axes by -yaw about it (right-hand rule: +90 takes +z to +x).
+    theta = math.radians(-float(yaw))
+    c, s_ = math.cos(theta), math.sin(theta)
+    r_y = np.array([[c, 0.0, s_], [0.0, 1.0, 0.0], [-s_, 0.0, c]])
+    return np.stack([r_y @ axis for axis in axes])
+
+
 @dataclass(frozen=True)
 class Projection:
-    """Orthographic profile: forward -> +x (right), up -> -y (screen), floor on a row."""
+    """Orthographic, into a cell. Yaw 0 / side is the profile: forward -> +x
+    (right), up -> -y (screen), the floor on a fixed row. Any other cell of
+    the direction table rotates the rig into the view first (`rotation`,
+    module docstring, DIRECTION); the `top` elevation centres both axes."""
 
     forward: np.ndarray
     floor_y: float
     scale: float                 # cell pixels per rig unit
     cell: tuple[int, int]
-    baseline: float              # cell row of the floor
+    baseline: float              # cell row of the floor (side elevation)
+    yaw: int = config.DEFAULT_YAW
+    elevation: str = config.DEFAULT_ELEVATION
+    # World -> view, rows = (right, up, near); derived, never passed.
+    rotation: np.ndarray = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        config.direction_name(self.yaw, self.elevation)      # a table cell, or a clear error
+        object.__setattr__(self, "rotation",
+                           direction_rotation(self.forward, self.yaw, self.elevation))
 
     @classmethod
     def for_rig(cls, frame: RigFrame, cell: tuple[int, int],
@@ -1078,14 +1181,31 @@ class Projection:
                    floor_y=frame.floor_y,
                    scale=height_fraction * height / frame.height,
                    cell=(int(width), int(height)),
-                   baseline=baseline_fraction * height)
+                   baseline=baseline_fraction * height,
+                   yaw=frame.yaw, elevation=frame.elevation)
+
+    @property
+    def direction(self) -> str:
+        return config.direction_name(self.yaw, self.elevation)
 
     @property
     def near(self) -> np.ndarray:
-        """Unit vector toward the viewer: forward x up. With forward on +x
-        and up on +y that is the camera axis of a right-handed view - the
-        character's RIGHT side, so the sword hand is the near hand."""
-        return np.cross(self.forward, np.array([0.0, 1.0, 0.0]))
+        """Unit vector toward the viewer. In the profile that is forward x up,
+        the camera axis of a right-handed view - the character's RIGHT side,
+        so the sword hand is the near hand; in the top view it is world up."""
+        return self.rotation[2]
+
+    def view(self, points: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(K, 3) world -> the (K,) screen-x, screen-up and toward-viewer
+        coordinates in rig units: the rotation into the view, before the
+        scale and the cell placement."""
+        pts = np.asarray(points, dtype=float)
+        right, up, near = self.rotation
+        # Yaw never moves world up, so the side elevation's up IS y, taken
+        # as-is rather than through a dot product that could differ by an ulp.
+        return (pts @ right,
+                pts[:, 1] if self.elevation != "top" else pts @ up,
+                pts @ near)
 
     def depth_of(self, points: np.ndarray) -> np.ndarray:
         """(K, 3) world -> (K,) distance toward the viewer, rig units.
@@ -1095,23 +1215,35 @@ class Projection:
     def anchor_for(self, points: np.ndarray) -> np.ndarray:
         """The world point `to_2d` would centre these points on - so props can
         be projected with the JOINTS' centre, not their own."""
-        along = np.asarray(points, dtype=float) @ self.forward
-        return self.forward * (float(along.min() + along.max()) / 2.0)
+        x, up, _ = self.view(points)
+        centre = np.zeros(3)
+        centre[0] = float(x.min() + x.max()) / 2.0
+        if self.elevation == "top":
+            centre[1] = float(up.min() + up.max()) / 2.0
+        return self.rotation.T @ centre
 
     def to_2d(self, points: np.ndarray, anchor: np.ndarray | None = None) -> np.ndarray:
         """(K, 3) world -> (K, 2) cell pixels.
 
         Horizontal: the points' own extent is centred in the cell, or, when
-        `anchor` is given, that world point's forward-coordinate is. Vertical is
-        absolute: the rig's floor is the baseline row whatever the pose.
+        `anchor` is given, that world point's screen-x is. Vertical, side: absolute -
+        the rig's floor is the baseline row whatever the pose. Vertical, top:
+        centred like the horizontal (module docstring, THE PIVOT).
         """
-        pts = np.asarray(points, dtype=float)
-        along = pts @ self.forward
-        centre = float(np.asarray(anchor) @ self.forward) if anchor is not None \
-            else float(along.min() + along.max()) / 2.0
-        x = (along - centre) * self.scale + self.cell[0] / 2.0
-        y = self.baseline - (pts[:, 1] - self.floor_y) * self.scale
-        return np.stack([x, y], axis=1)
+        x, up, _ = self.view(points)
+        if anchor is not None:
+            anchor = np.asarray(anchor, dtype=float)
+            centre_x = float(anchor @ self.rotation[0])
+            centre_up = float(anchor @ self.rotation[1])
+        else:
+            centre_x = float(x.min() + x.max()) / 2.0
+            centre_up = float(up.min() + up.max()) / 2.0
+        sx = (x - centre_x) * self.scale + self.cell[0] / 2.0
+        if self.elevation == "top":
+            sy = self.cell[1] / 2.0 - (up - centre_up) * self.scale
+        else:
+            sy = self.baseline - (up - self.floor_y) * self.scale
+        return np.stack([sx, sy], axis=1)
 
 
 # ---------------------------------------------------------------------------
@@ -1270,14 +1402,18 @@ def sample_times(duration: float, fps: int) -> np.ndarray:
 def clip_keypoints(rig: Rig, clip_name: str, *, fps: int,
                    cell: tuple[int, int], mirror: bool = False,
                    frame: RigFrame | None = None,
-                   times: Sequence[float] | None = None) -> dict[str, Any]:
+                   times: Sequence[float] | None = None,
+                   yaw: int = config.DEFAULT_YAW,
+                   elevation: str = config.DEFAULT_ELEVATION) -> dict[str, Any]:
     """Sample a clip and return the `anim.keypoints/1` payload `anim pose` writes.
 
     Every score is 1.0 and `person.score` is 1.0: a rig has no detector.
     `source_size` is the cell itself, so `anim.posekit.draw` places the points
-    1:1. Each frame also carries its sample `time` in seconds.
+    1:1. Each frame also carries its sample `time` in seconds. `yaw` and
+    `elevation` pick the cell of the direction table when no `frame` is
+    given; a `frame` carries its own.
     """
-    frame = frame or reference_frame(rig, mirror=mirror)
+    frame = frame or reference_frame(rig, mirror=mirror, yaw=yaw, elevation=elevation)
     clip = rig.clip(clip_name)
     proj = Projection.for_rig(frame, cell)
     ts = np.asarray(times, dtype=float) if times is not None \
@@ -1318,6 +1454,8 @@ def clip_keypoints(rig: Rig, clip_name: str, *, fps: int,
             "file": rig.path.name, "clip": clip.name,
             "duration": round(clip.duration, 4), "fps": fps,
             "mirror": bool(frame.mirror),
+            "direction": frame.direction, "yaw": int(frame.yaw),
+            "elevation": frame.elevation,
             "forward": [round(float(v), 4) for v in frame.forward],
             "floor_y": round(frame.floor_y, 4), "height": round(frame.height, 4),
             "head_length": round(frame.head_length, 4),

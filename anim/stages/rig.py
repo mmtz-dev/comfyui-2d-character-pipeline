@@ -6,7 +6,8 @@ Knight, first) is the motion source instead of a filmed clip:
     anim rig rigs/kaykit-adventurers/Knight.glb --list
     anim rig rigs/kaykit-adventurers/Knight.glb --clip Hit_A \\
         --unit knight --action hit [--fps 12] [--job knight_hit] [--mirror] \\
-        [--props sword,shield | --props none] [--depth full|props|none]
+        [--props sword,shield | --props none] [--depth full|props|none] \\
+        [--yaw 0|45|..|315] [--elevation side|top]
 
 It writes exactly what `anim extract` followed by `anim pose` would have:
 
@@ -45,6 +46,16 @@ PROPS (the skeleton props feature). The unit's kit - `config.UNIT_PROPS`, or
 into keypoints.json per frame, so the skeleton PNGs carry a blade and a shield
 outline and the ControlNet is told which hand is which (anim.rigkit, PROPS).
 The manifest's `motion_source.props` records what was drawn.
+
+DIRECTION (the camera direction feature). `--yaw` and `--elevation` pick one
+of the sixteen cells in `config.DIRECTIONS`; the rig is rotated into that view
+before the projection (anim.rigkit, DIRECTION), so the skeletons, keypoints and
+depth frames of every cell come from the same code. The default cell `s0` is
+the profile every job had before, byte for byte, and keeps its job name; any
+other cell is written into `motion_source` (`direction`, `yaw`, `elevation`)
+and suffixed onto the default job name - `knight_hit_t270` - so the sixteen
+views of one action never overwrite each other. `--mirror` is the flipped s0
+profile and is refused with any other cell: `--yaw 180` is that picture.
 
 PROVENANCE. A rig directory carries `rig.json` (pack, author, url, licence,
 per-file sha256). The stage refuses a rig without one, and refuses one whose
@@ -133,6 +144,9 @@ def motion_source(glb: Path, provenance: dict[str, Any], clip: rigkit.Clip,
         "rig_map": jmap.name,
         "fps": motion["fps"],
         "mirror": bool(mirror),
+        "direction": motion["direction"],
+        "yaw": motion["yaw"],
+        "elevation": motion["elevation"],
         "forward": motion["forward"],
         "height": motion["height"],
         "scale_px_per_unit": motion["scale_px_per_unit"],
@@ -196,7 +210,11 @@ def write_previews(payload: dict[str, Any], frames_dir: Path) -> list[Path]:
     for stale in frames_dir.glob("*.png"):
         stale.unlink()
     cell = tuple(payload["source_size"])
-    baseline = (payload.get("motion") or {}).get("baseline_row")
+    motion = payload.get("motion") or {}
+    # A top-down cell has no floor row to draw (the camera direction feature's pivot
+    # rule, anim.rigkit DIRECTION): the line would cut through the figure.
+    baseline = motion.get("baseline_row") if motion.get("elevation", "side") != "top" \
+        else None
     written: list[Path] = []
     for entry in payload["frames"]:
         img = draw_preview(entry["keypoints"], payload["names"], cell, baseline,
@@ -210,27 +228,39 @@ def write_previews(payload: dict[str, Any], frames_dir: Path) -> list[Path]:
 # ---------------------------------------------------------------------------
 # Stage entry point
 # ---------------------------------------------------------------------------
+def default_job_name(stem: str, yaw: int = config.DEFAULT_YAW,
+                     elevation: str = config.DEFAULT_ELEVATION) -> str:
+    """`<stem>` in the default cell, `<stem>_<direction>` in any other - so
+    every job name from before the camera direction feature is unchanged."""
+    direction = config.direction_name(yaw, elevation)
+    return stem if direction == config.DEFAULT_DIRECTION else f"{stem}_{direction}"
+
+
 def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
         mirror: bool = False, job_name: str | None = None,
         cell: tuple[int, int] | None = None,
         props: Sequence[str] | None = None, depth: str | bool = "full",
+        yaw: int = config.DEFAULT_YAW, elevation: str = config.DEFAULT_ELEVATION,
         work_dir: Path | None = None) -> Job:
     """Sample one clip into work/<job>/ as if extract + pose had run.
 
     `props` None means the unit's kit from `config.UNIT_PROPS`; pass () for none.
     `depth` is a `rigkit.DEPTH_MODES` value (or the older bool): `full` writes
     depth/%04d.png of body + props when the rig has a skinned mesh, `props`
-    the prop solids alone, `none` nothing.
+    the prop solids alone, `none` nothing. `yaw` / `elevation` pick the cell
+    of `config.DIRECTIONS` (the camera direction feature).
     """
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
     cell = tuple(cell or config.STRIP_CELL)
     props = config.props_for_unit(slug) if props is None else tuple(props)
+    job_name = job_name or default_job_name(f"{slug}_{action}", yaw, elevation)
     provenance = rig_provenance(glb)
 
     loaded = rigkit.load_rig(glb)
     jmap = rigkit.detect_map(loaded.names)
-    frame = rigkit.reference_frame(loaded, jmap, mirror=mirror, props=props)
+    frame = rigkit.reference_frame(loaded, jmap, mirror=mirror, props=props,
+                                   yaw=yaw, elevation=elevation)
     payload = rigkit.clip_keypoints(loaded, clip, fps=fps, cell=cell,
                                     mirror=mirror, frame=frame)
     clip_obj = loaded.clip(clip)
@@ -239,7 +269,7 @@ def rig(glb: Path, *, clip: str, action: str, slug: str, fps: int | None = None,
     depth_clip = rigkit.clip_depth(loaded, clip, fps=fps, cell=cell, frame=frame,
                                    mode=mode) if wants_depth else None
 
-    job = Job.open(job_name or f"{slug}_{action}", work_dir)
+    job = Job.open(job_name, work_dir)
     job.root.mkdir(parents=True, exist_ok=True)
     write_previews(payload, job.frames_dir)
     job.pose_dir.mkdir(parents=True, exist_ok=True)
@@ -283,6 +313,34 @@ def parse_props(text: str | None) -> tuple[str, ...] | None:
     return kinds
 
 
+def check_direction(prog: str, *, yaw: int, elevation: str, mirror: bool) -> str:
+    """The direction name for a stage's flags, or SystemExit for a pair the
+    table refuses or for `--mirror` on any cell but the default."""
+    try:
+        name = config.direction_name(yaw, elevation)
+    except ValueError as exc:
+        raise SystemExit(f"{prog}: {exc}") from None
+    if mirror and name != config.DEFAULT_DIRECTION:
+        raise SystemExit(
+            f"{prog}: --mirror cannot be combined with --yaw/--elevation "
+            f"({name}); --yaw 180 is the flipped profile, and a direction "
+            f"already says which way the figure faces")
+    return name
+
+
+def add_direction_arguments(parser: argparse.ArgumentParser) -> None:
+    """`--yaw` / `--elevation`, shared by `rig` and `base`."""
+    parser.add_argument("--yaw", type=int, choices=config.DIRECTION_YAWS,
+                        default=config.DEFAULT_YAW, metavar="DEG",
+                        help="the figure's turn about its up axis, one of "
+                             f"{list(config.DIRECTION_YAWS)}: 0 faces right "
+                             "(the default profile), 90 away, 180 left, 270 "
+                             "the viewer (the camera direction feature)")
+    parser.add_argument("--elevation", choices=config.DIRECTION_ELEVATIONS,
+                        default=config.DEFAULT_ELEVATION,
+                        help="'side' (default) or 'top', straight down")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -302,7 +360,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="flip the detected facing (the default puts the "
                              "rig's forward on +x: the party faces right)")
     parser.add_argument("--job", default=None,
-                        help="job name (default <slug>_<action>)")
+                        help="job name (default <slug>_<action>, plus _<direction> "
+                             "for any cell but s0)")
+    add_direction_arguments(parser)
     parser.add_argument("--props", default=None,
                         help="props drawn onto the skeleton, comma-separated "
                              f"from {list(rigkit.PROP_KINDS)}, or 'none' "
@@ -331,15 +391,19 @@ def run_stage(args: argparse.Namespace) -> int:
                                         ("--action", args.action)) if not value]
     if missing:
         raise SystemExit(f"anim rig: {', '.join(missing)} required (or --list)")
+    check_direction("anim rig", yaw=args.yaw, elevation=args.elevation,
+                    mirror=args.mirror)
     job = rig(Path(args.glb), clip=args.clip, action=args.action, slug=args.slug,
               fps=args.fps, mirror=args.mirror, job_name=args.job,
               props=parse_props(args.props), depth=args.depth,
+              yaw=args.yaw, elevation=args.elevation,
               cell=(args.width, args.height))
     manifest = job.read_manifest()
     src = manifest["motion_source"]
     print(f"rig: {manifest['frames']} frame(s) at {manifest['fps']} fps from "
           f"{src['pack']} / {src['clip']} ({src['clip_duration']} s) -> {job.root}")
     print(f"  facing {src['forward']}{' (mirrored)' if src['mirror'] else ''}, "
+          f"direction {src['direction']} (yaw {src['yaw']}, {src['elevation']}), "
           f"scale {src['scale_px_per_unit']} px/unit, map {src['rig_map']}")
     print(f"  {manifest['pose']['detected']} skeleton(s) at "
           f"{manifest['pose']['cell'][0]}x{manifest['pose']['cell'][1]} -> "

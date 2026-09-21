@@ -684,3 +684,192 @@ def test_props_only_depth_on_a_bare_unit_draws_nothing(ual):
     dc = rigkit.clip_depth(ual, "Idle_Loop", fps=12, cell=CELL,
                            frame=rigkit.reference_frame(ual), mode="props", times=[0.0])
     assert dc.frames()[0].max() == 0
+
+
+# ---------------------------------------------------------------------------
+# Direction - the camera direction feature
+# ---------------------------------------------------------------------------
+from anim import config  # noqa: E402
+
+TWO_BONES = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 1.0]])   # foot at the origin, toes forward
+FORWARD_Z = np.array([0.0, 0.0, 1.0])
+
+
+def _profile(yaw: int = 0, elevation: str = "side") -> rigkit.Projection:
+    return rigkit.Projection(forward=FORWARD_Z, floor_y=0.0, scale=100.0,
+                             cell=CELL, baseline=300.0, yaw=yaw, elevation=elevation)
+
+
+def test_the_direction_table_is_two_pitches_by_eight_facings():
+    assert len(config.DIRECTIONS) == 16
+    assert list(config.DIRECTIONS)[:8] == ["s0", "s45", "s90", "s135", "s180", "s225", "s270", "s315"]
+    assert list(config.DIRECTIONS)[8:] == ["t0", "t45", "t90", "t135", "t180", "t225", "t270", "t315"]
+    assert config.DEFAULT_DIRECTION == "s0"
+
+
+@pytest.mark.parametrize("name", list(config.DIRECTIONS))
+def test_a_direction_round_trips_through_its_name(name):
+    yaw, elevation = config.direction(name)
+    assert config.direction_name(yaw, elevation) == name
+    assert config.is_default_direction(yaw, elevation) == (name == "s0")
+
+
+def test_a_yaw_off_the_table_is_refused_with_the_table():
+    with pytest.raises(ValueError, match="45-degree"):
+        config.direction_name(30)
+    with pytest.raises(ValueError, match="elevation"):
+        config.direction_name(0, "front")
+    with pytest.raises(ValueError, match="unknown direction"):
+        config.direction("x0")
+    with pytest.raises(ValueError, match="45-degree"):
+        rigkit.Projection(forward=FORWARD_Z, floor_y=0.0, scale=1.0, cell=CELL,
+                          baseline=1.0, yaw=30)
+
+
+def test_the_default_cell_is_the_profile_basis_to_the_bit():
+    """Yaw 0 / side projects through exactly the axes the profile always used:
+    forward, world up, forward x up - so an old job's bytes cannot move."""
+    proj = _profile()
+    assert proj.direction == "s0"
+    assert np.array_equal(proj.rotation[0], FORWARD_Z)
+    assert np.array_equal(proj.rotation[1], [0.0, 1.0, 0.0])
+    assert np.array_equal(proj.rotation[2], np.cross(FORWARD_Z, [0.0, 1.0, 0.0]))
+    assert np.array_equal(proj.near, np.cross(FORWARD_Z, [0.0, 1.0, 0.0]))
+
+
+def test_yaw_180_is_the_profile_reflected_about_the_cell_centre():
+    a = _profile(0).to_2d(TWO_BONES)
+    b = _profile(180).to_2d(TWO_BONES)
+    assert a[:, 0] + b[:, 0] == pytest.approx([CELL[0], CELL[0]], abs=1e-9)
+    assert a[:, 1] == pytest.approx(b[:, 1])
+    # And the same picture `mirror` makes: the reflected profile.
+    mirrored = rigkit.Projection(forward=-FORWARD_Z, floor_y=0.0, scale=100.0,
+                                 cell=CELL, baseline=300.0).to_2d(TWO_BONES)
+    assert b == pytest.approx(mirrored, abs=1e-9)
+    assert _profile(180).depth_of(TWO_BONES) == pytest.approx(-_profile(0).depth_of(TWO_BONES))
+
+
+def test_yaw_90_puts_the_two_joints_on_one_column_facing_away():
+    xy = _profile(90).to_2d(TWO_BONES)
+    assert xy[0, 0] == pytest.approx(xy[1, 0]) == pytest.approx(CELL[0] / 2)
+    assert xy[:, 1] == pytest.approx([300.0, 300.0]), "both on the floor"
+    depth = _profile(90).depth_of(TWO_BONES)
+    assert depth[1] < depth[0], "the toes point away from the viewer: the back view"
+    front = _profile(270).depth_of(TWO_BONES)
+    assert front[1] > front[0], "yaw 270 faces the viewer"
+
+
+def test_yaw_45_foreshortens_by_cos_45():
+    xy = _profile(45).to_2d(TWO_BONES, anchor=np.zeros(3))
+    assert xy[1, 0] - xy[0, 0] == pytest.approx(100.0 * math.cos(math.radians(45)))
+
+
+def test_the_top_view_puts_the_head_over_the_root_and_nearest():
+    root_and_head = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    top = _profile(0, "top")
+    xy = top.to_2d(root_and_head)
+    assert xy[0] == pytest.approx(xy[1]), "one point from above"
+    assert xy[0] == pytest.approx([CELL[0] / 2, CELL[1] / 2]), "centred, no floor row"
+    depth = top.depth_of(root_and_head)
+    assert depth[1] > depth[0], "the head is the nearest surface"
+    assert top.near == pytest.approx([0.0, 1.0, 0.0])
+
+
+def test_the_top_view_has_the_characters_left_up_screen():
+    """Facing east (yaw 0), the left hand is to the north; at t90 (facing
+    up-screen) it is to the west; at t270 (facing the viewer) to the east."""
+    left = np.cross([0.0, 1.0, 0.0], FORWARD_Z)             # the character's LEFT
+    pts = np.stack([np.zeros(3), left])
+    for yaw, expect_dx, expect_dy in ((0, 0.0, -100.0), (90, -100.0, 0.0),
+                                      (180, 0.0, 100.0), (270, 100.0, 0.0)):
+        xy = _profile(yaw, "top").to_2d(pts, anchor=np.zeros(3))
+        assert xy[1] - xy[0] == pytest.approx([expect_dx, expect_dy], abs=1e-9), yaw
+
+
+def test_the_anchor_is_the_point_the_extent_would_centre_on():
+    for yaw in (0, 45, 90, 135):
+        for elevation in ("side", "top"):
+            proj = _profile(yaw, elevation)
+            pts = np.array([[0.3, 0.2, -0.4], [1.0, 0.9, 0.5], [-0.2, 0.1, 0.8]])
+            anchored = proj.to_2d(pts, anchor=proj.anchor_for(pts))
+            assert anchored == pytest.approx(proj.to_2d(pts)), (yaw, elevation)
+
+
+def test_mirror_is_refused_with_any_other_cell(knight):
+    with pytest.raises(ValueError, match="--yaw 180"):
+        rigkit.reference_frame(knight, mirror=True, yaw=180)
+    with pytest.raises(ValueError, match="mirror"):
+        rigkit.reference_frame(knight, mirror=True, elevation="top")
+    assert rigkit.reference_frame(knight, mirror=True).mirror is True, "alone it still works"
+
+
+@pytest.mark.parametrize("name", list(config.DIRECTIONS))
+def test_every_cell_keeps_the_rigs_scale_and_floor_row(knight, name):
+    yaw, elevation = config.direction(name)
+    plain = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL)
+    kp = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL, yaw=yaw, elevation=elevation)
+    assert kp["motion"]["direction"] == name
+    assert (kp["motion"]["yaw"], kp["motion"]["elevation"]) == (yaw, elevation)
+    assert kp["motion"]["scale_px_per_unit"] == plain["motion"]["scale_px_per_unit"]
+    assert kp["motion"]["baseline_row"] == plain["motion"]["baseline_row"]
+    assert kp["motion"]["floor_y"] == plain["motion"]["floor_y"]
+    assert kp["motion"]["forward"] == plain["motion"]["forward"], "the true facing is recorded, not the view"
+    if elevation == "side":
+        # The floor is absolute in every profile: the ankles sit where s0 puts them.
+        for joint in ("left_ankle", "right_ankle"):
+            i = kp["names"].index(joint)
+            assert kp["frames"][0]["keypoints"][i][1] == pytest.approx(
+                plain["frames"][0]["keypoints"][i][1], abs=0.02)
+
+
+def test_the_knights_yaw_180_is_its_mirror(knight):
+    turned = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL, yaw=180)
+    mirrored = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL, mirror=True)
+    for a, b in zip(turned["frames"], mirrored["frames"]):
+        assert np.asarray(a["keypoints"]) == pytest.approx(np.asarray(b["keypoints"]), abs=0.02)
+
+
+@pytest.mark.parametrize("clip", ["Idle", "1H_Melee_Attack_Chop", "Death_A", "Lie_Down"])
+@pytest.mark.parametrize("name", ["s45", "s90", "s270", "t0", "t90", "t225", "t270"])
+def test_every_joint_stays_inside_the_cell_in_every_direction(knight, clip, name):
+    """The top view centres both axes, so a body lying full-length at t270
+    fits just as it does in profile - rtmlib drops any edge-touching limb."""
+    yaw, elevation = config.direction(name)
+    frame = rigkit.reference_frame(knight, yaw=yaw, elevation=elevation, props=("sword", "shield"))
+    kp = rigkit.clip_keypoints(knight, clip, fps=12, cell=CELL, frame=frame)
+    for entry in kp["frames"]:
+        for x, y in entry["keypoints"]:
+            assert 1 < x < CELL[0] - 1 and 1 < y < CELL[1] - 1, (clip, name, entry["index"], x, y)
+
+
+def test_the_top_views_depth_range_is_the_standing_height_whatever_the_yaw(knight):
+    """From above the depth axis is world up, so the range is the clip's
+    vertical extent and identical in all eight top cells."""
+    ranges = set()
+    for yaw in config.DIRECTION_YAWS:
+        frame = rigkit.reference_frame(knight, yaw=yaw, elevation="top")
+        dc = rigkit.clip_depth(knight, "Idle", fps=12, cell=CELL, frame=frame, times=[0.0])
+        ranges.add((round(dc.far, 4), round(dc.near, 4)))
+        grey = dc.frames()[0]
+        assert grey.max() == 255 and (grey > 0).any()
+    assert len(ranges) == 1, ranges
+    far, near = ranges.pop()
+    # The skinned body only: the Knight's static helmet is not rendered, so
+    # the span is a little under the rest-pose mesh height.
+    assert 0.8 * frame.height < near - far <= frame.height + 0.05, "floor to the top of the body"
+
+
+def test_the_shield_is_the_far_hand_in_profile_and_the_near_hand_turned_round(ual):
+    """The viewer stands on the right at s0; at s180 on the left, so the
+    shield hand is nearer. Depth and skeleton go through one rotation."""
+    hand_r = ual.rest_world()[ual.index("hand_r")][:3, 3][None]
+    hand_l = ual.rest_world()[ual.index("hand_l")][:3, 3][None]
+    for yaw, nearer in ((0, "r"), (180, "l"), (270, None)):
+        proj = rigkit.Projection.for_rig(rigkit.reference_frame(ual, yaw=yaw), CELL)
+        r, l = proj.depth_of(hand_r)[0], proj.depth_of(hand_l)[0]
+        if nearer == "r":
+            assert r > l
+        elif nearer == "l":
+            assert l > r
+        else:
+            assert r == pytest.approx(l, abs=0.02), "facing the viewer, both hands level"

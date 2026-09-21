@@ -26,6 +26,9 @@ which takes one sampled frame of a clip, projected at the portrait cell with
 the same facing detection and per-rig scale `anim rig` uses, so the standing
 sprite and every action strip of that unit come from one skeleton at one scale.
 `job.json` then carries the rig as `motion_source`, exactly as `anim rig` does.
+`--yaw` / `--elevation` (the camera direction feature) view the rig from any
+cell of `config.DIRECTIONS`; the job is then `<slug>_base_<direction>`, so the
+default `<slug>_base` stays the s0 standing sprite every later stage looks for.
 
 It then re-uses the same `post` and `publish` chain, with `contract.frames`
 [1, 1] and the file named `<slug>.png` instead of `<slug>_<action>_<n>.png`.
@@ -62,18 +65,22 @@ def stand_payload(path: Path | None = None) -> dict[str, Any]:
 
 def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
                 fps: int | None = None, mirror: bool = False,
-                props: Sequence[str] = (), depth: str | bool = "full"
+                props: Sequence[str] = (), depth: str | bool = "full",
+                yaw: int = config.DEFAULT_YAW,
+                elevation: str = config.DEFAULT_ELEVATION
                 ) -> tuple[dict[str, Any], dict[str, Any], rigkit.DepthClip | None]:
     """One frame of a rig clip as a one-frame keypoints payload, its
     motion_source block, and its depth frame (None for a bare rig or
     `depth="none"`; a `rigkit.DEPTH_MODES` value). Same facing detection,
-    per-rig scale and props as `anim rig`, at the portrait cell."""
+    per-rig scale, props and direction cell as `anim rig`, at the portrait
+    cell."""
     glb = Path(glb)
     fps = fps if fps is not None else config.EXTRACT_FPS
     provenance = rig_stage.rig_provenance(glb)
     loaded = rigkit.load_rig(glb)
     jmap = rigkit.detect_map(loaded.names)
-    ref = rigkit.reference_frame(loaded, jmap, mirror=mirror, props=props)
+    ref = rigkit.reference_frame(loaded, jmap, mirror=mirror, props=props,
+                                 yaw=yaw, elevation=elevation)
     clip_obj = loaded.clip(clip)
     times = rigkit.sample_times(clip_obj.duration, fps)
     if not 0 <= frame < len(times):
@@ -99,6 +106,7 @@ def prepare(slug: str, *, cell: tuple[int, int] | None = None,
             pose_path: Path | None = None, rig: Path | None = None,
             clip: str = "Idle", frame: int = 0, mirror: bool = False,
             props: Sequence[str] | None = None, depth: str | bool = "full",
+            yaw: int = config.DEFAULT_YAW, elevation: str = config.DEFAULT_ELEVATION,
             work_dir: Path | None = None) -> Job:
     """Lay out work/<slug>_base/ so `post` and `publish` can be re-used verbatim.
 
@@ -108,10 +116,18 @@ def prepare(slug: str, *, cell: tuple[int, int] | None = None,
     the same palette snap and verification as every animation frame.
 
     The skeleton is the canned one unless `rig` names a GLB, in which case it is
-    `frame` of `clip` sampled from that rig.
+    `frame` of `clip` sampled from that rig, viewed from the `yaw` / `elevation`
+    cell (the camera direction feature; only a rig can be turned, so the canned
+    skeleton refuses any cell but the default). A non-default cell suffixes the
+    job name: `<slug>_base_<direction>`.
     """
     cell = tuple(cell or config.BASE_CELL)
-    job = Job.open(f"{slug}_base", work_dir)
+    if rig is None and not config.is_default_direction(yaw, elevation):
+        raise ValueError(
+            f"the canned standing skeleton is the {config.DEFAULT_DIRECTION} "
+            f"profile only; a direction ({config.direction_name(yaw, elevation)}) "
+            f"needs --rig")
+    job = Job.open(rig_stage.default_job_name(f"{slug}_base", yaw, elevation), work_dir)
     job.pose_dir.mkdir(parents=True, exist_ok=True)
     job.strip_dir.mkdir(parents=True, exist_ok=True)
 
@@ -121,7 +137,7 @@ def prepare(slug: str, *, cell: tuple[int, int] | None = None,
         props = config.props_for_unit(slug) if props is None else tuple(props)
         payload, source, depth_clip = rig_payload(
             Path(rig), clip=clip, frame=frame, cell=cell, mirror=mirror,
-            props=props, depth=depth)
+            props=props, depth=depth, yaw=yaw, elevation=elevation)
     else:
         payload = stand_payload(pose_path)
     entry = payload["frames"][0]
@@ -232,9 +248,10 @@ def base(slug: str, *, prompt: str | None = None, seed: int | None = None,
          rig: Path | None = None, clip: str = "Idle", frame: int = 0,
          mirror: bool = False, props: Sequence[str] | None = None,
          parts: bool | None = None,
+         yaw: int = config.DEFAULT_YAW, elevation: str = config.DEFAULT_ELEVATION,
          work_dir: Path | None = None) -> dict[str, Any]:
     job = prepare(slug, rig=rig, clip=clip, frame=frame, mirror=mirror,
-                  props=props, work_dir=work_dir)
+                  props=props, yaw=yaw, elevation=elevation, work_dir=work_dir)
     render_base(job, prompt=prompt, seed=seed, strength=strength, client=client)
     # `parts` on a base job EXTRACTS the unit's part palettes (there is no
     # action to lock to); publish then carries them in the sprite's sidecar.
@@ -274,6 +291,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--props", default=None,
                         help="props drawn onto the rig skeleton (see anim rig "
                              "--props); default: the unit's kit")
+    rig_stage.add_direction_arguments(parser)
     parser.add_argument("--parts", dest="parts", action="store_true",
                         default=None,
                         help="extract the unit's part palettes from the "
@@ -284,9 +302,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def run_stage(args: argparse.Namespace) -> int:
     rig_path = Path(args.rig) if args.rig else None
+    rig_stage.check_direction("anim base", yaw=args.yaw, elevation=args.elevation,
+                              mirror=args.mirror)
+    if rig_path is None and not config.is_default_direction(args.yaw, args.elevation):
+        raise SystemExit("anim base: --yaw/--elevation need --rig; the canned "
+                         "standing skeleton is the s0 profile only")
     if args.skeleton_only:
         job = prepare(args.slug, rig=rig_path, clip=args.clip, frame=args.frame,
-                      mirror=args.mirror, props=rig_stage.parse_props(args.props))
+                      mirror=args.mirror, props=rig_stage.parse_props(args.props),
+                      yaw=args.yaw, elevation=args.elevation)
         what = (f"{job.read_manifest()['clip']}" if rig_path
                 else "canned standing skeleton")
         print(f"base: {what} -> {job.strip_dir / 'skeleton_strip.png'}")
@@ -298,7 +322,8 @@ def run_stage(args: argparse.Namespace) -> int:
                   client=client, run_audit=args.audit,
                   use_pixelfixer=args.pixelfixer, rig=rig_path, clip=args.clip,
                   frame=args.frame, mirror=args.mirror,
-                  props=rig_stage.parse_props(args.props), parts=args.parts)
+                  props=rig_stage.parse_props(args.props), parts=args.parts,
+                  yaw=args.yaw, elevation=args.elevation)
     print(f"base: wrote {', '.join(result['frames'])} + {result['sidecar']} "
           f"to {result['dir']}")
     return 0

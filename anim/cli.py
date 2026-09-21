@@ -36,6 +36,7 @@ stage order:
 the usual one-liners:
   anim run capture/knight_strike.mp4 --unit knight --action strike
   anim rig rigs/kaykit-adventurers/Knight.glb --clip Hit_A --unit knight --action hit
+  anim rig ... --yaw 270 --elevation top     # any of the 16 cells (rig and base only)
 
 where things live (override with the env vars in anim/config.py):
   capture/   filmed clips, dropped in by the owner

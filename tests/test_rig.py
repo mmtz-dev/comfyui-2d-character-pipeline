@@ -427,3 +427,116 @@ def test_the_depth_mode_flag_and_its_alias():
     assert parser.parse_args(["x.glb", "--no-depth"]).depth == "none"
     with pytest.raises(SystemExit):
         parser.parse_args(["x.glb", "--depth", "halberd"])
+
+
+# ---------------------------------------------------------------------------
+# Direction - the camera direction feature
+# ---------------------------------------------------------------------------
+def test_the_default_cell_keeps_the_job_name_and_records_s0(hit_job):
+    assert hit_job.name == "knight_hit"
+    src = hit_job.read_manifest()["motion_source"]
+    assert (src["direction"], src["yaw"], src["elevation"]) == ("s0", 0, "side")
+
+
+def test_a_direction_suffixes_the_job_name_and_writes_every_output(knight_glb, work_dir):
+    """End to end on the vendored Knight for one non-default cell: the same
+    layout `extract` + `pose` leave, plus depth, with the cell in job.json."""
+    job = rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight",
+                        yaw=270, elevation="top", work_dir=work_dir)
+    assert job.name == "knight_hit_t270"
+    manifest = job.read_manifest()
+    src = manifest["motion_source"]
+    assert (src["direction"], src["yaw"], src["elevation"]) == ("t270", 270, "top")
+    assert src["mirror"] is False
+    assert src["forward"] == pytest.approx([0, 0, 1], abs=1e-3), "the rig's own facing, not the view"
+    assert manifest["frames"] == 9 == len(job.frames()) == len(job.skeletons()) == len(job.depths())
+    payload = json.loads(job.keypoints_path.read_text())
+    assert payload["motion"]["direction"] == "t270"
+    plain = rig_stage.rig(knight_glb, clip="Hit_A", action="hit", slug="knight",
+                          work_dir=work_dir)
+    assert src["scale_px_per_unit"] == plain.read_manifest()["motion_source"]["scale_px_per_unit"]
+    with Image.open(job.depths()[0]) as img:
+        assert img.mode == "L" and img.size == tuple(config.STRIP_CELL)
+        assert np.asarray(img).max() == 255, "the head is the nearest surface, and drawn"
+    with Image.open(job.frames_dir / "0001.png") as img:
+        # No floor line through a top-down figure: the preview's floor row is the ground colour.
+        row = int(payload["motion"]["baseline_row"])
+        assert img.getpixel((2, row)) == rig_stage.PREVIEW_BG
+    # The stages after it cannot tell: pick runs unchanged.
+    record = pick_stage.pick(job.name, work_dir=work_dir)
+    assert len(record["picks"]) == 2
+
+
+def test_an_explicit_job_name_is_not_suffixed(knight_glb, work_dir):
+    job = rig_stage.rig(knight_glb, clip="Idle", action="idle", slug="knight",
+                        yaw=90, job_name="turnaround_n", work_dir=work_dir)
+    assert job.name == "turnaround_n"
+    assert job.read_manifest()["motion_source"]["direction"] == "s90"
+
+
+def test_default_job_names_are_untouched_in_the_default_cell():
+    assert rig_stage.default_job_name("knight_hit") == "knight_hit"
+    assert rig_stage.default_job_name("knight_hit", 0, "side") == "knight_hit"
+    assert rig_stage.default_job_name("knight_hit", 45) == "knight_hit_s45"
+    assert rig_stage.default_job_name("knight_base", 0, "top") == "knight_base_t0"
+
+
+def test_the_cli_refuses_a_yaw_off_the_table_and_mirror_with_a_direction(capsys):
+    import argparse
+    parser = argparse.ArgumentParser(prog="anim rig")
+    rig_stage.add_arguments(parser)
+    args = parser.parse_args(["x.glb", "--yaw", "315", "--elevation", "top"])
+    assert (args.yaw, args.elevation) == (315, "top")
+    assert (parser.parse_args(["x.glb"]).yaw, parser.parse_args(["x.glb"]).elevation) == (0, "side")
+    with pytest.raises(SystemExit):
+        parser.parse_args(["x.glb", "--yaw", "30"])
+    assert "315" in capsys.readouterr().err
+    with pytest.raises(SystemExit):
+        parser.parse_args(["x.glb", "--elevation", "front"])
+    # mirror + a direction is refused before the rig is even opened (x.glb does not exist).
+    with pytest.raises(SystemExit, match="--yaw 180"):
+        rig_stage.run_stage(parser.parse_args(
+            ["x.glb", "--clip", "Idle", "--unit", "knight", "--action", "idle",
+             "--mirror", "--yaw", "180"]))
+    with pytest.raises(SystemExit, match="mirror"):
+        rig_stage.run_stage(parser.parse_args(
+            ["x.glb", "--clip", "Idle", "--unit", "knight", "--action", "idle",
+             "--mirror", "--elevation", "top"]))
+    assert rig_stage.check_direction("anim rig", yaw=0, elevation="side", mirror=True) == "s0"
+
+
+def test_mirror_alone_still_works_and_is_refused_with_a_cell_in_the_library(knight_glb, work_dir):
+    job = rig_stage.rig(knight_glb, clip="Idle", action="idle", slug="knight",
+                        mirror=True, work_dir=work_dir)
+    assert job.read_manifest()["motion_source"]["mirror"] is True
+    with pytest.raises(ValueError, match="mirror"):
+        rig_stage.rig(knight_glb, clip="Idle", action="idle", slug="knight",
+                      mirror=True, yaw=45, work_dir=work_dir)
+
+
+def test_base_takes_a_direction_and_suffixes_its_job(knight_glb, work_dir):
+    job = base_stage.prepare("knight", rig=knight_glb, clip="Idle", frame=0,
+                             yaw=270, work_dir=work_dir)
+    assert job.name == "knight_base_s270"
+    src = job.read_manifest()["motion_source"]
+    assert (src["direction"], src["yaw"], src["elevation"]) == ("s270", 270, "side")
+    assert [p.name for p in job.depths()] == ["0001.png"]
+    payload = json.loads(job.keypoints_path.read_text())
+    names, pts = payload["names"], payload["frames"][0]["keypoints"]
+    # Facing the viewer: the two shoulders straddle the neck, right shoulder on the viewer's left.
+    assert pts[names.index("right_shoulder")][0] < pts[names.index("neck")][0] < pts[names.index("left_shoulder")][0]
+    plain = base_stage.prepare("knight", rig=knight_glb, clip="Idle", frame=0, work_dir=work_dir)
+    assert plain.name == "knight_base", "the s0 base keeps the name the later stages look for"
+
+
+def test_the_canned_base_has_no_direction_to_turn(work_dir):
+    with pytest.raises(ValueError, match="needs --rig"):
+        base_stage.prepare("knight", yaw=90, work_dir=work_dir)
+    import argparse
+    parser = argparse.ArgumentParser(prog="anim base")
+    base_stage.add_arguments(parser)
+    with pytest.raises(SystemExit, match="need --rig"):
+        base_stage.run_stage(parser.parse_args(["--unit", "knight", "--yaw", "90", "--skeleton-only"]))
+    with pytest.raises(SystemExit, match="mirror"):
+        base_stage.run_stage(parser.parse_args(
+            ["--unit", "knight", "--rig", "x.glb", "--mirror", "--yaw", "180", "--skeleton-only"]))

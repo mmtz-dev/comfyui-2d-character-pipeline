@@ -4,6 +4,73 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-20 — the camera direction feature: `--yaw` / `--elevation`, the rig rotated before projection
+
+**What.** `anim rig` and `anim base` take `--yaw {0,45,…,315}` and `--elevation {side,top}`
+— [#272](http://192.168.1.158:8700/work_packages/272), the first feature of the sprite studio
+epic. The posed joints, the skinned mesh and the prop geometry are rotated into the chosen
+view *before* the existing orthographic projection, so all sixteen cells come out with a
+skeleton PNG, keypoints and a depth frame from the same code — no new model, no new stage,
+nothing after `rig` knows which cell a job is. This is what lets the turnaround (#275) and
+the action matrix (#278) render 8 side + 8 top-down facings from one set of rig clips.
+393 passed / 4 skipped (was 312 / 4).
+
+**Where.** The table is `config.DIRECTIONS` (two pitches × eight facings, cells `s0…s315`,
+`t0…t315`, with `direction_name()` / `direction()` to go each way); the rotation is
+`rigkit.direction_rotation` feeding `rigkit.Projection.rotation`, a 3×3 whose rows are the
+view's right / up / near axes in world space, applied inside `Projection.view()` — the one
+place every point (joint, vertex, prop outline) passes through on its way to `to_2d` and
+`depth_of`. Yaw is the figure's turn about its own up axis, counter-clockwise seen from above,
+so the compass reads the same in both pitches and matches a top-down game's eight directions:
+0 faces screen right (the party rule), 90 away (north), 180 left, 270 the viewer (south).
+`top` pitches the camera straight down about screen x, leaving the figure's yaw-0 left side
+up-screen — a knight facing east has its shield to the north — and makes world up the depth
+axis, so the head is the nearest surface.
+
+**Byte-identical by construction, then checked.** The default cell builds exactly the basis
+the profile always used (forward, world up, forward × up) and the side elevation reads screen
+up straight from `y` rather than through a dot product, so no ulp can move. Verified: six jobs
+(Knight hit / chop / death / mirrored idle / base, Quaternius strike) produced with the
+pre-change code and with this one — every PNG identical, the JSON different only by the three
+new keys. Existing job names are untouched; a non-default cell suffixes the default name
+(`knight_strike_t270`, `knight_base_s270`) so sixteen views of one action never overwrite
+each other, and the s0 base keeps the `<slug>_base` name `clip` and `post --parts` look for.
+`job.json.motion_source` gains `direction`, `yaw`, `elevation` next to `mirror` and the rig's
+true `forward`.
+
+**The top-down pivot rule — decided, with the alternative.** The scale is the rig's one scale
+in every cell, and `side` keeps its rule unchanged (absolute floor row, x centred per frame on
+the joints' extent). For `top` I chose: **both screen axes are ground axes, so both get the
+ground rule** — centred on the joints' extent in x *and* y, pivot at the cell's centre. Two
+reasons. One rule for every yaw: a lunge is centred at t0 (it runs along x) and would have
+*translated* at t90 (along y) under any absolute anchoring, so the token's motion would depend
+on the cell. And it fits: a body lying full-length (`Death_A`, `Lie_Down`) spans ~250 px of a
+320 px cell and is centred in every cell — tested for seven cells × four clips, every joint
+inside the rtmlib edge margin. The alternative the brief suggested — anchor the posed
+hips/root on a row set by the feet's rest-pose footprint, so a standing figure's near foot
+sits on the floor row like the profile's does — gives a stabler root for upright clips but
+puts a fallen body at t270 through the bottom edge, and the row it stabilises is discarded
+anyway: `post` trims each frame to its opaque box and bottom-centres it in the 64 px canvas.
+If the turnaround gate wants the root pinned for the idle stills, it is a per-clip row
+shift in `Projection`, not a redesign.
+
+**The mirror decision.** `--yaw 180` *is* the flipped profile (the reflection of a profile is
+the other profile — tested equal to `--mirror` on the Knight to 0.02 px), so `--mirror` stays
+as it was for the default cell and is **refused with any other cell**, at the CLI
+(`SystemExit` before the rig is opened) and in the library (`reference_frame` raises).
+Combining them would say "face left" twice in two vocabularies; one flag per fact.
+
+**Left open, on purpose.** The OpenPose face points are drawn in every cell, nose included on
+the back view, with confidence 1.0 as before — a real DWPose back view would report the nose
+absent. Whether the pose ControlNet wants them hidden is a question for the turnaround gate
+(#275) with real renders, not a geometry decision; the hook is `openpose_points`, which has
+the head's forward vector and the view's near axis to hand. The top-down *skeleton* is, as
+expected, a poor ControlNet image (an OpenPose figure seen from above is a T of limbs); the
+top-down *depth* frame is the usable channel, which is why the top pitch is a later milestone
+(#285) that rides the clip route.
+
+---
+
 ## 2026-09-20 — the sprite studio feature: grilled, filed, the tree landed, no code
 
 **What.** The owner asked for a new animation pipeline — a web pixel editor in the class of
