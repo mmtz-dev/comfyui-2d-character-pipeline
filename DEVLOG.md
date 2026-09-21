@@ -4,6 +4,66 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-20 — the sprite studio feature: grilled, filed, the tree landed, no code
+
+**What.** The owner asked for a new animation pipeline — a web pixel editor in the class of
+LibreSprite / Piskel / PixelLab / Spritix / Spritely / Sorceress, with open models on the local
+GPU behind it: base character → 8 side + 8 top-down facings → idle / walk / run / jump /
+attack → 12 fps keyframe phases (start → wind-up → action → wind-down → end → loop) → curated,
+palette-snapped sheets. A 27-question grilling session settled the design; it is written up
+as `games-design-wiki/shared/sprite-studio.md` and filed as the new OpenProject project
+**Sprite Studio** — epic [#271](http://192.168.1.158:8700/work_packages/271), features
+#272–#287 — with `TODO.md` in this repo now generated from it (`09-export-todos.sh` maps
+`tools/anim-pipeline:sprite-studio`; the pre-commit guard is installed here too). Nothing in
+`anim/` changed.
+
+**The reuse question, answered with two reports.** A pros/cons pass on this repo said "fresh
+project, vendor the four proven pieces" — the job model is game-02-shaped (fixed 64×64,
+`publish` shells into `asset_audit.py`), the tree was mid-rewrite, and the editor is new work
+either way. A plan pass (Plan A extend vs Plan B fresh) said "extend" — the rig → clip → post
+route is the only thing that actually answers *directions and actions* (rotate the rig before
+projection and every view comes with skeleton + depth for free), and Plan B would rebuild ~8
+of 15 features that exist and are tested, then rediscover the rig route because text-prompted
+i2v gives no action or prop constancy (2026-09-16 research). **The owner chose Plan A
+outright.** The pros/cons objections are met at the boundary instead: a generic export
+contract with today's `publish` as the game-02 adapter, a FastAPI layer over `work/` that
+retires the :8710 review server, and a project-level frame size.
+
+**Landed to start clean.** The four stale `Repos/Game-Dev` paths committed (`8a3c619`); the
+`feat/clip-render`, `feat/part-palette-lock` and `feat/rig-props` worktrees and branches
+removed — all three were fully merged at `5ed567d`, zero commits ahead, clean; new branch
+`feat/sprite-studio` off `feat/anim-pipeline`.
+
+**Decisions that touch this repo directly.**
+
+- The editor is the shell: a fork of **Piskel** (MIT) in a Vite + TypeScript shell under
+  `web/`, served by a FastAPI service on **:8720** (Docker Desktop). Jobs stay file-based in
+  `work/<job>/`; GPU jobs only on an explicit request, one at a time. The ComfyUI container
+  stays the only GPU service.
+- **The KayKit/Quaternius ruling stays open** and closes in the frame route bake-off feature
+  (#274): knight × attack through rig → Wan video *and* keyframe stills → tween, both rigs,
+  judged on a side-by-side page plus the part-colour drift table. The Wan-side pixel LoRA
+  question is decided there too — both candidates found target the 14B i2v, not the 5B
+  Fun-Control in `gpu/`.
+- Pixel-art LoRA for the base character: **tarn59/pixel_art_style_lora_z_image_turbo**
+  (Apache-2.0, ~162 MB), the owner's pick from
+  `docs/research/2026-09-20-pixel-art-loras.md`. It goes into `gpu/models.lock` with the
+  character concept feature (#273). The `prithivMLmods` Qwen LoRA row's hash mismatch was
+  re-checked live: an upstream HF metadata bug (the file is valid, 1,179,885,016 bytes); it
+  stays parked.
+- Frame budget cap 12 at 12 fps — idle 6 · walk 8 · run 8 · jump 10 · attack 12 — replaces
+  the "2–6 key poses per action" contract for studio output; `pick` gains phase templates
+  (#276). Exaggeration (squash/stretch, smears, secondary) is applied on the rig before
+  projection (#277), after the bake-off and before the 80-cell matrix (#278).
+- v1 exit: **the knight**, side view, 8 × 5, imported and playing in game-02. Top-down,
+  video intake and sheet slicing are a later milestone (#285–#287).
+
+**Why no code today.** The order is camera → concept → bake-off → turnaround; the bake-off
+decides the route and the rig before anything is built on top of either, so the first code
+is the yaw/elevation rotation in `rigkit.py` (#272) — geometry on existing tests, not a bet.
+
+---
+
 ## 2026-09-17 — the second gate: strike / hit / death through the clip route, three control variants
 
 **What.** The three features merged (`5ed567d`, 312 passed / 4 skipped) and run end to end

@@ -14,6 +14,18 @@
 > Fork: <https://github.com/mmtz-dev/comfyui-2d-character-pipeline> ·
 > upstream tracked as the `upstream` git remote.
 
+## Where this is going — the sprite studio feature (decided 2026-09-20)
+
+This repo is becoming the engine of **the sprite studio**: a web pixel editor (a fork of
+Piskel in a Vite + TypeScript shell, served by a FastAPI service on `:8720`) with this
+pipeline as a panel inside it — text or sketch → base character → 8 side + 8 top-down
+facings → idle / walk / run / jump / attack → 12 fps keyframe phases → curated,
+palette-snapped sheets + Godot `SpriteFrames`. The rig → clip → post stages below stay the
+engine and stay runnable headless; the `review` page on `:8710` is retired once the API
+lands. Design: `games-design-wiki/shared/sprite-studio.md`. Work: the OpenProject project
+[Sprite Studio](http://192.168.1.158:8700/projects/sprite-studio), printed into
+[`TODO.md`](TODO.md) (generated — do not edit). Branch: `feat/sprite-studio`.
+
 ## What this fork is for
 
 **The pose-to-pixel animation pipeline feature** for `game-02-tactical-rpg`: film a
