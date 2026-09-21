@@ -26,14 +26,6 @@ The animation-principle transforms, applied where the pipeline can actually appl
 
 anim matrix <unit>: every (action × direction) cell through the chosen route, resumable, one seed per unit.
 
-### the curation board feature · [#281](http://192.168.1.158:8700/work_packages/281)
-
-Where the human says yes or no. An (action × direction) grid of frame strips with accept / reject / regenerate-with-new-seed per frame, writing…
-
-### the spritesheet export feature · [#283](http://192.168.1.158:8700/work_packages/283)
-
-The generic export contract, with game-02 as an adapter (Q17).
-
 ### the sprite studio docs feature · [#284](http://192.168.1.158:8700/work_packages/284)
 
 The design doc, the repo docs and the work packages kept true to the code.
@@ -56,11 +48,13 @@ Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid
 
 ## manual test: the frame route bake-off feature · [#290](http://192.168.1.158:8700/work_packages/290)
 
-## manual test: the web pixel editor feature · [#293](http://192.168.1.158:8700/work_packages/293)
-
 ## manual test: the palette feature · [#294](http://192.168.1.158:8700/work_packages/294)
+
+## manual test: the curation board feature · [#295](http://192.168.1.158:8700/work_packages/295)
+
+## manual test: the spritesheet export feature · [#296](http://192.168.1.158:8700/work_packages/296)
 
 ---
 
-*15 open · 9 closed. Counts and contents come straight from
+*14 open · 12 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
