@@ -654,14 +654,22 @@ POSE_KPT_THR = float(os.environ.get("ANIM_POSE_KPT_THR", "0.4"))
 PICK_DEDUP = float(os.environ.get("ANIM_PICK_DEDUP", "0.12"))
 
 # ---------------------------------------------------------------------------
-# The review page
+# The pipeline API feature - FastAPI over work/, on the LAN
 # ---------------------------------------------------------------------------
-# LAN port for the click-to-pick page. 8710 was free on 2026-09-13 and is not in
-# the host's port table (8700 openproject, 8770 research-digest, 8787 bg3-wiki
-# are the neighbours). Change here, not in the stage - and update compose.yml's
-# published port to match.
-REVIEW_PORT = int(os.environ.get("ANIM_REVIEW_PORT", "8710"))
+# LAN port for the API (and the pages it serves). 8720 is the sprite studio's
+# port (sprite-studio.md S2 "Build base"); it was free on 2026-09-21 (`ss -ltn`:
+# the neighbours are 8700 openproject, 8770 research-digest, 8787 bg3-wiki). It
+# replaces the review page's 8710. Change here, not in the app - and update
+# compose.yml's published port to match.
+API_PORT = int(os.environ.get("ANIM_API_PORT", "8720"))
 # Bind every interface: the owner opens this from the Mac, not from this host.
-REVIEW_BIND = os.environ.get("ANIM_REVIEW_BIND", "0.0.0.0")
+API_BIND = os.environ.get("ANIM_API_BIND", "0.0.0.0")
+# CPU stages the API will run at the same time. Small on purpose: `pose` and
+# `post` each want every core, and two of them at once are slower than one
+# after the other. GPU stages are never concurrent - see anim.api.runs.
+API_CPU_SLOTS = int(os.environ.get("ANIM_API_CPU_SLOTS", "2"))
+# The built editor (the web pixel editor feature) is served from here when it
+# exists; until then the API serves its own minimal jobs + review pages.
+WEB_DIST = Path(os.environ.get("ANIM_WEB_DIST", "/work/web/dist"))
 # Only ever used to PRINT a URL the owner can click.
 LAN_HOST = os.environ.get("ANIM_LAN_HOST", "192.168.1.158")

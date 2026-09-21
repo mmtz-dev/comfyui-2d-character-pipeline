@@ -13,10 +13,9 @@ re-running `anim run` later picks up from the files it left behind. The stage
 says exactly which two commands are missing and exits 0. `--require-gpu` turns
 that into a failure, for a caller that wants to know.
 
-`review` IS NOT IN THE CHAIN. It is a server the owner reads and clicks, not a
-step that finishes on its own; auto-starting it would either block the run
-forever or serve a page nobody opened. The URL is printed instead, and re-running
-from `strip` after a click is one command.
+`review` IS NOT IN THE CHAIN. It is a page the owner reads and clicks (served
+by the pipeline API on :8720), not a step that finishes on its own. The URL is
+printed instead, and re-running from `strip` after a click is one command.
 """
 
 from __future__ import annotations
@@ -78,7 +77,7 @@ def run_stage(args: argparse.Namespace) -> int:
     size = layout["strip"]["size"]
     print(f"[4/7] strip: {size[0]}x{size[1]}")
     print(f"      review these picks at http://{config.LAN_HOST}:"
-          f"{config.REVIEW_PORT}/  (anim review {job.name})")
+          f"{config.API_PORT}/jobs/{job.name}/review  (anim review {job.name})")
 
     client = comfy.ComfyClient(getattr(args, "comfyui_url", None))
     if not client.reachable():

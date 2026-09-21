@@ -1,13 +1,13 @@
-"""`anim review`: the click-to-pick behaviour, and the HTTP skin over it."""
+"""`anim review`: the click-to-pick behaviour. Its HTTP skin is the pipeline
+API now (tests/test_api.py); the command itself only says where the page is."""
 
 from __future__ import annotations
 
 import json
-import threading
-import urllib.error
-import urllib.request
 
 import pytest
+
+from anim import config
 
 from anim.stages import pick as pick_stage
 from anim.stages import review as review_stage
@@ -97,14 +97,6 @@ def test_images_are_served_by_name_and_nothing_else(app):
         app.image("secrets", name)
 
 
-def test_the_page_is_dark_and_pixelated_and_lists_every_frame(app):
-    page = app.page().decode()
-    assert "image-rendering:pixelated" in page.replace(" ", "")
-    assert "#15171c" in page, "dark ground"
-    assert page.count('class="card') == 13
-    assert "Request regenerate" in page
-
-
 def test_a_hand_timing_survives_a_click(app):
     """The strip timing feature: the page rewrites the record it read, so the
     owner's weights are not lost to a pick toggle - and a review started before
@@ -129,64 +121,26 @@ def test_a_review_without_frames_says_to_run_extract(posed_job):
 
 
 # ---------------------------------------------------------------------------
-# The HTTP skin, over a real socket on an ephemeral port. Still no browser.
+# The command: no server any more, just the pointer
 # ---------------------------------------------------------------------------
-@pytest.fixture
-def served(app):
-    server = review_stage.serve(app, "127.0.0.1", 0)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    yield f"http://127.0.0.1:{server.server_address[1]}", app
-    server.shutdown()
-    server.server_close()
-    thread.join(timeout=5)
+def test_the_command_points_at_the_api_and_starts_no_server(posed_job, monkeypatch, capsys):
+    import argparse
+
+    monkeypatch.setattr(config, "WORK_DIR", posed_job.root.parent)
+    assert review_stage.run_stage(argparse.Namespace(job=posed_job.name)) == 0
+    out = capsys.readouterr().out
+    assert review_stage.review_url(posed_job.name) in out
+    assert f":{config.API_PORT}/jobs/{posed_job.name}/review" in out
+    assert "13 frame(s)" in out
+    assert not hasattr(review_stage, "serve"), "the stdlib server is gone"
 
 
-def _post(url, payload):
-    request = urllib.request.Request(
-        url, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(request, timeout=10) as response:
-        return json.loads(response.read())
+def test_the_command_still_answers_for_a_job_with_no_frames(work_dir, monkeypatch, capsys):
+    import argparse
 
+    from anim.job import Job
 
-def test_the_index_page_is_served(served):
-    url, _ = served
-    with urllib.request.urlopen(f"{url}/", timeout=10) as response:
-        assert response.status == 200
-        assert b"anim review" in response.read()
-
-
-def test_a_posted_toggle_changes_picks_json(served):
-    url, app = served
-    spare = next(i for i in range(13) if i not in app.state()["picks"])
-    state = _post(f"{url}/api/toggle", {"frame": spare})
-    assert spare in state["picks"]
-    assert spare in json.loads(app.job.picks_path.read_text())["picks"]
-
-
-def test_a_posted_regenerate_flags_the_job(served):
-    url, app = served
-    assert _post(f"{url}/api/regenerate", {})["rerender_requested"] is True
-
-
-def test_a_bad_toggle_is_a_400_not_a_traceback(served):
-    url, _ = served
-    with pytest.raises(urllib.error.HTTPError) as raised:
-        _post(f"{url}/api/toggle", {"frame": 999})
-    assert raised.value.code == 400
-
-
-def test_an_unknown_path_is_a_404(served):
-    url, _ = served
-    with pytest.raises(urllib.error.HTTPError) as raised:
-        urllib.request.urlopen(f"{url}/nope", timeout=10)
-    assert raised.value.code == 404
-
-
-def test_frames_are_served_over_http(served):
-    url, app = served
-    name = app.state()["frames"][0]["file"]
-    with urllib.request.urlopen(f"{url}/frames/{name}", timeout=10) as response:
-        assert response.headers["Content-Type"] == "image/png"
-        assert response.read().startswith(b"\x89PNG")
+    monkeypatch.setattr(config, "WORK_DIR", work_dir)
+    Job.open("empty", work_dir).write_manifest({"schema": "anim.job/1"})
+    assert review_stage.run_stage(argparse.Namespace(job="empty")) == 0
+    assert "no frames yet" in capsys.readouterr().out

@@ -68,11 +68,15 @@ def test_the_comfyui_url_is_a_global_flag():
     assert args.comfyui_url == "http://example:1234"
 
 
-def test_the_review_port_default_matches_compose(tmp_path):
-    """compose.yml publishes one port; the stage must default to the same one."""
+def test_the_api_port_default_matches_compose(tmp_path):
+    """compose.yml publishes one port; the config must default to the same one,
+    and the retired review service on :8710 must be gone."""
     from pathlib import Path
 
     from anim import config
 
     compose = (Path(__file__).resolve().parent.parent / "compose.yml").read_text()
-    assert f'"0.0.0.0:{config.REVIEW_PORT}:{config.REVIEW_PORT}"' in compose
+    assert f'"0.0.0.0:{config.API_PORT}:{config.API_PORT}"' in compose
+    assert f'"--port", "{config.API_PORT}"' in compose
+    assert "8710:8710" not in compose
+    assert "\n  review:" not in compose

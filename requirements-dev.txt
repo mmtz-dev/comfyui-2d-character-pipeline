@@ -12,3 +12,5 @@
 
 # MIT.
 pytest>=8.0
+# BSD-3-Clause. FastAPI's TestClient is httpx under the hood (tests/test_api.py).
+httpx>=0.27

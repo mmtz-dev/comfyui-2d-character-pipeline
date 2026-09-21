@@ -1,0 +1,20 @@
+# ---------------------------------------------------------------------------
+# The pipeline API feature - the HTTP layer over work/ (anim/api/)
+#
+# Its own file, like requirements-dev.txt, for the same reason: requirements.txt
+# resolves torch + onnxruntime + the CUDA wheels (about 3.5 GB) into one Docker
+# layer, and a web framework moving version must never re-download that. The
+# Dockerfile installs this in a cheap layer after it.
+#
+#   docker compose up -d anim-api
+# ---------------------------------------------------------------------------
+
+# MIT. The app factory is anim.api.app:create_app; pydantic comes with it.
+fastapi>=0.115
+# BSD-3-Clause. The server; plain uvicorn, not [standard] - no websockets,
+# no uvloop, no watchfiles, so nothing extra to licence-check.
+uvicorn>=0.30
+
+# Deliberately absent:
+#   sse-starlette  - the /runs/<id>/events stream is hand-rolled (one
+#                    generator, three event names); see anim/api/runs.py.

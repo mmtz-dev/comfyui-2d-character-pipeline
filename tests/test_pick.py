@@ -410,9 +410,19 @@ def test_a_loop_action_records_its_closure_and_the_review_page_shows_it(posed_jo
     closure = record["phases"]["closure"]
     assert closure["metric"] == "pose" and closure["ok"] is True
     assert record["timing"]["loop"] is True and record["timing"]["anchor"] == 2
-    page = review_stage.ReviewApp(posed_job).page().decode("utf-8")
-    assert "loop closes" in page and "phases: idle 6" in page
-    assert ">wind-up<" in page and ">action<" in page
+    # The page is rendered by the API's client script from this state (the
+    # pipeline API feature); the state carries the plan, the verdict and a
+    # tag per frame, and the script has the hooks that draw them.
+    from anim.api import pages
+    state = review_stage.ReviewApp(posed_job).state()
+    assert state["phases"]["closure"]["ok"] is True
+    assert state["phases"]["plan"]["action"] == "idle"
+    assert state["phases"]["plan"]["budget"] == 6
+    tags = {f["phase"] for f in state["frames"] if f.get("phase")}
+    assert {"wind-up", "action"} <= tags
+    page = pages.review_page(posed_job.name)
+    assert "loop closes" in page and "phaseTags(state.phases)" in page
+    assert "f.phase" in page
 
 
 def test_phases_off_is_byte_identical_for_an_existing_job(posed_job):
