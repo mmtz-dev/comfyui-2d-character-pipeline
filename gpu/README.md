@@ -35,7 +35,7 @@ on the native daemon. The native daemon is `disabled` and normally stopped.
 
 ## Owner-run sequence
 
-Run these from the repo root (`/home/workstation/Repos/Game-Dev`).
+Run these from the repo root (`/home/workstation/Repos/game-dev`).
 
 ### 1. Pre-flight (no daemon needed)
 

@@ -90,7 +90,7 @@ No GPU needed to build; `nvcc` comes from the base image and the CUDA extension 
 cross-compiles for sm_86.
 
 ```bash
-cd /home/workstation/Repos/Game-Dev
+cd /home/workstation/Repos/game-dev/framework-ladder
 docker --context desktop-linux compose -f tools/anim-pipeline/spike3d/compose.yml build
 ```
 

@@ -7,7 +7,7 @@
 # Docker Desktop only (context `desktop-linux`, the machine default). Do not
 # run this on the native daemon.
 #
-#   cd /home/workstation/Repos/Game-Dev/tools/anim-pipeline
+#   cd /home/workstation/Repos/game-dev/framework-ladder/tools/anim-pipeline
 #   docker compose -f share/compose.yml up -d
 #
 # Host port 445 is already owned by this host's own smbd (systemd smb.service,

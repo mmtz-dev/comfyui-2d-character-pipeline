@@ -49,7 +49,7 @@ generated randomly when this was set up and is not any of your other passwords. 
 gitignored (see `.gitignore` here) and is mode `600`, so it never leaves the machine.
 
 ```bash
-grep SMB_PASS /home/workstation/Repos/Game-Dev/tools/anim-pipeline/share/.env
+grep SMB_PASS /home/workstation/Repos/game-dev/framework-ladder/tools/anim-pipeline/share/.env
 ```
 
 To change it: edit `.env`, then `docker compose -f share/compose.yml up -d --force-recreate`.
@@ -159,7 +159,7 @@ sudo firewall-cmd --add-service=samba --permanent && sudo firewall-cmd --reload
 
 This host's existing `smb.service` already exports your home directory as `homes` for the user
 `workstation`, on the normal port 445. So `smb://192.168.1.158/workstation` gets you to
-`Repos/Game-Dev/game-02-tactical-rpg/assets/` today, with no container, real extended attributes,
+`Repos/Game-Dev/Framework-Ladder/game-02-tactical-rpg/assets/` today, with no container, real extended attributes,
 no port in the URL, and no stale-content quirk.
 
 The trade-off: `[homes]` exposes your whole home directory rather than just the assets folder, and
