@@ -13,6 +13,7 @@ Routes (all JSON unless said otherwise):
     PUT  /jobs/{job}/picks  {"picks": []}  rewrite picks.json exactly as `anim review` did
     POST /jobs/{job}/regenerate            flag rerender_requested in job.json (never the GPU)
     POST /jobs  {"stage", "args" | "argv"} run a stage in the background -> 202 + the run
+                                           (423 when the unit's curation gate blocks it)
     GET  /runs                             every run this API knows, newest first
     GET  /runs/{run}                       status + log
     GET  /runs/{run}/events                text/event-stream: log, progress, done
@@ -22,6 +23,11 @@ Routes (all JSON unless said otherwise):
                                            run `anim palette` in the background -> 202 + the run
     GET  /palette/units                    the units that have a sub-palette
     GET  /palette/units/{unit}             one unit's sub-palette (404: the whole palette applies)
+    GET  /curation                         the units with cells or a curation record, and the mode
+    GET  /curation/{unit}                  the board: gates, cells with their strips, what is waiting
+    PUT  /curation/{unit}/cells/{action}/{dir}  {"status"} | {"frames": {n: accept|reject|null}}
+    POST /curation/{unit}/cells/{action}/{dir}/regenerate   new seed + the cell's GPU stage -> 202
+    PUT  /curation/{unit}/gates/{gate}  {"state"}   base | turnaround -> pending | accepted
     GET  /health                           {"ok": true, "work_dir": ..., "comfyui": reachable?}
     GET  /                                 web/dist/ when built, else the jobs page
     GET  /jobs/{job}/review                the click-to-pick page
@@ -43,9 +49,10 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, \
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from anim import __version__, comfy, config, palettekit
+from anim import __version__, comfy, config, curation, palettekit
 from anim.api import jobs as jobs_api
 from anim.api import pages, settings
+from anim.api import runs as runs_api
 from anim.api.runs import RunManager, RunRefused
 from anim.job import Job
 from anim.stages.review import ReviewApp
@@ -62,6 +69,23 @@ class RunRequest(BaseModel):
 
 class PicksRequest(BaseModel):
     picks: list[int] = Field(default_factory=list)
+
+
+class CellRequest(BaseModel):
+    """`PUT /curation/{unit}/cells/{action}/{dir}` (the curation board
+    feature): a `status` for the cell, and/or `frames` marks merged over the
+    ones there are (`null` clears a mark)."""
+
+    status: str | None = None
+    frames: dict[str, str | None] | None = None
+
+
+class GateRequest(BaseModel):
+    state: str
+
+
+class RegenerateRequest(BaseModel):
+    seed: int | None = None
 
 
 class PaletteRequest(BaseModel):
@@ -153,8 +177,24 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
     def list_jobs() -> list[dict[str, Any]]:
         return jobs_api.list_jobs(work_dir)
 
+    def _gate(stage: str, args: dict[str, Any] | None, argv: list[str] | None
+              ) -> JSONResponse | None:
+        """The curation board feature's 423: the unit's gate is pending. The
+        run manager's own refusals (unknown stage, bad args) come first."""
+        try:
+            line = argv if argv is not None else runs_api.argv_for(stage, dict(args or {}))
+        except RunRefused:
+            return None
+        reason = curation.gate_for_request(stage, [str(a) for a in line], work_dir)
+        if reason is None:
+            return None
+        return JSONResponse(status_code=423, content={"error": reason, "gate": True})
+
     @app.post("/jobs", status_code=202)
     def start_run(body: RunRequest, response: Response) -> Any:
+        locked = _gate(body.stage, body.args, body.argv)
+        if locked is not None:
+            return locked
         try:
             run = manager.start(body.stage, args=body.args, argv=body.argv)
         except RunRefused as exc:
@@ -284,6 +324,62 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
             raise HTTPException(404, f"{unit!r} has no sub-palette; the whole project "
                                      f"palette applies")
         return {**record, "path": str(palettekit.unit_palette_path(unit, path))}
+
+    # --- the curation board feature ---------------------------------------
+    def _curated(call: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return call(*args, **kwargs)
+        except curation.CurationError as exc:
+            raise HTTPException(exc.status, str(exc)) from None
+
+    @app.get("/curation")
+    def list_curation() -> dict[str, Any]:
+        return {"units": curation.list_units(work_dir), "mode": curation.mode_of(work_dir)}
+
+    @app.get("/curation/{unit}")
+    def get_board(unit: str) -> dict[str, Any]:
+        return _curated(curation.board, unit, work_dir)
+
+    @app.put("/curation/{unit}/cells/{action}/{direction}")
+    def put_cell(unit: str, action: str, direction: str, body: CellRequest
+                 ) -> dict[str, Any]:
+        """Marks first, then the status: a `{"status": "accepted", "frames":
+        {...}}` records the marks and then locks the cell."""
+        if body.status is None and body.frames is None:
+            raise HTTPException(400, "give `status` and/or `frames`")
+        if body.frames is not None:
+            _curated(curation.set_frames, unit, action, direction, body.frames, work_dir)
+        if body.status is not None:
+            _curated(curation.set_cell_status, unit, action, direction, body.status,
+                     work_dir)
+        key = _curated(curation.cell_key, action, direction)
+        return _curated(curation.board, unit, work_dir)["cells"][key]
+
+    @app.post("/curation/{unit}/cells/{action}/{direction}/regenerate", status_code=202)
+    def regenerate_cell(unit: str, action: str, direction: str, response: Response,
+                        body: RegenerateRequest | None = None) -> Any:
+        """A new seed, then the cell's GPU stage through the run manager: the
+        unit's gate is the 423, a busy card the 409, as for `POST /jobs`."""
+        key = _curated(curation.cell_key, action, direction)
+        cell = _curated(curation.board, unit, work_dir)["cells"].get(key)
+        if cell is None or not cell.get("job"):
+            raise HTTPException(404, f"{unit} has no job for cell {key}")
+        locked = _gate(cell["stage"], {"job": cell["job"]}, None)
+        if locked is not None:
+            return locked
+        try:
+            out = _curated(curation.regenerate, unit, action, direction, manager.start,
+                           work_dir, seed=body.seed if body else None)
+        except RunRefused as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"error": str(exc), **exc.extra})
+        response.headers["Location"] = f"/runs/{out['run']['id']}"
+        return out
+
+    @app.put("/curation/{unit}/gates/{gate}")
+    def put_gate(unit: str, gate: str, body: GateRequest) -> dict[str, Any]:
+        _curated(curation.set_gate, unit, gate, body.state, work_dir)
+        return _curated(curation.board, unit, work_dir)
 
     # --- the pages ---------------------------------------------------------
     if web_dist.is_dir() and (web_dist / "index.html").exists():

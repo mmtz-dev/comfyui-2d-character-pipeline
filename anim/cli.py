@@ -33,6 +33,7 @@ stage order:
   base is the standing-sprite variant of the same chain
   bakeoff runs one action through both in-between routes on both rigs -> one page
   palette installs the project palette (Lospec slug or file) and unit sub-palettes
+  curate accepts / rejects / regenerates a unit's cells and gates (the curation board)
   run chains extract..strip, then render..publish if the GPU is up
 
 the usual one-liners:
@@ -90,6 +91,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # The curation board feature: a GPU stage waits for the unit's gates
+    # (anim/curation.py). One check here rather than one per stage, so a
+    # stage that joins the gated set is gated without knowing it. `--force`
+    # on the stage's line runs anyway, as the API's 423 says.
+    if not getattr(args, "force", False):
+        from anim import curation
+
+        reason = curation.gate_for_namespace(args.stage, args)
+        if reason:
+            print(f"anim {args.stage}: refused - {reason}")
+            print(f"  (--force runs it anyway; `anim curate` shows the board)")
+            return 2
     return args._run(args)
 
 
