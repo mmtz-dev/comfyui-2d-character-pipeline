@@ -14,10 +14,6 @@
 
 ## the sprite studio feature · [#271](http://192.168.1.158:8700/work_packages/271)
 
-### the frame route bake-off feature · [#274](http://192.168.1.158:8700/work_packages/274)
-
-One character × one action — the knight's attack — through both candidate routes for the in-between frames, judged side by side.
-
 ### the turnaround feature · [#275](http://192.168.1.158:8700/work_packages/275)
 
 From the accepted base, one idle still per direction — 8 side-view facings for v1 — each with its own per-direction part palettes.
@@ -74,7 +70,9 @@ Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid
 
 ## manual test: the character concept feature · [#289](http://192.168.1.158:8700/work_packages/289)
 
+## manual test: the frame route bake-off feature · [#290](http://192.168.1.158:8700/work_packages/290)
+
 ---
 
-*17 open · 2 closed. Counts and contents come straight from
+*17 open · 3 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
