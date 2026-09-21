@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>anim studio</title>
+  <meta name="description" content="The sprite studio: Piskel with the pose-to-pixel pipeline as a panel.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" href="/piskel/logo.png">
+  <!-- The vendored Piskel, joined by piskel-plugin.mjs into public/piskel/. -->
+  <link rel="stylesheet" href="/piskel/css/piskel-style.css">
+</head>
+<body class="studio-body">
+  <div id="loading-mask" class="studio-loading">Loading the studio ...</div>
+
+  <!-- The studio panel (web/src/panel.ts fills it). -->
+  <aside id="studio" class="studio" aria-label="pipeline">
+    <header class="studio-head">
+      <button id="studio-toggle" class="studio-toggle" type="button" title="Collapse or expand the panel (Alt+P)">&#9664;</button>
+      <h1 class="studio-title">anim studio</h1>
+      <span id="studio-health" class="studio-health" title="the API">&middot;</span>
+    </header>
+    <div id="studio-body" class="studio-sections"></div>
+  </aside>
+
+  <!-- Piskel's own markup, between upstream's body-main-start/end markers. -->
+  <!--@@piskel-->
+
+  <!-- Piskel is 200 pre-module scripts sharing the pskl.* namespace; they are
+       one classic script here and are booted by src/main.ts once loaded. -->
+  <script src="/piskel/piskel.js"></script>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "anim-studio-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "The sprite studio's editor: Piskel (vendor/piskel) in a Vite + TypeScript shell, with the pipeline as a panel.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "piskel": "node piskel-plugin.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "4.1.11"
+  }
+}

@@ -8,6 +8,7 @@ Routes (all JSON unless said otherwise):
     GET  /jobs/{job}                       job.json + stage status + frame-set sizes
     GET  /jobs/{job}/frames                every PNG set (frames, pose, depth, clip, strip, render, post, candidates) with URLs
     GET  /jobs/{job}/frames/{stage}/{n}.png  the PNG itself
+    PUT  /jobs/{job}/frames/{stage}/{n}.png  overwrite it (image/png body, same size, alpha rounded)
     GET  /jobs/{job}/picks                 the review state (ReviewApp.state)
     PUT  /jobs/{job}/picks  {"picks": []}  rewrite picks.json exactly as `anim review` did
     POST /jobs/{job}/regenerate            flag rerender_requested in job.json (never the GPU)
@@ -128,6 +129,19 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
             raise HTTPException(404, f"no {stage} frame {index} in {name}")
         return FileResponse(path, media_type="image/png",
                             headers={"Cache-Control": "no-store"})
+
+    @app.put("/jobs/{name}/frames/{stage}/{index:int}.png")
+    async def put_frame(name: str, stage: str, index: int, request: Request
+                        ) -> dict[str, Any]:
+        """The web pixel editor's save: the body is the PNG, nothing else.
+        409 when its size differs from the file it replaces, 415 when it is
+        not a PNG, 404 when there is no such frame to replace."""
+        job = _job(name)
+        data = await request.body()
+        try:
+            return jobs_api.save_frame(job, stage, index, data)
+        except jobs_api.FrameRejected as exc:
+            raise HTTPException(exc.status, str(exc)) from None
 
     @app.get("/jobs/{name}/picks")
     def get_picks(name: str) -> dict[str, Any]:

@@ -43,7 +43,28 @@ RUN git apply --verbose /tmp/pixelfixer-linux-peak-rss.patch
 RUN cd rust && cargo build --release && ls -l target/release/pixelfixer
 
 # -----------------------------------------------------------------------------
-# Stage 2: the runtime image.
+# Stage 2: build the web pixel editor (web/ - Piskel in a Vite + TS shell).
+#
+# `npm ci` against the committed package-lock.json, then `vite build` ->
+# web/dist. The vendored Piskel (web/vendor/piskel) is joined by the shell's
+# own plugin, so the only packages this stage needs are vite, typescript and
+# vitest - no spritesmith, no puppeteer, nothing that downloads a browser.
+# Node 22 LTS: Vite 7 wants 20.19+ / 22.12+. The stage is independent of the
+# Rust one, so BuildKit builds them side by side.
+# -----------------------------------------------------------------------------
+FROM node:22-slim AS web-build
+
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY web/ ./
+RUN npm run build \
+ && test -f dist/index.html \
+ && test -f dist/piskel/piskel.js \
+ && echo "web pixel editor built: $(du -sh dist | cut -f1)"
+
+# -----------------------------------------------------------------------------
+# Stage 3: the runtime image.
 #
 # Python is pinned to 3.12 - the host's 3.14 is not used for anything, and
 # onnxruntime / rembg wheels lag new CPython releases.
@@ -90,6 +111,11 @@ RUN cd /tmp \
 
 COPY --from=pixelfixer-build /src/rust/target/release/pixelfixer /usr/local/bin/pixelfixer
 RUN pixelfixer --help >/dev/null 2>&1 || pixelfixer help >/dev/null 2>&1 || true
+
+# The built editor. anim/config.py serves the checkout's /work/web/dist when
+# the host built one (the bind mount), else this copy - so a fresh clone gets
+# the editor from the image with no node on the host. ANIM_WEB_DIST overrides.
+COPY --from=web-build /web/dist /opt/anim/web/dist
 
 WORKDIR /work
 

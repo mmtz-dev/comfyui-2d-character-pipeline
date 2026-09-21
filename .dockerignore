@@ -1,0 +1,6 @@
+# Kept out of the build context. The Dockerfile COPYs only requirements*.txt,
+# pyproject.toml, anim/, patches/ and web/; web/'s generated directories are
+# rebuilt inside the node stage and would only be sent to be replaced.
+web/node_modules/
+web/dist/
+web/public/piskel/

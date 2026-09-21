@@ -1,0 +1,7 @@
+url: https://github.com/piskelapp/piskel
+commit: bef52beb312e771bf0cbb915d873e8d638842d7a
+date: 2026-09-20 07:26:54 +0200
+license: Apache-2.0 (LICENSE beside this file, unmodified)
+vendored: 2026-09-21, src/ only (js, css, img, templates, index.html, the two
+          load-order lists, piskel-boot.js, logo.png); upstream's tests,
+          build scripts, desktop packaging and CLI are not needed here.

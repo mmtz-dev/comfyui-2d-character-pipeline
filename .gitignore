@@ -56,6 +56,16 @@ BiRefNet/
 bin/
 
 # ---------------------------------------------------------------------------
+# The web pixel editor (web/): installed packages, the build (the Dockerfile's
+# node stage makes it and bakes it into the image; `npm run build` on the host
+# makes a checkout copy the API prefers), and the joined Piskel that
+# web/piskel-plugin.mjs regenerates from web/vendor/piskel on every build.
+# ---------------------------------------------------------------------------
+web/node_modules/
+web/dist/
+web/public/piskel/
+
+# ---------------------------------------------------------------------------
 # Logs
 # ---------------------------------------------------------------------------
 *.log

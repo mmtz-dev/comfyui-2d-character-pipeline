@@ -266,7 +266,8 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `GET /jobs` | every directory under `work/` with a `job.json`: name, unit, action, direction cell, stages done (derived from the files, not a status field), updated, newest first |
 | `GET /jobs/{job}` | `job.json` as written, plus the stage list, the current picks and how many PNGs each set has |
 | `GET /jobs/{job}/frames` | every PNG set — `frames`, `pose`, `depth`, `clip`, `strip`, `render`, `post`, `candidates` — each entry with its URL |
-| `GET /jobs/{job}/frames/{set}/{n}.png` | the PNG; `n` is the index in that listing (0-based, the same numbers `picks.json` uses), never a filename from the URL |
+| `GET /jobs/{job}/frames/{set}/{n}.png` | the PNG; `n` is the index in that listing (0-based, the same numbers `picks.json` uses), never a filename from the URL. The `post` set is the `<stem>_<n>.png` frames in the order of `n` — `palette.png` and the `_hd` / `_labels` diagnostics of `post --parts` are not frames — so post frame `k` is pick `k` |
+| `PUT /jobs/{job}/frames/{set}/{n}.png` | the editor's save: the body is the PNG (`Content-Type: image/png`), overwriting that frame **in place** (`write_bytes_in_place`, the inode rule). Same size as the file it replaces or `409`; not a PNG `415`; no such frame `404` — it never creates one. Alpha is rounded to the contract before writing (`>= 128` opaque, else the pixel becomes `(0,0,0,0)`, `imaging.binarise_alpha`); the reply says how many pixels needed it |
 | `GET /jobs/{job}/picks` | the review state (`ReviewApp.state()`) |
 | `PUT /jobs/{job}/picks` `{"picks": [...]}` | rewrite `picks.json` exactly as the review page did; sorted, de-duplicated, out-of-range dropped, a hand `timing` kept |
 | `POST /jobs/{job}/regenerate` | flag `rerender_requested` in `job.json`. Never the GPU |
@@ -275,7 +276,7 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `GET /runs/{id}/events` | `text/event-stream`: `log` per line, `progress` when the percent changes, one `done` (`status`, `returncode`). A stream opened after the run ended replays the whole log |
 | `GET /settings` · `PUT /settings` | `work/project.json`: `palette` (path or null), `frame_budgets` (`{action: 1..12}`), `curation` (`gates` \| `every` \| `end`), `frame_size` (`[w, h]`). Just the store — the palette, keyframe phase, curation and export features read it |
 | `GET /health` | `ok`, the work dir, the active GPU run; `?probe=1` also asks ComfyUI (3 s timeout) |
-| `GET /` | `web/dist/` when the editor is built (`ANIM_WEB_DIST`), else a page listing the jobs and runs |
+| `GET /` | the web pixel editor (`web/dist/`, see below), else a page listing the jobs and runs |
 | `GET /jobs/{job}/review` | the click-to-pick page |
 
 **The GPU rule.** `base`, `render`, `clip`, `concept`, `bakeoff` and `run` (which renders
@@ -299,6 +300,53 @@ the neighbours are 8700 openproject, 8770 research-digest, 8787 bg3-modded-wiki)
 LAN IP routes via `lo` and proves nothing about LAN reach. Same image and mounts as the
 `anim` service, so a run through the API writes exactly what `docker compose run --rm anim`
 would.
+
+### The web pixel editor — the web pixel editor feature
+
+[#280](http://192.168.1.158:8700/work_packages/280). What `GET /` serves: **Piskel**, the
+open-source pixel editor (layers, onion skin, timeline, palettes, pencil / bucket / shapes /
+selection, PNG / GIF / sheet export), with the pipeline as a panel down the left side.
+
+```
+http://192.168.1.158:8720/          the editor (from the Mac; Alt+P folds the panel)
+```
+
+**Where Piskel comes from.** `web/vendor/piskel/` is upstream's `src/` at the commit pinned in
+[`web/vendor/piskel/UPSTREAM`](web/vendor/piskel/UPSTREAM) (Apache-2.0; its LICENSE is beside
+it, the line is in [`NOTICE`](NOTICE)). It is vendored as **source, not as a built bundle**,
+because upstream's build is three small steps — join the script list, join the style list,
+resolve the `@@include` partials of `index.html` — and [`web/piskel-plugin.mjs`](web/piskel-plugin.mjs)
+does exactly those three with no dependencies, so the shell needs none of upstream's toolchain.
+Every change to the vendored tree is listed in
+[`web/vendor/piskel/CHANGES.md`](web/vendor/piskel/CHANGES.md) (one: a hook that lets the
+timeline tiles carry a text tag); a re-pull is "copy upstream's `src/` over, re-apply that list".
+
+**The shell** (`web/`, Vite + TypeScript, `web/src/`) boots Piskel and mounts the panel:
+
+| Section | What it does today |
+|---|---|
+| Job | `GET /jobs`; Open loads the job's best PNG set — `post` (the 64×64 frames), else `clip`, else `frames` — as one animation, one layer, at the job's fps. The keyframe phase of each frame (`/jobs/{job}/picks`) shows on its timeline tile: `start`, `wind-up`, `action`… |
+| Save | every frame, layers flattened, alpha rounded to 0/255, `PUT` back to the set it came from. Same frame count and size as the set, or it refuses and says why |
+| Pipeline | `pick --phases` and `post` (CPU) start at a click; `clip`, `bakeoff` and `concept` (GPU) ask first — "this starts a GPU job". A `409` reads "GPU busy with `<id>`" and the panel follows that run instead |
+| Run | the run's log live over `/runs/{id}/events` (SSE) with a progress bar; recent runs are one click to follow |
+| Palette | the project palette from `GET /settings` (`palette.colours`, the palette feature's shape) goes into Piskel's palette list and is selected; a path-only or empty `palette` reads "no project palette" |
+
+**Build.** `web/dist/` is generated, never committed. The Dockerfile's node stage runs
+`npm ci && npm run build` and bakes it into the image at `/opt/anim/web/dist`; the API
+(`config.WEB_DIST`) prefers the checkout's own `web/dist` when one exists — so on the host:
+
+```bash
+cd web && npm ci && npm run build     # -> web/dist, served by the running anim-api at once
+cd web && npm test                    # vitest: the panel's pure parts (frame sets, phase tags, SSE, palette, alpha)
+cd web && npm run dev                 # http://localhost:5173, API routes proxied to :8720
+docker compose up -d --build anim-api # or rebuild the image and let it serve its own copy
+```
+
+**Not yet.** Adding or removing frames is not saved back (the set's count is the count);
+`render/` and `strip/` are strips, not frames, so they do not open; the palette panel reads
+the project palette but does not import one (the palette feature, #282); no top-down, no
+export to Godot from the panel yet (the export feature). Piskel's own Save / Export drawer
+still works — it writes to the browser or downloads, not to `work/`.
 
 ### Character concept — the character concept feature
 
@@ -624,7 +672,8 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 483 passed, 4 skipped (2026-09-21)
+docker compose run --rm anim-pipeline pytest        # 488 passed, 4 skipped (2026-09-21)
+cd web && npm test                                  # 26 passed - the editor panel's pure parts
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake
@@ -864,6 +913,7 @@ For the full pipeline overview and design rationale, see **[`docs/pipeline-overv
 | [`docs/`](docs/) | Pipeline overview, per-workflow design docs, model and custom-node install guides, harness-integration guide. |
 | [`samples/`](samples/) | Working seed input + the full sprite-sheet output the pipeline produced — useful for sanity-checking your install. |
 | [`tools/`](tools/) | Standalone helpers (OpenPose skeleton renderer, depth renderer, frame inspector). |
+| [`web/`](web/) | The web pixel editor: `vendor/piskel/` (upstream Piskel, pinned), `src/` (the studio panel, TypeScript), `piskel-plugin.mjs` (joins the vendored Piskel for Vite), `dist/` (the build; generated, in the image). |
 
 ## Workflow format — API only, harness-driven
 

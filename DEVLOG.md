@@ -4,6 +4,83 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-21 — the web pixel editor feature: Piskel as the shell, the pipeline as a panel
+
+**What.** [#280](http://192.168.1.158:8700/work_packages/280), the sixth feature of the sprite
+studio epic — the studio's shell. `GET /` on `:8720` now serves a real pixel editor: Piskel
+(layers, onion skin, timeline, palettes, the drawing tools, GIF / sheet export) in a Vite +
+TypeScript shell under `web/`, with the pipeline as a panel down the left. The panel's v1: pick
+a job, open its frames (the `post` 64×64 set, else `clip`, else `frames`) as one animation at
+the job's fps with the keyframe phase on each timeline tile; edit; save every frame back
+through a new `PUT /jobs/{job}/frames/{set}/{n}.png`; start `pick --phases` / `post` at a
+click and `clip` / `bakeoff` / `concept` behind a "this starts a GPU job" confirm; follow the
+run's log and progress live over the SSE route; and put the project palette from
+`GET /settings` into Piskel's palette list. New in the API: the PUT route (`jobs.save_frame`:
+same size as the file it replaces or `409`, alpha rounded to the contract, written in place),
+and the `post` set listed as `<stem>_<n>.png` in numeric order — `job.post_frames()` sorts by
+name, which put `_10` before `_2` and listed `palette.png` and the `_hd` / `_labels`
+diagnostics as frames; the API's set is now what `publish` ships, so post frame *k* is pick
+*k*. `config.WEB_DIST` resolves to the checkout's `web/dist`, then the image's
+`/opt/anim/web/dist`. The Dockerfile grew a `node:22-slim` stage (`npm ci && npm run build`)
+whose `dist/` is copied into the runtime image; `compose.yml` is unchanged. pytest: 483 →
+**488 passed**, 4 skipped; `web/`: vitest, **26 passed**. The `anim-api` container was rebuilt
+and recreated; `curl http://192.168.1.158:8720/` returns the editor. Verified in a headless
+Chromium against the served build: boot, open a job, tags on the tiles, save (a pixel drawn on
+frame 0 landed in `post/`, the other eleven re-encoded pixel-identical; the files were then
+restored from a copy), `pick --phases` started and followed to `done`.
+
+**Vendoring: source, not the bundle.** Piskel upstream (pinned at `bef52beb`, 2026-09-20)
+dropped Grunt this year; its build is a Vite config with three home-made plugins that join
+the script list, join the style list and resolve the `@@include` partials of `index.html`, plus
+a spritesmith step for the icon sheet. That is small enough to do ourselves:
+`web/piskel-plugin.mjs` (stdlib only) does those three joins into `public/piskel/` and drops
+the body markup into our `index.html` at build time, so the shell's `devDependencies` are
+vite, typescript and vitest and nothing of upstream's (no spritesmith, no terser, no karma, no
+puppeteer downloading a browser inside the Docker build). The icon sheet is the one generated
+thing committed into the vendored tree (`icons.png`, `icons@2x.png`, `icons.css`, made once with
+upstream's `scripts/sprite.js`) — `CHANGES.md` says so and how to regenerate. The alternative
+was vendoring upstream's built `dest/prod` bundle: one minified file, no build step, but then
+every fix to Piskel is a patch against minified output and the fork's changes cannot be read as
+a diff. Source keeps the fork a diff: one edit so far (`FramesListController`, a `tile-tag`
+element per timeline tile fed by `pskl.app.frameTagProvider`), listed in
+`web/vendor/piskel/CHANGES.md`. Note the brief called Piskel MIT; it is **Apache-2.0**, which
+is what `NOTICE` and the vendored `LICENSE` say.
+
+**Frames → Piskel: one layer, frame k = PNG k.** A job's set becomes one `pskl.model.Piskel`
+with one layer, one Piskel frame per PNG, at `job.json`'s fps — so Piskel's timeline, onion
+skin and preview all mean what the pipeline means by a frame, and the tile number is the
+frame number `picks.json` and `publish` use. The alternative, one *layer* per pipeline frame,
+would give per-frame opacity and blend but turn Piskel's animation into a stack, and every
+tool that iterates frames (onion skin, export) would be wrong. Save flattens whatever layers
+the owner added on top (`LayerUtils.flattenFrameAt` with opacity), rounds alpha to 0/255 and
+zeroes transparent pixels (`web/src/pixels.ts`, the same rule as `imaging.binarise_alpha`,
+which the API applies again — so the browser and the server agree on the bytes), and PUTs
+each frame at the index it came from. The count and the size must match the set: a frame
+added in the editor has no file to overwrite, and a resized frame is a different asset, so
+both refuse with a sentence rather than write half a set.
+
+**Where the phase tag comes from.** `/jobs/{job}/picks` tags *source* frames (`frames[i].phase`);
+the `post` set is one frame per pick in ascending pick order (what `strip` and `post` build),
+so post frame *k* carries the tag of source frame `picks[k]`; `clip` is 1:1 with the source.
+Fewer or more post frames than picks — a partial `post`, a stale `picks.json` — means no tags
+rather than wrong ones (`web/src/frames.ts`, tested).
+
+**Layout without touching Piskel's CSS.** Piskel lays itself out `position: fixed` against
+the viewport. The panel is a fixed 330 px column and one custom property (`--studio-w`)
+shifts `#main-wrapper`, the tool column and the cheat-sheet link right by that much; Piskel's
+`DrawingController` measures `#main-wrapper` and re-lays out through its own `ResizeObserver`,
+so folding the panel (Alt+P) reflows the canvas with no fork change.
+
+**What the panel cannot do yet.** Add or remove frames and save that back; open `render/`
+or `strip/` (strips, not frames — slicing needs `layout.json`); import or fetch a palette
+(the palette feature, #282 — the panel reads `settings.palette.colours` when that lands and says
+"no project palette" until then); export to Godot or publish from the panel (the export
+feature); edit picks (the click-to-pick page is still `/jobs/{job}/review`); anything
+top-down. Piskel's own Save / Export drawer still writes to the browser or a download, not to
+`work/`.
+
+---
+
 ## 2026-09-21 — the keyframe phase feature: pick against start → wind-up → action → wind-down → end → loop
 
 **What.** `anim pick --phases` — [#276](http://192.168.1.158:8700/work_packages/276), the fifth

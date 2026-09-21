@@ -32,3 +32,17 @@ generated from asset sidecars - not hand-maintained here.
 Container image: mmartial/comfyui-nvidia-docker (MIT).
 Custom nodes: nunchaku-tech/ComfyUI-nunchaku (Apache-2.0),
 alexopus/ComfyUI-Image-Saver (MIT).
+
+
+The web pixel editor
+--------------------
+web/vendor/piskel/ is the source of Piskel, Copyright (c) Julian Descottes
+and contributors, https://github.com/piskelapp/piskel, licensed under the
+Apache License 2.0 (web/vendor/piskel/LICENSE, retained unmodified; the
+commit is pinned in web/vendor/piskel/UPSTREAM). This fork's edits to it are
+listed in web/vendor/piskel/CHANGES.md and are covered by the same terms.
+Piskel bundles, under web/vendor/piskel/src/js/lib/: jQuery 1.8 and jQuery UI
+1.10 (MIT), Bootstrap 2 (Apache-2.0), jQuery pubsub by "Cowboy" Ben Alman
+(MIT), Spectrum (MIT), gif.js and libgif (MIT), JSZip (MIT), and under
+src/css/fonts/ an icomoon icon font. The shell around it (web/src/,
+web/piskel-plugin.mjs) is this fork's own work under LICENSE.

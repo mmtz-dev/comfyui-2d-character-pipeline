@@ -8,6 +8,7 @@ only add seconds.
 
 from __future__ import annotations
 
+import io
 import json
 import shutil
 import sys
@@ -17,7 +18,9 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
+from anim.api import jobs as jobs_api
 from anim.api import runs as runs_api
 from anim.api import settings as settings_api
 from anim.api.app import create_app
@@ -121,6 +124,115 @@ def test_frames_are_listed_by_set_and_served_by_index(api, posed_job):
     assert api.get("/jobs/knight_strike/frames/frames/13.png").status_code == 404
     assert api.get("/jobs/knight_strike/frames/secrets/0.png").status_code == 404
     assert api.get("/jobs/knight_strike/frames/frames/x.png").status_code == 404
+
+
+def test_the_post_set_is_the_numbered_frames_in_numeric_order(api, posed_job):
+    """post/ also holds palette.png and, after --parts, _hd / _labels
+    diagnostics; and a name sort puts _10 before _2. The set is what
+    publish ships, in the order pick k -> frame k."""
+    posed_job.post_dir.mkdir(parents=True)
+    for name in ["knight_strike_0.png", "knight_strike_1.png", "knight_strike_2.png",
+                 "knight_strike_10.png", "knight_strike_11.png", "knight_strike_3.png",
+                 "knight_strike_0_hd.png", "knight_strike_0_labels.png", "palette.png"]:
+        Image.new("RGBA", (64, 64)).save(posed_job.post_dir / name)
+    listing = api.get("/jobs/knight_strike/frames").json()["stages"]["post"]
+    assert [e["file"] for e in listing] == [
+        "knight_strike_0.png", "knight_strike_1.png", "knight_strike_2.png",
+        "knight_strike_3.png", "knight_strike_10.png", "knight_strike_11.png"]
+    assert [e["index"] for e in listing] == list(range(6))
+    assert api.get("/jobs/knight_strike").json()["frame_sets"]["post"] == 6
+    assert jobs_api.frame_path(posed_job, "post", 4).name == "knight_strike_10.png"
+
+
+# ---------------------------------------------------------------------------
+# PUT a frame - the web pixel editor's save
+# ---------------------------------------------------------------------------
+def png_bytes(size, colour=(200, 40, 40, 255), *, soft: bool = False) -> bytes:
+    img = Image.new("RGBA", size, (0, 0, 0, 0))
+    px = img.load()
+    for x in range(size[0] // 2):
+        for y in range(size[1]):
+            px[x, y] = colour
+    if soft:
+        px[0, 0] = (*colour[:3], 90)       # below the threshold: cleared
+        px[1, 0] = (*colour[:3], 200)      # above: made opaque
+        px[size[0] - 1, size[1] - 1] = (9, 9, 9, 0)   # colour under alpha 0: zeroed
+    out = io.BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+@pytest.fixture
+def post_job(posed_job):
+    """The posed job with two 64x64 post frames, as `post` leaves them."""
+    posed_job.post_dir.mkdir(parents=True)
+    for i in range(2):
+        (posed_job.post_dir / f"knight_strike_{i}.png").write_bytes(png_bytes((64, 64)))
+    Image.new("RGB", (4, 1)).save(posed_job.post_dir / "palette.png")
+    return posed_job
+
+
+def test_put_frame_overwrites_the_png_in_place_with_binary_alpha(api, post_job):
+    target = post_job.post_dir / "knight_strike_1.png"
+    inode = target.stat().st_ino
+    response = api.put("/jobs/knight_strike/frames/post/1.png",
+                       content=png_bytes((64, 64), (10, 200, 10, 255), soft=True),
+                       headers={"Content-Type": "image/png"})
+    assert response.status_code == 200, response.text
+    row = response.json()
+    assert row["file"] == "knight_strike_1.png" and row["size"] == [64, 64]
+    assert row["alpha_rounded"] == 2, "the two soft pixels, not the alpha-0 one"
+    assert row["url"] == "/jobs/knight_strike/frames/post/1.png"
+    with Image.open(target) as saved:
+        saved = saved.convert("RGBA")
+        assert saved.size == (64, 64)
+        histogram = saved.getchannel("A").histogram()
+        assert all(count == 0 for value, count in enumerate(histogram) if value not in (0, 255))
+        assert saved.getpixel((0, 0)) == (0, 0, 0, 0), "soft below 128 -> transparent, zeroed"
+        assert saved.getpixel((1, 0)) == (10, 200, 10, 255), "soft above 128 -> opaque"
+        assert saved.getpixel((63, 63)) == (0, 0, 0, 0), "colour under alpha 0 is dropped"
+        assert saved.getpixel((5, 5)) == (10, 200, 10, 255), "the new colour landed"
+    assert target.stat().st_ino == inode, "written in place (the Docker Desktop inode rule)"
+    assert api.get("/jobs/knight_strike/frames/post/1.png").content == target.read_bytes()
+    with Image.open(post_job.post_dir / "knight_strike_0.png") as other:
+        assert other.getpixel((5, 5)) == (200, 40, 40, 255), "the neighbour is untouched"
+
+
+def test_put_frame_refuses_a_different_size_with_409(api, post_job):
+    before = (post_job.post_dir / "knight_strike_0.png").read_bytes()
+    response = api.put("/jobs/knight_strike/frames/post/0.png",
+                       content=png_bytes((32, 32)), headers={"Content-Type": "image/png"})
+    assert response.status_code == 409
+    assert "64x64" in response.json()["detail"] and "32x32" in response.json()["detail"]
+    assert (post_job.post_dir / "knight_strike_0.png").read_bytes() == before, "nothing written"
+
+
+def test_put_frame_refuses_what_is_not_a_png_or_not_a_frame(api, post_job):
+    assert api.put("/jobs/knight_strike/frames/post/0.png", content=b"not a png",
+                   headers={"Content-Type": "image/png"}).status_code == 415
+    assert api.put("/jobs/knight_strike/frames/post/0.png",
+                   content=b"\x89PNG\r\n\x1a\n" + b"garbage",
+                   headers={"Content-Type": "image/png"}).status_code == 415
+    ok = png_bytes((64, 64))
+    assert api.put("/jobs/knight_strike/frames/post/2.png", content=ok).status_code == 404, \
+        "palette.png is not frame 2 and the route never creates a file"
+    assert api.put("/jobs/knight_strike/frames/secrets/0.png", content=ok).status_code == 404
+    assert api.put("/jobs/nope/frames/post/0.png", content=ok).status_code == 404
+    assert not (post_job.post_dir / "knight_strike_2.png").exists()
+    assert sorted(p.name for p in post_job.post_dir.iterdir()) == \
+        ["knight_strike_0.png", "knight_strike_1.png", "palette.png"]
+
+
+def test_put_frame_works_on_the_source_set_too(api, posed_job):
+    """`frames` (the extracted 360x420 source) is a PNG set like any other."""
+    target = posed_job.frames()[3]
+    with Image.open(target) as img:
+        size = img.size
+    response = api.put("/jobs/knight_strike/frames/frames/3.png",
+                       content=png_bytes(size, (1, 2, 3, 255)))
+    assert response.status_code == 200, response.text
+    with Image.open(target) as saved:
+        assert saved.convert("RGBA").getpixel((0, 0)) == (1, 2, 3, 255)
 
 
 # ---------------------------------------------------------------------------

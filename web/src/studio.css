@@ -1,0 +1,287 @@
+/* The studio panel and the room it takes from Piskel.
+ *
+ * Piskel lays itself out with position:fixed against the viewport
+ * (#main-wrapper, the two sticky tool sections). The panel is a fixed column
+ * on the left and Piskel is shifted right by its width, through one custom
+ * property; the drawing area follows because DrawingController measures
+ * #main-wrapper, and its ResizeObserver reflows on a toggle. */
+
+:root {
+  --studio-w: 330px;
+  --studio-bg: #15171c;
+  --studio-panel: #1d2027;
+  --studio-line: #2c3038;
+  --studio-fg: #d7dae0;
+  --studio-muted: #8b929e;
+  --studio-gold: #f0c070;
+  --studio-ok: #8fd3a5;
+  --studio-bad: #f08080;
+}
+
+body.studio-collapsed {
+  --studio-w: 34px;
+}
+
+/* Piskel, moved right. Same selectors as its layout.css, ours loaded later. */
+.main-wrapper {
+  left: var(--studio-w);
+}
+.left-sticky-section.sticky-section {
+  left: var(--studio-w);
+}
+.cheatsheet-link {
+  left: calc(var(--studio-w) + 10px);
+}
+
+.studio-loading {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+  background: #000;
+  color: #fff;
+  display: grid;
+  place-items: center;
+  font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  transition: opacity 0.4s;
+}
+
+.studio {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--studio-w);
+  box-sizing: border-box;
+  z-index: 1100;
+  background: var(--studio-panel);
+  color: var(--studio-fg);
+  border-right: 1px solid var(--studio-line);
+  font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.studio-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--studio-line);
+  flex-shrink: 0;
+}
+.studio-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  flex: 1;
+}
+.studio-toggle {
+  font: inherit;
+  background: none;
+  border: 1px solid var(--studio-line);
+  color: var(--studio-fg);
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.studio-toggle:hover {
+  background: var(--studio-line);
+}
+.studio-health {
+  font-size: 11px;
+  color: var(--studio-muted);
+  white-space: nowrap;
+}
+.studio-health.ok { color: var(--studio-ok); }
+.studio-health.warn { color: var(--studio-gold); }
+.studio-health.bad { color: var(--studio-bad); }
+
+body.studio-collapsed .studio-title,
+body.studio-collapsed .studio-health,
+body.studio-collapsed .studio-sections {
+  display: none;
+}
+body.studio-collapsed .studio-head {
+  padding: 8px 5px;
+}
+
+.studio-sections {
+  overflow-y: auto;
+  padding: 0 10px 16px;
+  flex: 1;
+}
+.studio-section {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--studio-line);
+}
+.studio-section h2 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--studio-muted);
+}
+.studio-help {
+  margin: 0 0 6px;
+  color: var(--studio-muted);
+  font-size: 12px;
+}
+.studio-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin: 4px 0;
+  flex-wrap: wrap;
+}
+
+.studio-select,
+.studio-input {
+  font: inherit;
+  background: var(--studio-bg);
+  color: var(--studio-fg);
+  border: 1px solid var(--studio-line);
+  border-radius: 4px;
+  padding: 5px 6px;
+  min-width: 0;
+  flex: 1;
+}
+.studio-select.small {
+  flex: 0 1 auto;
+}
+.studio-button {
+  font: inherit;
+  background: var(--studio-line);
+  color: var(--studio-fg);
+  border: 1px solid #3a3f49;
+  border-radius: 4px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.studio-button:hover:not(:disabled) {
+  background: #363b45;
+}
+.studio-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.studio-button.primary {
+  background: var(--studio-gold);
+  color: #15171c;
+  border-color: var(--studio-gold);
+  font-weight: 600;
+  flex: 1;
+}
+.studio-button.gpu {
+  border-color: #6a4a12;
+  color: var(--studio-gold);
+}
+.studio-button.gpu::before {
+  content: "\26A1 ";
+}
+
+.studio-status {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--studio-muted);
+  word-break: break-word;
+  min-height: 1em;
+}
+.studio-status.ok { color: var(--studio-ok); }
+.studio-status.warn { color: var(--studio-gold); }
+.studio-status.bad { color: var(--studio-bad); }
+
+.studio-run-title {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: var(--studio-fg);
+}
+.studio-bar {
+  height: 6px;
+  background: var(--studio-bg);
+  border: 1px solid var(--studio-line);
+  border-radius: 3px;
+  margin: 6px 0 2px;
+  overflow: hidden;
+}
+.studio-bar-fill {
+  height: 100%;
+  width: 0;
+  background: var(--studio-gold);
+  transition: width 0.3s;
+}
+.studio-bar-fill.done { background: var(--studio-ok); }
+.studio-bar-fill.failed,
+.studio-bar-fill.lost { background: var(--studio-bad); }
+
+.studio-log {
+  margin: 6px 0 0;
+  background: var(--studio-bg);
+  border: 1px solid var(--studio-line);
+  border-radius: 4px;
+  padding: 6px;
+  max-height: 180px;
+  min-height: 40px;
+  overflow: auto;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--studio-fg);
+}
+
+.studio-runs {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  font-size: 12px;
+}
+.studio-run a {
+  color: var(--studio-fg);
+  text-decoration: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}
+.studio-run a:hover {
+  color: var(--studio-gold);
+}
+.studio-run.done a { color: var(--studio-ok); }
+.studio-run.failed a,
+.studio-run.lost a { color: var(--studio-bad); }
+.studio-run.running a,
+.studio-run.queued a { color: var(--studio-gold); }
+
+.studio-swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 6px;
+}
+.studio-swatch {
+  width: 16px;
+  height: 16px;
+  border: 1px solid #0008;
+  border-radius: 2px;
+}
+
+/* The fork's timeline tag (vendor/piskel/CHANGES.md): a phase name in the
+ * bottom-left corner of each preview tile. */
+.preview-tile .tile-overlay.tile-tag {
+  opacity: 1;
+  top: auto;
+  bottom: 0;
+  left: 0;
+  width: auto;
+  height: auto;
+  padding: 1px 5px;
+  font: 600 10px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: #15171c;
+  background: var(--studio-ok);
+  border-top-right-radius: 3px;
+  pointer-events: none;
+}

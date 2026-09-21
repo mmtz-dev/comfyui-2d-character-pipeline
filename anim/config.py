@@ -668,8 +668,20 @@ API_BIND = os.environ.get("ANIM_API_BIND", "0.0.0.0")
 # `post` each want every core, and two of them at once are slower than one
 # after the other. GPU stages are never concurrent - see anim.api.runs.
 API_CPU_SLOTS = int(os.environ.get("ANIM_API_CPU_SLOTS", "2"))
-# The built editor (the web pixel editor feature) is served from here when it
-# exists; until then the API serves its own minimal jobs + review pages.
-WEB_DIST = Path(os.environ.get("ANIM_WEB_DIST", "/work/web/dist"))
+# The built editor (the web pixel editor feature): `web/dist/`, served at `/`
+# by the API. Two places it can be, tried in order when ANIM_WEB_DIST is not
+# set: the checkout's own `web/dist` (what `npm run build` on the host makes;
+# `/work/web/dist` in the container through the bind mount) and the copy the
+# Dockerfile's node stage bakes into the image at /opt/anim/web/dist. The
+# checkout wins so a host rebuild shows up without a `docker compose build`;
+# the image copy means a fresh clone gets the editor from the image alone.
+# Neither there: the API serves its own minimal jobs + review pages.
+_WEB_DIST_CANDIDATES = (
+    Path(__file__).resolve().parents[1] / "web" / "dist",
+    Path("/opt/anim/web/dist"),
+)
+WEB_DIST = Path(os.environ["ANIM_WEB_DIST"]) if os.environ.get("ANIM_WEB_DIST") else next(
+    (p for p in _WEB_DIST_CANDIDATES if (p / "index.html").exists()),
+    _WEB_DIST_CANDIDATES[0])
 # Only ever used to PRINT a URL the owner can click.
 LAN_HOST = os.environ.get("ANIM_LAN_HOST", "192.168.1.158")

@@ -1,20 +1,26 @@
-"""Reading `work/<job>/` for the API - listing, stage status, frame URLs.
+"""Reading `work/<job>/` for the API - listing, stage status, frame URLs -
+and the one write the editor needs, a frame PNG put back in place.
 
-Nothing here writes. A job's status is derived from the files the stages leave
-behind (job.py's layout), never from a status field, so a job hand-edited or
-re-run from the CLI reads the same over the API as it does on disk.
+A job's status is derived from the files the stages leave behind (job.py's
+layout), never from a status field, so a job hand-edited or re-run from the
+CLI reads the same over the API as it does on disk. `save_frame` (the web
+pixel editor feature) overwrites one existing PNG with the same-size PNG the
+editor sends, alpha rounded to the frame contract; it never creates a file.
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import io
 import re
 from pathlib import Path
 from typing import Any, Callable
 
-from anim import config
+from PIL import Image, UnidentifiedImageError
+
+from anim import config, imaging
 from anim.job import Job
-from anim.util import read_json
+from anim.util import read_json, write_bytes_in_place
 
 # A job name is a directory name the stages themselves would make: slug,
 # action, direction cell, joined by underscores. Anything else is refused
@@ -48,15 +54,31 @@ FRAME_STAGES: dict[str, Callable[[Job], list[Path]]] = {
     "clip": lambda job: job.clip_frames(),
     "strip": lambda job: _pngs(job.strip_dir),
     "render": lambda job: _pngs(job.render_dir),
-    "post": lambda job: job.post_frames(),
+    "post": lambda job: post_frames(job),
     "candidates": lambda job: _pngs(job.candidates_dir),
 }
+
+_POST_FRAME = re.compile(r"^(?P<stem>.+)_(?P<n>\d+)\.png$")
 
 
 def _pngs(directory: Path) -> list[Path]:
     if not directory.is_dir():
         return []
     return sorted(p for p in directory.glob("*.png") if p.is_file())
+
+
+def post_frames(job: Job) -> list[Path]:
+    """The `post` set: `<stem>_<n>.png` in the order of n - the frames
+    `publish` ships. `job.post_frames()` is every PNG in post/ sorted by name,
+    which also lists `palette.png` (the snap palette) and the `_hd` /
+    `_labels` diagnostics of `post --parts`, and puts `_10.png` before
+    `_2.png`; the editor needs frame k of the set to be pick k."""
+    numbered = []
+    for path in job.post_frames():
+        match = _POST_FRAME.match(path.name)
+        if match:
+            numbered.append((int(match.group("n")), path))
+    return [path for _, path in sorted(numbered, key=lambda item: item[0])]
 
 
 def valid_name(name: str) -> bool:
@@ -179,3 +201,57 @@ def frame_path(job: Job, stage: str, index: int) -> Path | None:
     if not 0 <= index < len(paths):
         return None
     return paths[index]
+
+
+# ---------------------------------------------------------------------------
+# The one write: a frame put back by the editor
+# ---------------------------------------------------------------------------
+class FrameRejected(ValueError):
+    """The PNG is not one this frame can be replaced with. `status` is HTTP's."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def save_frame(job: Job, stage: str, index: int, data: bytes) -> dict[str, Any]:
+    """`PUT /jobs/<job>/frames/<stage>/<n>.png`: overwrite one existing frame.
+
+    The body must be a PNG of exactly the size of the file it replaces (409
+    otherwise - a frame that changed size is a different asset, and a 64x64
+    contract frame stays 64x64). Alpha is rounded to the frame contract
+    before writing, exactly as `post` leaves it: >= 128 opaque, else the
+    pixel is (0,0,0,0) (`imaging.binarise_alpha`); the count of pixels that
+    needed it is reported so the editor can say so. The write goes through
+    `write_bytes_in_place`, so the Mac's Samba view and a container that has
+    the file open see the new bytes (the inode rule in anim.util).
+    """
+    path = frame_path(job, stage, index)
+    if path is None:
+        raise FrameRejected(404, f"no {stage} frame {index} in {job.name}")
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise FrameRejected(415, "the body is not a PNG")
+    try:
+        with Image.open(io.BytesIO(data)) as sent:
+            sent.load()
+            incoming = sent.convert("RGBA")
+        with Image.open(path) as current:
+            expected = current.size
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise FrameRejected(415, f"could not read the PNG: {exc}") from None
+    if incoming.size != expected:
+        raise FrameRejected(
+            409, f"{path.name} is {expected[0]}x{expected[1]}; the PNG sent is "
+                 f"{incoming.size[0]}x{incoming.size[1]} - a frame keeps its size")
+    histogram = incoming.getchannel("A").histogram()
+    soft = sum(count for value, count in enumerate(histogram)
+               if value not in config.ALPHA_VALUES)
+    clean = imaging.binarise_alpha(incoming)
+    out = io.BytesIO()
+    clean.save(out, format="PNG", optimize=True)
+    write_bytes_in_place(path, out.getvalue())
+    return {
+        "job": job.name, "stage": stage, "index": index, "file": path.name,
+        "size": list(expected), "alpha_rounded": soft, "bytes": out.tell(),
+        "url": f"/jobs/{job.name}/frames/{stage}/{index}.png",
+    }

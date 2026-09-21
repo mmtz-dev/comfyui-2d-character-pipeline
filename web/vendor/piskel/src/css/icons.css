@@ -1,0 +1,392 @@
+/*
+Icon classes can be used entirely standalone. They are named after their original file names.
+
+Example usage in HTML:
+
+`display: block` sprite:
+<div class="icon-home"></div>
+
+To change `display` (e.g. `display: inline-block;`), we suggest using a common CSS class:
+
+// CSS
+.icon {
+  display: inline-block;
+}
+
+// HTML
+<i class="icon icon-home"></i>
+*/
+.icon-common-backup-white {
+  background-image: url(../img/icons.png);
+  background-position: 0px 0px;
+  width: 90px;
+  height: 90px;
+}
+.icon-common-keyboard-gold {
+  background-image: url(../img/icons.png);
+  background-position: -274px -136px;
+  width: 36px;
+  height: 21px;
+}
+.icon-common-swapcolors-arrow-grey {
+  background-image: url(../img/icons.png);
+  background-position: -300px -157px;
+  width: 18px;
+  height: 18px;
+}
+.icon-common-warning-red {
+  background-image: url(../img/icons.png);
+  background-position: -274px -183px;
+  width: 21px;
+  height: 21px;
+}
+.icon-frame-dragndrop-white {
+  background-image: url(../img/icons.png);
+  background-position: -274px -46px;
+  width: 30px;
+  height: 30px;
+}
+.icon-frame-duplicate-white {
+  background-image: url(../img/icons.png);
+  background-position: -274px -76px;
+  width: 30px;
+  height: 30px;
+}
+.icon-frame-plus-white {
+  background-image: url(../img/icons.png);
+  background-position: -274px -157px;
+  width: 26px;
+  height: 26px;
+}
+.icon-frame-recyclebin-white {
+  background-image: url(../img/icons.png);
+  background-position: -274px -106px;
+  width: 30px;
+  height: 30px;
+}
+.icon-minimap-grid-gold {
+  background-image: url(../img/icons.png);
+  background-position: -295px -183px;
+  width: 18px;
+  height: 18px;
+}
+.icon-minimap-grid-white {
+  background-image: url(../img/icons.png);
+  background-position: -274px -204px;
+  width: 18px;
+  height: 18px;
+}
+.icon-minimap-popup-preview-arrow-gold {
+  background-image: url(../img/icons.png);
+  background-position: -292px -204px;
+  width: 18px;
+  height: 18px;
+}
+.icon-minimap-popup-preview-arrow-white {
+  background-image: url(../img/icons.png);
+  background-position: -274px -222px;
+  width: 18px;
+  height: 18px;
+}
+.icon-settings-export-white {
+  background-image: url(../img/icons.png);
+  background-position: -90px 0px;
+  width: 46px;
+  height: 46px;
+}
+.icon-settings-gear-white {
+  background-image: url(../img/icons.png);
+  background-position: 0px -90px;
+  width: 46px;
+  height: 46px;
+}
+.icon-settings-open-folder-white {
+  background-image: url(../img/icons.png);
+  background-position: -46px -90px;
+  width: 46px;
+  height: 46px;
+}
+.icon-settings-resize-white {
+  background-image: url(../img/icons.png);
+  background-position: -136px 0px;
+  width: 46px;
+  height: 46px;
+}
+.icon-settings-save-white {
+  background-image: url(../img/icons.png);
+  background-position: -136px -46px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-circle {
+  background-image: url(../img/icons.png);
+  background-position: 0px -136px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-colorpicker {
+  background-image: url(../img/icons.png);
+  background-position: -46px -136px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-colorswap {
+  background-image: url(../img/icons.png);
+  background-position: -92px -136px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-dithering {
+  background-image: url(../img/icons.png);
+  background-position: -182px 0px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-eraser {
+  background-image: url(../img/icons.png);
+  background-position: -182px -46px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-lasso-select {
+  background-image: url(../img/icons.png);
+  background-position: -182px -92px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-lighten {
+  background-image: url(../img/icons.png);
+  background-position: 0px -182px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-move {
+  background-image: url(../img/icons.png);
+  background-position: -46px -182px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-paint-bucket {
+  background-image: url(../img/icons.png);
+  background-position: -92px -182px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-pen {
+  background-image: url(../img/icons.png);
+  background-position: -138px -182px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-rectangle-select {
+  background-image: url(../img/icons.png);
+  background-position: -228px 0px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-rectangle {
+  background-image: url(../img/icons.png);
+  background-position: -228px -46px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-shape-select {
+  background-image: url(../img/icons.png);
+  background-position: -228px -92px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-stroke {
+  background-image: url(../img/icons.png);
+  background-position: -228px -138px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-vertical-mirror-pen {
+  background-image: url(../img/icons.png);
+  background-position: 0px -228px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-center {
+  background-image: url(../img/icons.png);
+  background-position: -46px -228px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-clone {
+  background-image: url(../img/icons.png);
+  background-position: -92px -228px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-crop {
+  background-image: url(../img/icons.png);
+  background-position: -138px -228px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-flip {
+  background-image: url(../img/icons.png);
+  background-position: -184px -228px;
+  width: 46px;
+  height: 46px;
+}
+.icon-tool-rotate {
+  background-image: url(../img/icons.png);
+  background-position: -274px 0px;
+  width: 46px;
+  height: 46px;
+}
+
+@media (-webkit-min-device-pixel-ratio: 2),
+       (min-resolution: 192dpi) {
+  .icon-common-backup-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-common-keyboard-gold {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-common-swapcolors-arrow-grey {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-common-warning-red {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-frame-dragndrop-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-frame-duplicate-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-frame-plus-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-frame-recyclebin-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-minimap-grid-gold {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-minimap-grid-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-minimap-popup-preview-arrow-gold {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-minimap-popup-preview-arrow-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-settings-export-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-settings-gear-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-settings-open-folder-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-settings-resize-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-settings-save-white {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-circle {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-colorpicker {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-colorswap {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-dithering {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-eraser {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-lasso-select {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-lighten {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-move {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-paint-bucket {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-pen {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-rectangle-select {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-rectangle {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-shape-select {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-stroke {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-vertical-mirror-pen {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-center {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-clone {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-crop {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-flip {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+  .icon-tool-rotate {
+    background-image: url(../img/icons@2x.png);
+    background-size: 320px 274px;
+  }
+}
