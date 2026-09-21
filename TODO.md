@@ -14,14 +14,6 @@
 
 ## the sprite studio feature · [#271](http://192.168.1.158:8700/work_packages/271)
 
-### the camera direction feature · [#272](http://192.168.1.158:8700/work_packages/272)
-
-anim rig and anim base gain --yaw 0|45|…|315 and --elevation side|top.
-
-### the character concept feature · [#273](http://192.168.1.158:8700/work_packages/273)
-
-Text or sketch → N candidate front-facing base characters → the owner picks one → it becomes the base reference for everything downstream.
-
 ### the frame route bake-off feature · [#274](http://192.168.1.158:8700/work_packages/274)
 
 One character × one action — the knight's attack — through both candidate routes for the in-between frames, judged side by side.
@@ -78,7 +70,11 @@ Later milestone. Spritely-style: upload a video in the editor → the existing e
 
 Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid or slice by alpha islands, name the rows as actions/directions, and…
 
+## manual test: the camera direction feature · [#288](http://192.168.1.158:8700/work_packages/288)
+
+## manual test: the character concept feature · [#289](http://192.168.1.158:8700/work_packages/289)
+
 ---
 
-*17 open · 0 closed. Counts and contents come straight from
+*17 open · 2 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
