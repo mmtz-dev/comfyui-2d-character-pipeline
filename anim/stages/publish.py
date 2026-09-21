@@ -2,6 +2,13 @@
 
     anim publish knight_strike
 
+THIS IS THE GAME-02 ADAPTER of the spritesheet export feature. The generic
+contract - sheets + atlas.json + a Godot SpriteFrames for a whole unit - is
+`anim export` (anim/stages/export.py); `anim export <unit> --adapter game02`
+runs this stage per job on top of it, and `export.adapter` in
+work/project.json makes that the project's default. Everything below is what
+game-02 reads today and stays byte-for-byte what it was.
+
     <assets>/2d/units/knight_strike_0.png .. _3.png   the frames
     <assets>/2d/units/knight_strike.json              ONE sidecar for all four
 
@@ -117,7 +124,7 @@ from anim.util import read_json, write_bytes_in_place, write_json_in_place
 from anim.util import run as run_tool
 
 NAME = "publish"
-HELP = "frames -> game-02 assets + sidecar"
+HELP = "frames -> game-02 assets + sidecar (the export's game-02 adapter)"
 
 UNITS_SUBDIR = ("2d", "units")
 TOOL = f"tools/anim-pipeline (anim {__version__}) - the pose-to-pixel animation pipeline feature"

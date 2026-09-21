@@ -86,6 +86,8 @@ capture/knight_strike.mp4
    ├─ post    ─► work/…/post/knight_strike_0..3.png        palette-locked 64×64, binary alpha
    └─ publish ─► assets/2d/units/knight_strike_0..3.png    + ONE knight_strike.json sidecar
                                                            then tools/asset_audit.py must exit 0
+      export  ─► work/_export/knight/{sheets/, atlas.json, knight.tres}   every (action × direction) of the UNIT
+                                                           (the generic contract; publish is its game-02 adapter)
 ```
 
 Any stage also runs on its own, in any order, any number of times — all state is
@@ -98,6 +100,7 @@ docker compose run --rm anim strip knight_strike
 docker compose run --rm anim render knight_strike --seed 861234901
 docker compose run --rm anim post knight_strike
 docker compose run --rm anim publish knight_strike --dry-run
+docker compose run --rm anim export knight              # sheets + atlas + SpriteFrames for the whole unit
 ```
 
 | Stage | In | Out | Notes |
@@ -111,7 +114,8 @@ docker compose run --rm anim publish knight_strike --dry-run
 | `render <job>` | strip | `render/pose_pass.png`, `identity_pass.png`, `provenance.json` | **a GPU stage.** Two `/prompt` jobs, not one graph. Seed is derived from the clip hash + action + picks unless `--seed` is given, so a re-run reproduces. |
 | `clip <job>` | every skeleton (+ `depth/` if `rig` wrote it) | `clip/frames/%04d.png`, `clip/control.mp4`, `clip/clip.json`, `clip/provenance.json` | **a GPU stage — the clip render feature.** Renders the whole rig clip as one Wan 2.2 Fun-Control 5B video with the unit's `base` render as the identity reference and the skeleton PNGs as the control video, one generated frame per rig frame (padded to 4n+1 by holding the last; `clip.json.frame_map`). `--control auto|pose|depth|blend` (auto = blend when `depth/` exists) and `--depth-gain` decide what the control video carries. Rig the job at the clip cell first: `rig … --width 512 --height 768` (768×768 for a lying death). Measured 2026-09-17: 9–55 s of GPU per action. Then `pick` as usual and `post --input clip`. See "The clip route" below. |
 | `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. **The snap is the only quantisation in the pipeline** (the palette feature): `-remap` to the project palette, or to the unit's sub-palette when `palette_units/<slug>.json` exists; `--no-snap` is a raw-colour preview (matted, downscaled, recanvassed, not remapped) that `publish` refuses. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
-| `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block; a phased pick adds `fps`, `loop`, `phases` and `durations_ms` to the block), then runs game-02's asset audit and fails loudly on a non-zero exit. |
+| `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | **the game-02 adapter** of the spritesheet export feature — what game-02 reads today, unchanged: copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block; a phased pick adds `fps`, `loop`, `phases` and `durations_ms` to the block), then runs game-02's asset audit and fails loudly on a non-zero exit. `anim export --adapter game02` runs it per job. |
+| `export <unit>` | every `post/` of `<unit>_<action>[_<dir>]` | `work/_export/<unit>/sheets/*.png`, `atlas.json`, `<unit>.tres`, `preview.html` | **the spritesheet export feature** — the generic contract. One sheet per direction with one row per action (`--sheet packed`: one row-major sheet), a schema-versioned atlas (rects, phase tag and `duration_ms` per frame, loop, pivot, source job + commit), and a Godot 4 `SpriteFrames` over the sheets with per-frame durations — checked by reading it back before the stage returns. The cell is `frame_size` from `work/project.json` (`--size N` / `WxH` overrides). Missing cells are listed warnings, not errors. `--adapter game02` (or `export.adapter` in the settings) also runs `publish` per job. See "Export" below. |
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
 | `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>` and `--existing [png]` | `work/<slug>_concept/candidates/NN.png` + `job.json`; `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
 | `bakeoff --unit <slug> --action attack` | the two rigs' attack clips | `work/bakeoff_<slug>_attack/{bakeoff.json,page/,report.md}` + one job per cell `work/bakeoff_<slug>_attack_<cell>/` | **a GPU stage — the frame route bake-off feature.** One action through both candidate routes for the in-between frames on both candidate rigs — four cells `V-kaykit`, `V-quaternius`, `K-kaykit`, `K-quaternius` — as ordinary `rig → clip → pick → post --parts` (V) and `rig → pick → strip → render → post --parts` (K) jobs called as a library, one seed, then one page with an animated 12 fps preview per row and one metric table. Resumable per cell (`--cells`, `--force`, `--page-only`); seconds per stage and VRAM per cell in `bakeoff.json`. The owner rules on the page; the stage picks nothing. See "The frame route bake-off" below. |
@@ -270,6 +274,64 @@ docker compose run --rm anim post knight_strike --no-snap
   `{"unit": …, "colours" | "from_sprite" | "clear"}` runs the stage through the run manager
   (a CPU run, `202` + the run), `GET /palette/units/{unit}` one unit's file.
 
+### Export — the spritesheet export feature
+
+The generic export contract ([#283](http://192.168.1.158:8700/work_packages/283); the
+decision in `sprite-studio.md` §2: **generic + a game-02 adapter**). One command per unit:
+
+```bash
+docker compose run --rm anim export knight                       # work/_export/knight/
+docker compose run --rm anim export knight --sheet packed --size 48
+docker compose run --rm anim export knight --adapter game02      # + publish per job, + the audit
+```
+
+```
+work/_export/knight/
+  sheets/knight_s0.png     per direction: one row per action (alphabetical), frames left to right,
+                           cell = frame size, transparent padding; or ONE sheets/knight.png (--sheet packed)
+  atlas.json               anim.atlas/1 — unit, frame_size, fps, palette, per <action>_<dir>: sheet, frame
+                           rects, phase tag + ticks + duration_ms per frame, loop, pivot, anchor,
+                           source {job, picks, timing_source, seed, clip, motion_source}; tool {commit}
+  knight.tres              Godot 4 SpriteFrames: one AtlasTexture per frame, one animation per
+                           <action>_<dir>, speed = fps, per-frame duration = ticks, loop from the plan
+  preview.html             the sheets at ×4 with the rects drawn, every animation playing at its durations
+```
+
+- **Which jobs.** The jobs named `<unit>_<action>` (direction `s0`) and `<unit>_<action>_<dir>`
+  — the names `anim rig` makes — whose `job.json` agrees (slug, action, direction) and whose
+  `post/` has frames. `knight_strike_phases` is skipped with a warning (not the matrix's job);
+  a base or concept job is a still, not an animation; a `--no-snap` preview is refused. The
+  matrix is the studio's five actions × the eight side cells plus whatever the unit has, and
+  every empty cell is a **listed warning** (`atlas.json.warnings`, the CLI's stderr), never an
+  error — today the knight has `s0` only.
+- **Timing.** The same `publish.resolve_timing` the sidecar uses (hand edit > what `pick`
+  recorded > template > uniform), in **ticks** at the animation's fps: a phased pick's weights,
+  the strip template's holds, or 1 per frame. `duration_ms = ticks × 1000 / fps`; the `.tres`
+  keeps the ticks as Godot's per-frame `duration` with `speed = fps`, so both play the same.
+  Loop: the phase plan's flag, else the studio's row (idle / walk / run loop), else off.
+- **The cell.** `frame_size` in `work/project.json` (`GET /settings`), default 64×64 — a
+  project setting, not a constant. A smaller frame is padded bottom-centre; a larger one is an
+  error. Pivot is the cell's bottom centre (`animations.*.pivot = [w/2, h]`).
+- **Adapters.** `generic` writes the three files; `game02` also runs `publish` for every job
+  it exported — the numbered PNGs, the sidecar and `asset_audit.py`, byte-for-byte what
+  `anim publish` alone writes — so game-02 keeps working unchanged. `export.adapter` in the
+  settings picks the default; `--adapter` overrides per run.
+- **In Godot.** Drop the directory into the project (the `ext_resource` paths are relative to
+  the `.tres`, so it works anywhere under `res://`), let the editor import the PNGs, then:
+
+  ```gdscript
+  $AnimatedSprite2D.sprite_frames = load("res://units/knight/knight.tres")
+  $AnimatedSprite2D.centered = false
+  $AnimatedSprite2D.offset = Vector2(-32, -64)   # the atlas pivot: bottom centre of a 64×64 cell
+  $AnimatedSprite2D.play(&"strike_s0")
+  ```
+
+  Set `rendering/textures/canvas_textures/default_texture_filter` to Nearest for pixel art.
+  Verified 2026-09-21 on Godot 4.6.3 headless: the knight's `.tres` loads with its three
+  animations, per-frame durations and `AtlasTexture` regions intact, no errors.
+- **The API.** `POST /jobs {"stage": "export", "args": {"unit": "knight"}}` runs it like any
+  CPU stage; `GET /export/{unit}` lists the last export (files, animations, warnings, commit).
+
 ### The review page
 
 The click-to-pick sheet is served by the pipeline API (below), not by a stage:
@@ -327,10 +389,11 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `POST /jobs` `{"stage": "pick", "args": {...}}` | run a stage in the background → `202` + the run, `Location: /runs/{id}`. `args` keys are the stage's `--help` names (`job`, `n`, `force`, `slug`, `audit: false` → `--no-audit`); or `"argv": ["knight_strike", "-n", "3"]` verbatim. Unknown keys and bad values are a `400` in argparse's own words |
 | `GET /runs` · `GET /runs/{id}?tail=N` | every run this API knows, newest first; one run with its log |
 | `GET /runs/{id}/events` | `text/event-stream`: `log` per line, `progress` when the percent changes, one `done` (`status`, `returncode`). A stream opened after the run ended replays the whole log |
-| `GET /settings` · `PUT /settings` | `work/project.json`: `palette`, `frame_budgets` (`{action: 1..12}`), `curation` (`gates` \| `every` \| `end`), `frame_size` (`[w, h]`). `palette` is stored as a path (null = `ANIM_PALETTE`) and shown expanded — `{path, name, colours, source}` read from the palette files; a PUT takes the path string or that object back. The keyframe phase, curation and export features read the rest |
+| `GET /settings` · `PUT /settings` | `work/project.json`: `palette`, `frame_budgets` (`{action: 1..12}`), `curation` (`gates` \| `every` \| `end`), `frame_size` (`[w, h]`), `export` (`{"adapter": "generic" \| "game02"}`). `palette` is stored as a path (null = `ANIM_PALETTE`) and shown expanded — `{path, name, colours, source}` read from the palette files; a PUT takes the path string or that object back. The keyframe phase, curation and export features read the rest |
 | `GET /palette` | the project palette record (`palette.json`, or one derived from a bare `.gpl`) plus `units`; `404` with the fix when nothing is installed |
 | `POST /palette` `{"lospec": "endesga-32"}` \| `{"file": "/path.hex"}` \| `{"unit": "knight", "colours": [...] \| "from_sprite": "/path.png" \| "clear": true}` | run `anim palette …` in the background (a CPU run) → `202` + the run, `--into` the settings' palette path |
 | `GET /palette/units` · `GET /palette/units/{unit}` | the units that have a sub-palette; one unit's `palette_units/<unit>.json` (`404`: the whole project palette applies) |
+| `GET /export/{unit}` | the last `anim export` of a unit under `work/_export/<unit>/`: `created`, `commit`, `frame_size`, `sheet_mode`, `sheets`, `animations` (frames, loop, fps, sheet, job), `warnings`, `files` with sizes; `404` with the `POST /jobs` line when there is none (the spritesheet export feature) |
 | `GET /health` | `ok`, the work dir, the active GPU run; `?probe=1` also asks ComfyUI (3 s timeout) |
 | `GET /` | the web pixel editor (`web/dist/`, see below), else a page listing the jobs and runs |
 | `GET /jobs/{job}/review` | the click-to-pick page |
@@ -779,7 +842,8 @@ documented; they are the starting point for a later full-cycle animation tier.
 | `gpu/workflows/base_sprite.json` | Generates a unit's standing sprite from a canned skeleton when no reference sprite exists yet. |
 | `gpu/workflows/clip_render.json` | The clip render feature: Wan 2.2 Fun-Control 5B, reference image + control video → one PNG per frame (`SaveImage` on the decoded batch instead of the template's `SaveVideo`). Translated from the official `video_wan2_2_5B_fun_control` template. |
 | `gpu/workflows/NOTES.md` | Which node names and input keys were verified against source, and what is still `TODO-verify`. |
-| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish base concept bakeoff palette run`. |
+| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish export base concept bakeoff palette run`. |
+| `anim/stages/export.py` | **The spritesheet export feature** — a unit's accepted frames packed into sheets + `atlas.json` + a Godot `SpriteFrames` `.tres` (read back and checked before the stage returns); `publish` is its game-02 adapter. |
 | `anim/palettekit.py` + `anim/stages/palette.py` | **The palette feature** — the project palette from a Lospec slug or a `.hex` / `.gpl` file, the per-unit sub-palettes in `palette_units/`, and the one snap in `post`. |
 | `anim/api/` | **The pipeline API feature** — FastAPI over `work/` on `:8720` (`anim-api` in `compose.yml`): jobs, frames, picks, runs with SSE progress, project settings; serves the review page and, once built, the editor. Deps in `requirements-api.txt`, their own Docker layer. |
 | `anim/rigkit.py` + `anim/stages/rig.py` + `rigs/` | **The rig motion input feature** — a CC0 rigged character's clips as the motion source, sampled with `pygltflib` + numpy, mapped to OpenPose-18, projected in profile facing right. Replaces filming for the anchor unit; makes the spike's TripoSG / Mixamo path unnecessary. |

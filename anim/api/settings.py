@@ -10,6 +10,9 @@ config.py values stay in force and this file is a note the UI can already edit.
     frame_budgets  {action: frames} overriding config.ACTION_FRAMES, capped at 12
     curation       gates | every | end   (sprite-studio.md S2 "Curation")
     frame_size     [w, h] of one exported frame (game-02's contract is 64x64)
+    export         {"adapter": generic | game02} - what `anim export` does by
+                   default (the spritesheet export feature): the generic
+                   files alone, or those plus `publish` per job for game-02
 
 `palette` is STORED as a path (or null) and SHOWN expanded: `GET /settings`
 answers `{"path", "name", "colours", "source"}` read from the palette files
@@ -33,6 +36,7 @@ SETTINGS_FILENAME = "project.json"
 CURATION_MODES = ("gates", "every", "end")
 # The art bible's cap (sprite-studio.md S2 "Frame budget": cap 12).
 FRAME_BUDGET_MAX = 12
+EXPORT_ADAPTERS = ("generic", "game02")
 
 DEFAULTS: dict[str, Any] = {
     "schema": SETTINGS_SCHEMA,
@@ -40,6 +44,7 @@ DEFAULTS: dict[str, Any] = {
     "frame_budgets": {},
     "curation": "gates",
     "frame_size": list(config.CANVAS),
+    "export": {"adapter": "generic"},
 }
 
 
@@ -122,6 +127,14 @@ def validate(body: dict[str, Any]) -> dict[str, Any]:
                    for v in size)):
         raise SettingsError("frame_size must be [width, height], both >= 1")
     merged["frame_size"] = [int(size[0]), int(size[1])]
+
+    export = merged["export"]
+    if not isinstance(export, dict) or set(export) - {"adapter"}:
+        raise SettingsError("export must be {\"adapter\": \"generic\" | \"game02\"}")
+    adapter = export.get("adapter", DEFAULTS["export"]["adapter"])
+    if adapter not in EXPORT_ADAPTERS:
+        raise SettingsError(f"export.adapter must be one of {list(EXPORT_ADAPTERS)}")
+    merged["export"] = {"adapter": adapter}
     return merged
 
 

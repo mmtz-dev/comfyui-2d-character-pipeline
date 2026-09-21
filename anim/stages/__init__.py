@@ -12,7 +12,9 @@ characters, one of which is picked as the unit's reference; `bakeoff` (the
 frame route bake-off feature) runs one action through both in-between routes
 on both rigs and writes the page the owner rules on; `palette` (the palette
 feature) installs the project palette from Lospec or a file and the per-unit
-sub-palettes `post` snaps to; `run` chains the whole thing in one command.
+sub-palettes `post` snaps to; `export` (the spritesheet export feature) packs
+a unit's accepted frames into sheets + atlas.json + a Godot SpriteFrames, with
+`publish` as its game-02 adapter; `run` chains the whole thing in one command.
 """
 
 STAGE_ORDER = [
@@ -26,6 +28,7 @@ STAGE_ORDER = [
     "render",
     "post",
     "publish",
+    "export",
     "base",
     "concept",
     "bakeoff",

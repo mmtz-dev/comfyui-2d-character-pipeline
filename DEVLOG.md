@@ -4,6 +4,80 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-21 — the spritesheet export feature: sheets + atlas + SpriteFrames, publish becomes the game-02 adapter
+
+**What.** [#283](http://192.168.1.158:8700/work_packages/283), the export decision from
+`sprite-studio.md` §2: a **generic contract plus a game-02 adapter**. `anim export <unit>`
+finds every `<unit>_<action>[_<dir>]` job with `post/` frames and writes
+`work/_export/<unit>/`: `sheets/<unit>_<dir>.png` (one row per action, frames left to right,
+transparent padding; `--sheet packed` gives one row-major sheet instead), `atlas.json`
+(`anim.atlas/1`: unit, frame size, fps, palette name, per `<action>_<dir>` the sheet, the
+frame rects, phase tag + ticks + `duration_ms` per frame, loop, pivot, anchor, the source job,
+picks, timing source, seed and clip, and the pipeline commit), `<unit>.tres` (a Godot 4
+`SpriteFrames`: one `AtlasTexture` per frame, one animation per cell, `speed = fps`, per-frame
+`duration` in ticks, loop from the plan) and `preview.html`. `publish` is now documented and
+named as **the game-02 adapter**: `--adapter game02` (or `export.adapter` in
+`work/project.json`, new in the settings store) runs it per exported job and then the audit
+once, and what it writes is byte-for-byte what `anim publish` alone writes — the tests compare
+the sidecar and the frames against a second, direct publish. New API route
+`GET /export/{unit}`; `POST /jobs {"stage": "export"}` needed nothing beyond registering the
+stage (the run manager builds argv from the stage's own parser). pytest: 514 → **538 passed**,
+4 skipped.
+
+**Why the pieces are shaped this way.**
+
+- *Timing in ticks, not milliseconds.* `picks.json` holds weights (ticks at the plan's fps) and
+  `durations_ms` is derived from them; the export goes through the same
+  `publish.resolve_timing` the sidecar uses, keeps the ticks, and derives the milliseconds
+  itself (`round(ticks × 1000 / fps)`). Godot's per-frame `duration` is *relative* to
+  `speed`, so with `speed = fps` the ticks go in unchanged — `[2, 3, 4, 3]` is
+  `167 / 250 / 333 / 250 ms` in the atlas and `2.0 / 3.0 / 4.0 / 3.0` at 12 fps in the `.tres`,
+  with no rounding drift between the two. The alternative, `speed = 1.0` and seconds per frame
+  (what game-02's `apply_schedule` does at runtime), would have put `0.083` in the file.
+- *Per-direction sheets by default, packed on request.* A row per action per direction is what
+  a person reads and what a hand-rolled importer slices; the packed sheet is smaller and needs
+  the atlas. The atlas says where every frame is in both modes, so the choice is only about
+  the PNG a human opens. Rows are alphabetical — a canonical action order would be another
+  table to keep true, and the atlas already names each row.
+- *`work/_export/<unit>/`, not `work/<unit>_export/`.* Underscore directories are the existing
+  "not a job" convention (`_runs`, `_exp`); `anim.api.jobs.valid_name` refuses them, so the API
+  can never list an export as a job or a job scanner mistake it for `<unit>_<action>`. One
+  place for every unit's export is also what a future `GET /export` (all units) would list.
+  `--out` puts it anywhere.
+- *Which jobs, by name.* The manifest alone would have made `knight_strike_phases` and the
+  `knightq_*` gate jobs (slug `knight`, action `strike`) candidates for the same cell. The rule
+  is the name `anim rig` makes — `<unit>_<action>` for `s0`, `<unit>_<action>_<dir>` otherwise
+  — and the manifest must agree; anything else under the prefix is skipped with a reason.
+- *Missing cells are warnings.* The matrix is the studio's five actions × the eight side
+  cells (top-down is a later milestone), plus whatever else the unit has (`hit`, `death`).
+  Today the knight has three `s0` cells, 53 missing-cell warnings and 3 skips; an error would have made v1
+  unexportable.
+- *The `.tres` is read back before the stage returns.* `parse_tres` is a small reader of the
+  text-resource forms a `SpriteFrames` uses (also of the editor's own spelling, with `uid`s),
+  and `verify_tres` checks animations, frame counts, durations, loop, speed, regions and sheet
+  paths against the atlas. A `.tres` the game cannot load is the one thing this stage must
+  never leave behind, and no test needs Godot for it.
+- *Relative `ext_resource` paths.* Godot resolves a relative path against the resource's own
+  directory, so the export directory drops into any project as one unit — no `res://` path
+  baked in at export time.
+
+**Verified.** `anim export knight` on the real `work/`: three animations (`death_s0`, `hit_s0`,
+`strike_s0`; `collapse` and `revive` have no `post/`, `knight_strike_phases` skipped as
+expected), sheet 256×192, atlas commit `4af2071`, palette Lospec 2000. **Godot 4.6.3 headless**
+(`--headless --path <tmp project> --import`, then a `SceneTree` script that `load()`s the
+`.tres`): loads without errors, three animations, four frames each, `speed 12`, durations
+`[2, 4, 3, 2]` / `[1, 3, 2, 2]` / `[1, 2, 2, 4]`, every frame an `AtlasTexture` with a 64×64
+region. The page is at `http://192.168.1.158:8090/sprite-studio/export/` (sheets at ×4 with
+the rects, each animation playing at its durations; a headless Chromium screenshot confirmed
+it renders).
+
+**Not done.** No `GET /export/{unit}/files/...` route to serve the sheet over the API (the
+files are on the `work/` mount; the board can read them there or a route can follow). The
+`preview.html` is copied to the visuals dir by hand, as the direction sheet and the bake-off
+pages are.
+
+---
+
 ## 2026-09-21 — the web pixel editor feature: Piskel as the shell, the pipeline as a panel
 
 **What.** [#280](http://192.168.1.158:8700/work_packages/280), the sixth feature of the sprite

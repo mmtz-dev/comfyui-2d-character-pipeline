@@ -22,6 +22,7 @@ Routes (all JSON unless said otherwise):
                                            run `anim palette` in the background -> 202 + the run
     GET  /palette/units                    the units that have a sub-palette
     GET  /palette/units/{unit}             one unit's sub-palette (404: the whole palette applies)
+    GET  /export/{unit}                    the last `anim export` of a unit: files, animations, warnings
     GET  /health                           {"ok": true, "work_dir": ..., "comfyui": reachable?}
     GET  /                                 web/dist/ when built, else the jobs page
     GET  /jobs/{job}/review                the click-to-pick page
@@ -48,6 +49,7 @@ from anim.api import jobs as jobs_api
 from anim.api import pages, settings
 from anim.api.runs import RunManager, RunRefused
 from anim.job import Job
+from anim.stages import export as export_stage
 from anim.stages.review import ReviewApp
 
 
@@ -284,6 +286,21 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
             raise HTTPException(404, f"{unit!r} has no sub-palette; the whole project "
                                      f"palette applies")
         return {**record, "path": str(palettekit.unit_palette_path(unit, path))}
+
+    # --- the spritesheet export feature -----------------------------------
+    @app.get("/export/{unit}")
+    def get_export(unit: str) -> dict[str, Any]:
+        """What the last `anim export <unit>` wrote under `work/_export/<unit>/`
+        - the atlas's summary and every file. An export runs like any stage:
+        `POST /jobs {"stage": "export", "args": {"unit": ...}}`."""
+        if not export_stage.UNIT_RE.match(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        row = export_stage.listing(unit, work_dir)
+        if row is None:
+            raise HTTPException(404, f"no export of {unit!r} yet; POST /jobs "
+                                     f"{{\"stage\": \"export\", \"args\": "
+                                     f"{{\"unit\": \"{unit}\"}}}}")
+        return row
 
     # --- the pages ---------------------------------------------------------
     if web_dist.is_dir() and (web_dist / "index.html").exists():
