@@ -165,6 +165,17 @@ export function unitSlug(typed: string): string {
     .replace(/^[_-]+|[_-]+$/g, "");
 }
 
+/** Why this attempt may not be hidden or deleted, or null. */
+export function lockedReason(state: ConceptState, target: string, attempt: Attempt): string | null {
+  const accepted = target === "base" ? state.base.pick : state.views[target]?.pick ?? null;
+  if (accepted === attempt.index) {
+    return target === "base"
+      ? "the accepted base - every later stage reads it; accept another first"
+      : "this view's accepted attempt - the turnaround reads it; accept another first";
+  }
+  return null;
+}
+
 export type ConceptAction =
   | { type: "pick"; index: number }
   | { type: "pickView"; view: string; index: number }
@@ -200,6 +211,16 @@ export function reduceConcept(state: ConceptState, action: ConceptAction): Conce
   }
 }
 
+/** The attempts a strip shows: what was kept, or everything when the "show
+ * hidden" toggle is on. */
+export function visibleAttempts(attempts: Attempt[], showHidden: boolean): Attempt[] {
+  return showHidden ? attempts : attempts.filter((attempt) => !attempt.hidden);
+}
+
+export function hiddenCount(attempts: Attempt[]): number {
+  return attempts.filter((attempt) => attempt.hidden).length;
+}
+
 /** The line under a tile: where it came from and with what. */
 export function attemptCaption(attempt: Attempt): string {
   const parts: string[] = [];
@@ -211,6 +232,8 @@ export function attemptCaption(attempt: Attempt): string {
   if (attempt.seed !== null) parts.push(`seed ${attempt.seed}`);
   if (!attempt.rendered) parts.push("waiting for the GPU");
   else if (typeof attempt.seconds === "number") parts.push(`${attempt.seconds.toFixed(1)} s`);
+  if (attempt.file_deleted) parts.push("file deleted");
+  else if (attempt.hidden) parts.push("hidden");
   return parts.join(" · ");
 }
 

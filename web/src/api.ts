@@ -417,6 +417,10 @@ export interface Attempt {
   created?: string;
   from?: string;
   name?: string;
+  /** Hidden from the strips (the record and, unless deleted, the file stay). */
+  hidden: boolean;
+  /** When the PNG was deleted, if it was; the row is its record. */
+  file_deleted: string | null;
   /** Added by the API: the image, and whether there is one yet. */
   url: string | null;
   rendered: boolean;
@@ -431,6 +435,7 @@ export interface ConceptView {
   default_prompt: string;
   candidates: Attempt[];
   pick: number | null;
+  hidden_count: number;
   state: "pending" | "accepted" | "rejected";
   accepted_file: string | null;
 }
@@ -452,6 +457,7 @@ export interface ConceptState {
     sketch: unknown;
     candidates: Attempt[];
     pick: number | null;
+    hidden_count: number;
     accepted: boolean;
     front_url: string | null;
   };
@@ -544,6 +550,24 @@ export const pickConcept = (unit: string, index: number, parts?: string, avoid?:
 
 export const pickConceptView = (unit: string, view: string, index: number) =>
   sendJSON<ConceptState>("POST", `/concept/${encodeURIComponent(unit)}/views/${encodeURIComponent(view)}/pick`, { index });
+
+function attemptPath(unit: string, target: string, index: number): string {
+  return `/concept/${encodeURIComponent(unit)}/attempts/${encodeURIComponent(target)}/${index}`;
+}
+
+/** `PUT .../attempts/{target}/{index}`: hide one attempt, or show it again. */
+export const hideAttempt = (unit: string, target: string, index: number, hidden: boolean) =>
+  sendJSON<ConceptState>("PUT", attemptPath(unit, target, index), { hidden });
+
+/** `DELETE .../attempts/{target}/{index}`: unlink a hidden attempt's PNG. */
+export async function deleteAttemptFile(unit: string, target: string, index: number): Promise<ConceptState> {
+  const response = await fetch(attemptPath(unit, target, index), {
+    method: "DELETE",
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new ApiError(response.status, await detail(response));
+  return (await response.json()) as ConceptState;
+}
 
 export const putConceptDefaults = (unit: string, family: ModelFamily, model: string | null, loras: LoraChoice[]) =>
   sendJSON<ConceptState>("PUT", `/concept/${encodeURIComponent(unit)}/defaults`, { family, model, loras });

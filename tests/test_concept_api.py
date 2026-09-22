@@ -229,3 +229,39 @@ def test_a_cancelled_gpu_run_interrupts_comfyui(work_dir, tmp_path, monkeypatch)
         while run.active and time.monotonic() < deadline:
             time.sleep(0.05)
         assert run.status == "cancelled" and fake.interrupts == 1
+
+
+def test_hide_and_delete_an_attempt_through_the_api(api, work_dir):
+    _base(work_dir)          # two base attempts, 01 accepted
+    _views(work_dir)
+    row = api.get("/concept/knight").json()
+    assert row["base"]["hidden_count"] == 0 and row["views"]["back"]["hidden_count"] == 0
+    assert row["base"]["candidates"][0]["hidden"] is False
+    assert row["base"]["candidates"][0]["file_deleted"] is None
+    # Hide one, and the state says so; the file is still served.
+    state = api.put("/concept/knight/attempts/base/0", json={"hidden": True}).json()
+    assert state["base"]["candidates"][0]["hidden"] is True
+    assert state["base"]["hidden_count"] == 1
+    assert api.get(state["base"]["candidates"][0]["url"]).status_code == 200
+    # Deleting needs it hidden; then the file goes and the row stays.
+    assert api.delete("/concept/knight/attempts/base/1").status_code == 400, "accepted"
+    deleted = api.delete("/concept/knight/attempts/base/0")
+    assert deleted.status_code == 200, deleted.text
+    kept = deleted.json()["base"]["candidates"][0]
+    assert kept["file_deleted"] and kept["url"] is None and kept["hidden"] is True
+    assert kept["seed"] == 10 and kept["prompt"], "its record survives its file"
+    assert not (Job.open("knight_concept", work_dir).candidates_dir / "00.png").exists()
+    # Restoring is the same route with hidden=false.
+    shown = api.put("/concept/knight/attempts/base/0", json={"hidden": False}).json()
+    assert shown["base"]["candidates"][0]["hidden"] is False
+    # The accepted attempt is refused, with the reason.
+    refused = api.put("/concept/knight/attempts/base/1", json={"hidden": True})
+    assert refused.status_code == 400 and "accepted" in refused.json()["detail"]
+    # A view attempt, and the 404s.
+    view = api.put("/concept/knight/attempts/back/0", json={"hidden": True}).json()
+    assert view["views"]["back"]["candidates"][0]["hidden"] is True
+    assert view["views"]["back"]["hidden_count"] == 1
+    assert api.put("/concept/knight/attempts/under/0", json={"hidden": True}).status_code == 404
+    assert api.put("/concept/../x/attempts/base/0", json={"hidden": True}).status_code == 404
+    assert api.put("/concept/knight/attempts/base/9", json={"hidden": True}).status_code == 400
+    assert api.delete("/concept/knight/attempts/base/9").status_code == 400

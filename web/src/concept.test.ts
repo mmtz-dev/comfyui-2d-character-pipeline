@@ -5,11 +5,13 @@ import {
   busyText,
   choicesFor,
   choosable,
+  hiddenCount,
   familyOf,
   generateBody,
   initialLoras,
   initialModel,
   isActive,
+  lockedReason,
   notInstalled,
   offerableLoras,
   reduceConcept,
@@ -19,6 +21,7 @@ import {
   seedFor,
   unitSlug,
   viewGroups,
+  visibleAttempts,
   viewLabel,
   type GenerateForm,
 } from "./concept";
@@ -26,18 +29,18 @@ import {
 const attempt = (index: number, extra: Partial<Attempt> = {}): Attempt => ({
   index, file: `${String(index).padStart(2, "0")}.png`, source: "txt2img", prompt: "p", seed: 100 + index,
   model: "z.safetensors", loras: [], parent: null, seconds: 8.1, url: `/jobs/knight_concept/frames/candidates/${index}.png`,
-  rendered: true, ...extra,
+  hidden: false, file_deleted: null, rendered: true, ...extra,
 });
 
 const view = (name: string, group: "main" | "advanced", extra: Partial<ConceptView> = {}): ConceptView => ({
   view: name, yaw: 90, elevation: name === "top" ? "top" : "side", group, prompt: `see ${name}`, default_prompt: `see ${name}`,
-  candidates: [], pick: null, state: "pending", accepted_file: null, ...extra,
+  candidates: [], pick: null, hidden_count: 0, state: "pending", accepted_file: null, ...extra,
 });
 
 const state = (): ConceptState => ({
   unit: "knight", job: "knight_concept", exists: true, cell: [768, 768], locked: null,
   gates: { base: "accepted", turnaround: "pending" }, defaults: {}, last_seed: 42, parts_phrase: "helm",
-  base: { description: "a knight", prompt: "p", sketch: null, candidates: [attempt(0), attempt(1)], pick: 1, accepted: true, front_url: "/f.png" },
+  base: { description: "a knight", prompt: "p", sketch: null, candidates: [attempt(0), attempt(1)], pick: 1, hidden_count: 0, accepted: true, front_url: "/f.png" },
   views: {
     back: view("back", "main", { candidates: [attempt(0, { source: "views", file: "back_00.png" })] }),
     left: view("left", "main"),
@@ -237,5 +240,30 @@ describe("unitSlug", () => {
     expect(unitSlug("")).toBe("");
     expect(unitSlug("   ")).toBe("");
     expect(unitSlug("!!!")).toBe("");
+  });
+});
+
+describe("hiding attempts", () => {
+  const list = () => [attempt(0), attempt(1, { hidden: true }),
+                      attempt(2, { hidden: true, file_deleted: "2026-09-22T10:00:00+00:00", url: null })];
+  it("a strip shows what was kept, or everything behind the toggle", () => {
+    expect(visibleAttempts(list(), false).map((a) => a.index)).toEqual([0]);
+    expect(visibleAttempts(list(), true).map((a) => a.index)).toEqual([0, 1, 2]);
+    expect(hiddenCount(list())).toBe(2);
+    expect(hiddenCount([attempt(0)])).toBe(0);
+  });
+  it("the caption says which it is", () => {
+    expect(attemptCaption(list()[1]!)).toBe("txt2img · seed 101 · 8.1 s · hidden");
+    expect(attemptCaption(list()[2]!)).toBe("txt2img · seed 102 · 8.1 s · file deleted");
+    expect(attemptCaption(list()[0]!)).toBe("txt2img · seed 100 · 8.1 s");
+  });
+  it("the accepted attempt may not be hidden, and says why", () => {
+    const s = state();
+    expect(lockedReason(s, "base", attempt(1))).toMatch(/accepted base/);
+    expect(lockedReason(s, "base", attempt(0))).toBeNull();
+    const withPick = { ...s, views: { ...s.views, back: { ...s.views.back!, pick: 0 } } };
+    expect(lockedReason(withPick, "back", attempt(0))).toMatch(/turnaround/);
+    expect(lockedReason(withPick, "back", attempt(1))).toBeNull();
+    expect(lockedReason(s, "nope", attempt(0))).toBeNull();
   });
 });

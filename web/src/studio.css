@@ -663,6 +663,11 @@ body.studio-collapsed .studio-head {
 .concept-tile.selected img,
 .concept-tile.selected .concept-tile-miss { border-color: var(--studio-gold); }
 .concept-tile.front { cursor: default; }
+/* hidden: still clickable (that is how it is restored), visibly set aside */
+.concept-tile.hidden-attempt img,
+.concept-tile.hidden-attempt .concept-tile-miss { opacity: 0.4; border-style: dashed; }
+.concept-tile.hidden-attempt figcaption { font-style: italic; }
+.concept-hidden-note { align-self: center; }
 .concept-tile figcaption {
   margin-top: 2px;
   overflow: hidden;

@@ -408,6 +408,8 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `PUT /concept/{unit}/upload` | the body is the PNG (`X-Filename` optional) → a base candidate of source `upload`; `415` when it is not a PNG. No run: the state comes back with `uploaded` |
 | `POST /concept/{unit}/pick` `{"index", "parts"?, "avoid"?}` | accept that base candidate — `anim concept --pick`, the base gate; `400` no such candidate |
 | `POST /concept/{unit}/views/{view}/pick` `{"index"}` | accept that view attempt for the turnaround — `--pick-view view=NN` |
+| `PUT /concept/{unit}/attempts/{target}/{index}` `{"hidden"}` | hide one attempt from the strips and the views page, or show it again; `target` is `base` or a view name. `400` on the accepted one with the reason, `404` on an unknown target |
+| `DELETE /concept/{unit}/attempts/{target}/{index}` | delete a **hidden** attempt's PNG; the row stays as its record (its number is never reused). `400` when it is not hidden, or is the accepted one |
 | `PUT /concept/{unit}/defaults` `{"family", "model", "loras"}` | the unit's default checkpoint + LoRAs for one family, checked against the registry (`400` otherwise) |
 | `GET /models` | `gpu/models.registry.tsv` by family and role, each row `locked` (in the lock) and — with `?probe=1` — `installed` (ComfyUI lists the file; 3 s timeout); plus the ops' families and the workflows' own checkpoints |
 | `POST /runs/{run}/cancel` | stop a queued or running stage: SIGTERM to its process group, SIGKILL after 5 s, ComfyUI `/interrupt` for a GPU stage; `202` + the run (it ends `cancelled`), `409` when it is over, `404` unknown |
@@ -520,6 +522,8 @@ docker compose run --rm anim concept --unit knight --img2img base:02 --strength 
 docker compose run --rm anim concept --unit knight --edit left:01 --instruction "make the helmet red"
 docker compose run --rm anim concept --unit knight --prompt "…" --lora pixel_art_style_z_image_turbo.safetensors:0.6
 docker compose run --rm anim concept --unit knight --prompt "…" --fresh                   # start the unit's attempts over
+docker compose run --rm anim concept --unit knight --hide base:03                        # out of the strips; --show brings it back
+docker compose run --rm anim concept --unit knight --delete-file base:03                 # the PNG of a hidden attempt; the row stays
 ```
 
 Or none of that: the studio's **Concept tab** (<http://192.168.1.158:8720/> → Concept) is the
@@ -636,6 +640,15 @@ redoing the rest.
   no file and a rerun starts clean.
 - **Seed.** Random per press; **lock seed** resends the last one so a prompt tweak changes
   only what you changed.
+- **Hide what you do not want to look at.** Under a selected attempt, **Hide** takes it out of
+  the strip and off the views page (`--hide base:03`); **show hidden** brings the hidden ones
+  back, greyed, with **Restore** (`--show`). Once hidden, **Delete file** removes the PNG from
+  disk after a confirm (`--delete-file`) — but **the row stays**, with its prompt, seed, model,
+  LoRAs and parent. That is not sentiment: an attempt's filename comes from its index and the
+  next index is `max + 1`, so a row that left the list would hand its number *and* its filename
+  to the next attempt, over a file that may still exist; and anything made from it by img2img
+  or an edit still names it as its `parent`. The accepted attempt — the base pick, or a view's
+  pick — refuses both and says to pick another first, because every later stage reads it.
 - **The GPU is one card.** While a run holds it every generate button waits — a run started
   from the CLI or the Board too (`/health`'s `gpu_run`) — and **Cancel** ends it: `POST
   /runs/{id}/cancel` sends SIGTERM to the stage's process group (SIGKILL after 5 s) and
@@ -1074,8 +1087,8 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 628 passed, 4 skipped (2026-09-22)
-cd web && npm test                                  # 63 passed - the editor panel's pure parts
+docker compose run --rm anim-pipeline pytest        # 634 passed, 4 skipped (2026-09-22)
+cd web && npm test                                  # 66 passed - the editor panel's pure parts
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

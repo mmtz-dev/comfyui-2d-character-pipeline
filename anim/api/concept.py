@@ -39,11 +39,20 @@ def _url_index(files: list[Path], name: str | None) -> int | None:
 
 def _attempt_view(row: dict[str, Any], *, job_name: str, set_name: str,
                   files: list[Path]) -> dict[str, Any]:
-    index = _url_index(files, row.get("file"))
+    """One attempt as the tab sees it. Hidden rows are reported, not dropped:
+    the tab filters them (and its "show hidden" toggle costs no round trip),
+    and a row whose file was deleted keeps its record with no URL."""
+    index = None if row.get("file_deleted") else _url_index(files, row.get("file"))
     return {**row, "url": (f"/jobs/{job_name}/frames/{set_name}/{index}.png"
                            if index is not None else None),
+            "hidden": bool(row.get("hidden")),
+            "file_deleted": row.get("file_deleted"),
             "rendered": row.get("seconds") is not None
                         or row.get("source") in ("upload", "existing")}
+
+
+def _hidden_count(rows: list[dict[str, Any]]) -> int:
+    return sum(1 for row in rows if row.get("hidden"))
 
 
 def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
@@ -91,6 +100,7 @@ def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
                 _attempt_view(c, job_name=job.name, set_name="views", files=view_files)
                 for c in row.get("candidates") or []],
             "pick": None if stale_views else (row.get("pick") or {}).get("index"),
+            "hidden_count": 0 if stale_views else _hidden_count(row.get("candidates") or []),
             "state": view_states.get(view) or ("accepted" if stored else "pending"),
             "accepted_file": stored.get("file"),
         }
@@ -112,6 +122,7 @@ def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
                                          files=candidates)
                            for c in manifest.get("candidates") or []],
             "pick": (manifest.get("pick") or {}).get("index"),
+            "hidden_count": _hidden_count(manifest.get("candidates") or []),
             "accepted": final is not None and (base_job.render_dir / final).exists(),
             "front_url": (f"/jobs/{base_job.name}/frames/render/{front_index}.png"
                           if front_index is not None else None),

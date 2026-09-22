@@ -38,6 +38,8 @@ Routes (all JSON unless said otherwise):
     PUT  /concept/{unit}/upload            the owner's PNG (image/png body) as a base candidate
     POST /concept/{unit}/pick  {"index"}   accept that base candidate (= the base gate)
     POST /concept/{unit}/views/{view}/pick {"index"}  accept that view attempt for the turnaround
+    PUT  /concept/{unit}/attempts/{target}/{index}  {"hidden": bool}: hide one attempt from the strips (the accepted one is refused)
+    DELETE /concept/{unit}/attempts/{target}/{index}  delete a hidden attempt's PNG; the row stays as its record
     PUT  /concept/{unit}/defaults          {"family", "model", "loras"}: the unit's default checkpoint + LoRAs
     GET  /models                           the model registry by family and role (?probe=1 asks ComfyUI what is installed)
     GET  /health                           {"ok": true, "work_dir": ..., "comfyui": reachable?}
@@ -180,6 +182,10 @@ class ConceptRequest(BaseModel):
         if self.force:
             args["force"] = True
         return args
+
+
+class HiddenRequest(BaseModel):
+    hidden: bool = True
 
 
 class PickRequest(BaseModel):
@@ -610,6 +616,42 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
             raise HTTPException(404, f"no view {view!r}; one of {list(config.CONCEPT_VIEWS)}")
         try:
             concept_stage.pick_view(unit, {view: body.index}, work_dir=work_dir)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
+                                str(exc)) from None
+        return _concept_state(unit)
+
+    def _attempt_ref(unit: str, target: str, index: int) -> str:
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        if target != concept_stage.BASE_TARGET and target not in config.CONCEPT_VIEWS:
+            raise HTTPException(404, f"no target {target!r}; 'base' or one of "
+                                     f"{list(config.CONCEPT_VIEWS)}")
+        return f"{target}:{index:02d}"
+
+    @app.put("/concept/{unit}/attempts/{target}/{index:int}")
+    def hide_attempt(unit: str, target: str, index: int, body: HiddenRequest
+                     ) -> dict[str, Any]:
+        """Hide one attempt from the strips and the views page, or show it
+        again. The row and its file stay - the accepted one is refused (400),
+        because every later stage reads it."""
+        ref = _attempt_ref(unit, target, index)
+        try:
+            concept_stage.hide_attempt(unit, ref, hidden=body.hidden, work_dir=work_dir)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
+                                str(exc)) from None
+        return _concept_state(unit)
+
+    @app.delete("/concept/{unit}/attempts/{target}/{index:int}")
+    def delete_attempt_file(unit: str, target: str, index: int) -> dict[str, Any]:
+        """Delete a HIDDEN attempt's PNG. The row stays with its prompt, seed
+        and parent, so its number is never reused and anything made from it
+        still says where it came from. 400 when it is not hidden, or is the
+        accepted one."""
+        ref = _attempt_ref(unit, target, index)
+        try:
+            concept_stage.delete_attempt_file(unit, ref, work_dir=work_dir)
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
                                 str(exc)) from None

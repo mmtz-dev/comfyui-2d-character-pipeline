@@ -13,9 +13,11 @@
 import {
   ApiError,
   cancelRun,
+  deleteAttemptFile,
   generateConcept,
   getConcept,
   getModels,
+  hideAttempt,
   listCuration,
   listJobs,
   pickConcept,
@@ -42,9 +44,11 @@ import {
   choosable,
   familyOf,
   generateBody,
+  hiddenCount,
   initialLoras,
   initialModel,
   isActive,
+  lockedReason,
   notInstalled,
   offerableLoras,
   reduceConcept,
@@ -53,6 +57,7 @@ import {
   sameAsDefault,
   unitSlug,
   viewGroups,
+  visibleAttempts,
   viewLabel,
   type GenerateAsk,
   type GenerateForm,
@@ -213,6 +218,7 @@ export class ConceptTab {
   private readonly countSelect = el("select", { class: "studio-select small", title: "attempts per press (each is one /prompt on the card)" },
     ...[1, 2, 3, 4].map((n) => el("option", { value: String(n) }, `× ${n}`)));
   private readonly lockSeed = el("input", { type: "checkbox", title: "lock the seed: resend the last one, so a prompt tweak changes only what you changed" });
+  private readonly showHidden = el("input", { type: "checkbox", title: "show the attempts you have hidden, greyed, with Restore" });
   private readonly seedLine = el("span", { class: "concept-seed" });
   private readonly busyLine = el("span", { class: "studio-status warn" });
   private readonly cancelButton = el("button", { type: "button", class: "studio-button", hidden: true, title: "POST /runs/{id}/cancel: stop the stage and ComfyUI's current prompt", onclick: () => void this.cancel() }, "Cancel");
@@ -236,6 +242,7 @@ export class ConceptTab {
       if ((event as KeyboardEvent).key === "Enter") { event.preventDefault(); void this.loadTyped(); }
     });
     this.lockSeed.addEventListener("change", () => this.drawSeed());
+    this.showHidden.addEventListener("change", () => { this.selected = null; this.draw(); });
     this.root.replaceChildren(
       el("div", { class: "studio-row" },
         this.unitSelect,
@@ -246,6 +253,7 @@ export class ConceptTab {
         el("div", { class: "studio-row" },
           this.countSelect,
           el("label", { class: "concept-lock" }, this.lockSeed, " lock seed"),
+          el("label", { class: "concept-lock" }, this.showHidden, " show hidden"),
           this.seedLine)),
       el("div", { class: "studio-row concept-busy" }, this.busyLine, this.cancelButton),
       this.statusLine,
@@ -510,6 +518,41 @@ export class ConceptTab {
     this.draw();
   }
 
+  private async setHidden(selected: Selected, hidden: boolean): Promise<void> {
+    const state = this.state;
+    if (!state) return;
+    const { target, attempt } = selected;
+    const ref = refOf(target, attempt);
+    try {
+      this.state = await hideAttempt(state.unit, target, attempt.index, hidden);
+      this.say(hidden
+        ? `${ref} hidden - the file and the record stay; "show hidden" brings it back`
+        : `${ref} is back in the strip`, "ok");
+    } catch (error) {
+      this.say(`could not ${hidden ? "hide" : "restore"} ${ref} - ${errorText(error)}`, "bad");
+    }
+    this.selected = null;
+    this.draw();
+  }
+
+  private async deleteFile(selected: Selected): Promise<void> {
+    const state = this.state;
+    if (!state) return;
+    const { target, attempt } = selected;
+    const ref = refOf(target, attempt);
+    if (!window.confirm(`delete ${ref} (${attempt.file})?\n\nThe PNG is removed from disk. `
+      + "Its row stays - the prompt, seed and what it was made from - so the number is never "
+      + "reused. This cannot be undone.")) return;
+    try {
+      this.state = await deleteAttemptFile(state.unit, target, attempt.index);
+      this.say(`${ref}: ${attempt.file} deleted; its record stays`, "ok");
+    } catch (error) {
+      this.say(`could not delete ${ref} - ${errorText(error)}`, "bad");
+    }
+    this.selected = null;
+    this.draw();
+  }
+
   private async saveDefaults(family: ModelFamily): Promise<void> {
     const state = this.state;
     const picker = this.pickers.find((p) => p.family === family);
@@ -550,17 +593,25 @@ export class ConceptTab {
     const selected = this.selected?.target === target && this.selected.attempt.index === attempt.index;
     const image = attempt.url && attempt.rendered
       ? el("img", { src: `${attempt.url}?t=${attempt.sha256 ?? attempt.seconds ?? ""}`, alt: refOf(target, attempt), loading: "lazy" })
-      : el("div", { class: "concept-tile-miss" }, attempt.rendered ? "no file" : "…");
+      : el("div", { class: "concept-tile-miss" },
+          attempt.file_deleted ? "file deleted" : attempt.rendered ? "no file" : "…");
     return el("figure", {
-      class: `concept-tile${picked ? " picked" : ""}${selected ? " selected" : ""}`,
+      class: `concept-tile${picked ? " picked" : ""}${selected ? " selected" : ""}${attempt.hidden ? " hidden-attempt" : ""}`,
       title: `${refOf(target, attempt)}\n${attempt.prompt ?? ""}`,
       onclick: () => { this.selected = selected ? null : { target, attempt }; this.draw(); },
     }, image, el("figcaption", {}, `${String(attempt.index).padStart(2, "0")}${picked ? " ✓" : ""} · ${attemptCaption(attempt)}`));
   }
 
   private drawBase(state: ConceptState): void {
-    const tiles = state.base.candidates.map((attempt) => this.tile("base", attempt, state.base.pick === attempt.index));
-    this.baseStrip.replaceChildren(...(tiles.length ? tiles : [el("div", { class: "studio-help" }, "no attempts yet - write a prompt and Generate, or Upload")]));
+    const shown = visibleAttempts(state.base.candidates, this.showHidden.checked);
+    const tiles = shown.map((attempt) => this.tile("base", attempt, state.base.pick === attempt.index));
+    const hidden = hiddenCount(state.base.candidates);
+    this.baseStrip.replaceChildren(
+      ...(tiles.length ? tiles : [el("div", { class: "studio-help" },
+        hidden ? `every attempt is hidden (${hidden}) - "show hidden" brings them back`
+          : "no attempts yet - write a prompt and Generate, or Upload")]),
+      ...(hidden && !this.showHidden.checked
+        ? [el("div", { class: "studio-help concept-hidden-note" }, `${hidden} hidden`)] : []));
     this.baseActions.replaceChildren(...(this.selected?.target === "base" ? [this.actionBar(state, this.selected)] : []));
   }
 
@@ -598,11 +649,16 @@ export class ConceptTab {
     const reset = el("button", { type: "button", class: "studio-button", title: "back to the config sentence", onclick: () => { prompt!.value = view.default_prompt; } }, "reset");
     const generate = this.gpuButton("Generate", `anim concept --views ${view.view} --view-prompt ...`, () => void this.generate({ op: "views", views: [view.view], viewPrompt: prompt!.value }));
     generate.classList.toggle("locked", locked);
-    const tiles = view.candidates.map((attempt) => this.tile(view.view, attempt, view.pick === attempt.index));
+    const shown = visibleAttempts(view.candidates, this.showHidden.checked);
+    const tiles = shown.map((attempt) => this.tile(view.view, attempt, view.pick === attempt.index));
+    const hidden = view.hidden_count;
     const status = view.state === "accepted" ? "accepted" : view.state === "rejected" ? "rejected" : view.candidates.length ? "pick one" : "";
     return el("div", { class: `concept-view-row ${view.state}` },
       el("div", { class: "concept-view-head" },
-        el("b", {}, viewLabel(view.view)), el("span", { class: "studio-help" }, ` yaw ${view.yaw}${view.elevation === "top" ? ", from above" : ""} · ${status}`)),
+        el("b", {}, viewLabel(view.view)),
+        el("span", { class: "studio-help" },
+          ` yaw ${view.yaw}${view.elevation === "top" ? ", from above" : ""} · ${status}`
+          + (hidden && !this.showHidden.checked ? ` · ${hidden} hidden` : ""))),
       el("div", { class: "studio-row" }, prompt, reset, generate),
       el("div", { class: "concept-strip" }, ...(tiles.length ? tiles : [el("span", { class: "studio-help" }, "no attempts")])),
       ...(this.selected?.target === view.view ? [this.actionBar(state, this.selected)] : []));
@@ -614,7 +670,8 @@ export class ConceptTab {
     const ref = refOf(target, attempt);
     const isBase = target === "base";
     const picked = isBase ? state.base.pick === attempt.index : state.views[target]?.pick === attempt.index;
-    const accept = el("button", { type: "button", class: "studio-button primary", disabled: picked || !attempt.rendered,
+    const accept = el("button", { type: "button", class: "studio-button primary",
+      disabled: picked || !attempt.rendered || !!attempt.file_deleted,
       title: isBase ? "anim concept --pick NN: this is the base gate" : `anim concept --pick-view ${target}=NN`,
       onclick: () => void this.accept(selected) }, picked ? "accepted ✓" : "Accept");
     const regenerate = this.gpuButton("Regenerate", isBase ? "txt2img again with the prompt above (new seed unless locked)" : "this view again with its prompt (new seed unless locked)",
@@ -634,13 +691,29 @@ export class ConceptTab {
     const locked = !isBase && !!state.locked;
     for (const button of [regenerate, img2img, edit]) button.classList.toggle("locked", locked);
     this.enableButtons();
+    // Hide / Restore, and - only once hidden - Delete file. The accepted
+    // attempt is refused here and in the API: every later stage reads it.
+    const why = lockedReason(state, target, attempt);
+    const hide = el("button", {
+      type: "button", class: "studio-button", disabled: !!why,
+      title: why ?? (attempt.hidden ? "show this attempt again"
+        : "take it out of the strip; the file and the record stay"),
+      onclick: () => void this.setHidden(selected, !attempt.hidden),
+    }, attempt.hidden ? "Restore" : "Hide");
+    const deleteFile = attempt.hidden && !attempt.file_deleted
+      ? el("button", {
+          type: "button", class: "studio-button", disabled: !!why,
+          title: why ?? `delete ${attempt.file} from disk; the row stays as its record`,
+          onclick: () => void this.deleteFile(selected),
+        }, "Delete file")
+      : null;
     const meta = [attemptCaption(attempt), attempt.model ? `model ${attempt.model}` : null,
       attempt.loras?.length ? `LoRA ${attempt.loras.map((l) => `${l.file} × ${l.strength}`).join(", ")}` : null,
       attempt.instruction ? `"${attempt.instruction}"` : null].filter(Boolean).join(" · ");
     return el("div", { class: "concept-actions-bar" },
       el("div", { class: "concept-actions-head" }, el("b", {}, ref), " ", el("span", { class: "studio-help" }, meta)),
       attempt.prompt ? el("div", { class: "concept-actions-prompt", title: "the prompt this attempt was made from" }, attempt.prompt) : null,
-      el("div", { class: "studio-row" }, accept, regenerate),
+      el("div", { class: "studio-row" }, accept, regenerate, hide, deleteFile),
       el("div", { class: "studio-row" }, img2img, strength, strengthLabel, img2imgPrompt),
       el("div", { class: "studio-row" }, edit, instruction));
   }

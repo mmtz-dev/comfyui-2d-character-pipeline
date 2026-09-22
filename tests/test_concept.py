@@ -1017,3 +1017,109 @@ def test_a_failed_render_leaves_no_phantom_attempts(work_dir, workflow_dir):
     assert manifest["next_index"] == len(before)
     assert sorted(p.name for p in job.candidates_dir.glob("*.png")) == \
         sorted(f"{i:02d}.png" for i in before), "and no stray files"
+
+
+# ---------------------------------------------------------------------------
+# Hiding and deleting attempts
+# ---------------------------------------------------------------------------
+def test_hide_takes_an_attempt_out_of_the_strips_and_show_brings_it_back(work_dir, workflow_dir):
+    _concept_job(work_dir, workflow_dir)
+    job = Job.open("knight_concept", work_dir)
+    row = concept_stage.hide_attempt("knight", "base:00", work_dir=work_dir)
+    assert row["hidden"] is True
+    manifest = job.read_manifest()
+    assert manifest["candidates"][0]["hidden"] is True
+    assert [c["index"] for c in manifest["candidates"]] == [0, 1], "the row stays in the list"
+    assert (job.candidates_dir / "00.png").exists(), "the file stays"
+    store = concept_stage.Attempts("knight", "base", work_dir)
+    assert [r["index"] for r in store.visible_rows()] == [1]
+    concept_stage.hide_attempt("knight", "base:00", hidden=False, work_dir=work_dir)
+    assert "hidden" not in job.read_manifest()["candidates"][0]
+    with pytest.raises(ValueError, match="no attempt base:09"):
+        concept_stage.hide_attempt("knight", "base:09", work_dir=work_dir)
+
+
+def test_a_hidden_attempt_keeps_its_number_so_the_next_one_does_not_reuse_it(
+        work_dir, workflow_dir):
+    """The filename comes from the index (`attempt_file`) and the next index is
+    max + 1, so a row that left the list would hand its number - and its
+    filename - to the next attempt, over a PNG still on disk."""
+    _concept_job(work_dir, workflow_dir)
+    job = Job.open("knight_concept", work_dir)
+    concept_stage.hide_attempt("knight", "base:01", work_dir=work_dir)
+    concept_stage.delete_attempt_file("knight", "base:01", work_dir=work_dir)
+    assert not (job.candidates_dir / "01.png").exists()
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.concept("knight", description="a knight", count=1, seed=9,
+                              client=comfy.ComfyClient(fake.url),
+                              workflow_dir=workflow_dir, work_dir=work_dir)
+    manifest = job.read_manifest()
+    assert [c["index"] for c in manifest["candidates"]] == [0, 1, 2]
+    assert manifest["candidates"][2]["file"] == "02.png"
+    assert not (job.candidates_dir / "01.png").exists(), "the deleted number was not reused"
+    assert sorted(p.name for p in job.candidates_dir.glob("*.png")) == ["00.png", "02.png"]
+
+
+def test_delete_file_needs_a_hidden_attempt_and_leaves_its_record(work_dir, workflow_dir):
+    _concept_job(work_dir, workflow_dir)
+    job = Job.open("knight_concept", work_dir)
+    with pytest.raises(ValueError, match="is not hidden"):
+        concept_stage.delete_attempt_file("knight", "base:00", work_dir=work_dir)
+    assert (job.candidates_dir / "00.png").exists()
+    concept_stage.hide_attempt("knight", "base:00", work_dir=work_dir)
+    row = concept_stage.delete_attempt_file("knight", "base:00", work_dir=work_dir)
+    assert not (job.candidates_dir / "00.png").exists()
+    kept = job.read_manifest()["candidates"][0]
+    assert kept["file_deleted"] == row["file_deleted"] and kept["hidden"] is True
+    # The record of what it was survives its file.
+    assert kept["prompt"] and kept["seed"] == 10 and kept["file"] == "00.png"
+    assert kept["model"] and kept["loras"] and kept["workflow_sha256"]
+    # And it cannot be picked any more - the reason says so.
+    with pytest.raises(ValueError, match="was deleted"):
+        concept_stage.pick("knight", "00", work_dir=work_dir)
+
+
+def test_the_accepted_attempt_is_refused_and_a_pick_un_hides(work_dir, workflow_dir):
+    _views_ready(work_dir, workflow_dir)     # picks base:01
+    with pytest.raises(ValueError, match="accepted one"):
+        concept_stage.hide_attempt("knight", "base:01", work_dir=work_dir)
+    with pytest.raises(ValueError, match="accepted one"):
+        concept_stage.delete_attempt_file("knight", "base:01", work_dir=work_dir)
+    # Hiding another, then accepting it, brings it back: accepting is the
+    # opposite of hiding.
+    concept_stage.hide_attempt("knight", "base:00", work_dir=work_dir)
+    concept_stage.pick("knight", "00", work_dir=work_dir)
+    manifest = Job.open("knight_concept", work_dir).read_manifest()
+    assert "hidden" not in manifest["candidates"][0]
+    assert manifest["pick"]["index"] == 0
+    # base:01 is free now, and the new pick is the protected one.
+    concept_stage.hide_attempt("knight", "base:01", work_dir=work_dir)
+    with pytest.raises(ValueError, match="accepted one"):
+        concept_stage.hide_attempt("knight", "base:00", work_dir=work_dir)
+
+
+def test_a_hidden_view_attempt_leaves_the_page_and_its_children_still_name_it(
+        work_dir, workflow_dir):
+    _views_ready(work_dir, workflow_dir)
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.render_views("knight", views="back", count=2, seed=1,
+                                   client=comfy.ComfyClient(fake.url), workflow_dir=workflow_dir,
+                                   work_dir=work_dir, log=lambda _: None)
+        result = concept_stage.rework("knight", "back:00", op="edit", instruction="red helm",
+                                      client=comfy.ComfyClient(fake.url),
+                                      workflow_dir=workflow_dir, work_dir=work_dir)
+    child = result["attempts"][0]
+    concept_stage.hide_attempt("knight", "back:00", work_dir=work_dir)
+    saved = json.loads(concept_stage.views_path("knight", work_dir).read_text())
+    rows = saved["views"]["back"]["candidates"]
+    assert [c["index"] for c in rows] == [0, 1, 2] and rows[0]["hidden"] is True
+    assert rows[2]["parent"] == {"target": "back", "index": 0}, "the child still names it"
+    page = concept_stage.views_page_dir("knight", work_dir) / "index.html"
+    html = page.read_text(encoding="utf-8")
+    assert 'id="back_00"' not in html and 'id="back_01"' in html, "the printout is what was kept"
+    # An accepted view attempt is refused, like the base's.
+    concept_stage.pick_view("knight", {"back": 1}, work_dir=work_dir)
+    with pytest.raises(ValueError, match="accepted one"):
+        concept_stage.hide_attempt("knight", "back:01", work_dir=work_dir)
+    assert concept_stage.hide_attempt("knight", f"back:{child['index']:02d}",
+                                      work_dir=work_dir)["hidden"] is True

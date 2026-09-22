@@ -176,6 +176,31 @@ showed. Three fixes, each at a different layer:
 
 pytest 626 → **628**; vitest 59 → **61**.
 
+**Hide and delete, because keeping everything is not the same as showing everything.** The
+owner asked for "a delete option under a selected image to remove it from display". Two steps,
+because they are different asks: **Hide** (`--hide base:03`, `PUT
+/concept/{unit}/attempts/{target}/{index}`) takes an attempt out of the strips and off the
+views page and nothing else — the file and the record stay, a **show hidden** toggle brings it
+back greyed with **Restore**; **Delete file** (`--delete-file`, `DELETE` on the same route),
+offered only once hidden and behind a confirm, unlinks the PNG.
+
+What it does *not* do is remove the row, and that is the whole design. An attempt's filename is
+derived from its index (`attempt_file`) and the next index is `max(index) + 1` (`_next_index`),
+so a row that left the list would hand its number **and its filename** to the next attempt,
+writing over a file that may still be on disk; the base job's `concept` block, the provenance,
+`curation.views_of` and the turnaround all store an attempt's `candidate` index; and anything
+made from it by img2img or an edit names it as its `parent`. So a deleted file leaves a
+tombstone: the row keeps its prompt, seed, model, LoRAs, sha256 and parent, gains
+`file_deleted`, and the readers skip it. The prior art was already in the repo — the curation
+board rejects a frame by marking it, never by deleting it (`curation.set_frames`).
+
+The accepted attempt (the base `pick`, a view's `pick`) refuses both, in `Attempts` and again
+in the API, with the reason: every later stage reads it. Accepting an attempt clears its
+`hidden` flag — accepting is the opposite of hiding — and `pick` / `pick_view` now refuse a
+deleted file by name rather than as a missing path. The CLI listings mark a hidden row instead
+of dropping it, so `anim concept` still shows the whole record while the tab and the page show
+what was kept. pytest 628 → **634**; vitest 63 → **66**.
+
 **And the unit box refused a name instead of making a slug.** Typing "Cloaked Assassin" for a
 unit that has nothing yet answered "a unit slug is letters, digits, - and _" — the box
 validated against the pipeline's rule (`export.UNIT_RE`) instead of meeting it. Now

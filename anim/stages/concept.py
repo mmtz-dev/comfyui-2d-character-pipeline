@@ -447,6 +447,62 @@ class Attempts:
             self.record["next_index"] = index + 1
         return row
 
+    def accepted_index(self) -> int | None:
+        """The attempt this target has accepted, if any: the base's `--pick`
+        or the view's `--pick-view`. It is what every later stage reads, so
+        it is the one attempt that may not be hidden or deleted."""
+        pick = (self.record.get("pick") if self.target == BASE_TARGET
+                else self.record["views"][self.target].get("pick")) or {}
+        index = pick.get("index")
+        return None if index is None else int(index)
+
+    def visible_rows(self) -> list[dict[str, Any]]:
+        """The attempts a reader shows by default - what the owner kept."""
+        return [r for r in self.rows if not r.get("hidden")]
+
+    def set_hidden(self, index: int, hidden: bool = True) -> dict[str, Any]:
+        """Hide an attempt from the strips and the page, or show it again.
+
+        The row stays in the list either way: `_next_index` is `max(index) + 1`
+        and `attempt_file` derives the filename from the index, so a removed
+        row would let the next attempt reuse its number AND its filename, over
+        a PNG still on disk. Hiding is a mark on the record, the way the
+        curation board rejects a frame without deleting it.
+        """
+        row = self.get(index)
+        if hidden and self.accepted_index() == index:
+            raise ValueError(
+                f"{self.target}:{index:02d} is the accepted one - every later stage "
+                f"reads it; accept another attempt first, then hide this")
+        if hidden:
+            row["hidden"] = True
+        else:
+            row.pop("hidden", None)
+        return row
+
+    def delete_file(self, index: int) -> dict[str, Any]:
+        """Unlink a hidden attempt's PNG, keeping the row as a tombstone.
+
+        The row carries the prompt, seed, model, LoRAs and sha256 the image was
+        made with, and any later attempt made FROM it names it as its `parent`;
+        dropping it would break those and free its number for reuse. So the
+        file goes and the record of it stays. Hidden first, deliberately: the
+        deletion is the second step of a two-step.
+        """
+        row = self.get(index)
+        if self.accepted_index() == index:
+            raise ValueError(
+                f"{self.target}:{index:02d} is the accepted one - accept another "
+                f"attempt first, then delete this one's file")
+        if not row.get("hidden"):
+            raise ValueError(f"{self.target}:{index:02d} is not hidden; hide it first "
+                             f"(`anim concept --unit {self.slug} --hide {self.target}:{index:02d}`)")
+        path = self.path(row)
+        if path.exists():
+            path.unlink()
+        row["file_deleted"] = _now()
+        return row
+
     def drop_unrendered(self) -> list[dict[str, Any]]:
         """Forget the GPU attempts that never produced a file - what a failed
         run planned. Their settings are the ones that failed, so keeping them
@@ -454,7 +510,7 @@ class Attempts:
         attempts that do not exist. Returns the rows dropped."""
         dropped = [r for r in self.rows
                    if r.get("seconds") is None and r.get("source") in (*GPU_SOURCES, "views")
-                   and not self.path(r).exists()]
+                   and not r.get("file_deleted") and not self.path(r).exists()]
         if not dropped:
             return []
         keep = [r for r in self.rows if r not in dropped]
@@ -964,6 +1020,40 @@ def rework(slug: str, ref: str, *, op: str, client: comfy.ComfyClient | None = N
     return out
 
 
+def hide_attempt(slug: str, ref: str, *, hidden: bool = True,
+                 work_dir: Path | None = None) -> dict[str, Any]:
+    """`--hide` / `--show` one attempt (see `Attempts.set_hidden`)."""
+    target, index = parse_ref(ref)
+    store = Attempts(slug, target, work_dir)
+    row = store.set_hidden(index, hidden)
+    store.save()
+    if target != BASE_TARGET:
+        _refresh_views_page(slug, store, work_dir)
+    return row
+
+
+def delete_attempt_file(slug: str, ref: str, work_dir: Path | None = None) -> dict[str, Any]:
+    """`--delete-file` on a hidden attempt (see `Attempts.delete_file`)."""
+    target, index = parse_ref(ref)
+    store = Attempts(slug, target, work_dir)
+    row = store.delete_file(index)
+    store.save()
+    if target != BASE_TARGET:
+        _refresh_views_page(slug, store, work_dir)
+    return row
+
+
+def _refresh_views_page(slug: str, store: Attempts, work_dir: Path | None) -> str | None:
+    """Rewrite the views printout after a change to a view's attempts. Quiet
+    when there is no base to draw it from - the record is still written."""
+    try:
+        _base_job, base_path, _manifest = base_render(slug, work_dir)
+    except FileNotFoundError:
+        return None
+    return str(build_views_page(store.record, views_page_dir(slug, work_dir),
+                                base_path=base_path, out_dir=store.dir))
+
+
 # ---------------------------------------------------------------------------
 # The pick
 # ---------------------------------------------------------------------------
@@ -1005,6 +1095,9 @@ def pick(slug: str, choice: str | int, *, parts: str | None = None,
                                 f"--prompt ...` or --upload first")
     manifest = migrate_manifest(job.read_manifest())
     candidate = resolve_pick(manifest, choice)
+    if candidate.get("file_deleted"):
+        raise ValueError(f"candidate {candidate['index']:02d}'s file was deleted on "
+                         f"{candidate['file_deleted']}; pick another")
     source = job.candidates_dir / candidate["file"]
     if not source.exists():
         raise FileNotFoundError(f"candidate {candidate['index']:02d} has no file at "
@@ -1070,6 +1163,8 @@ def pick(slug: str, choice: str | int, *, parts: str | None = None,
                 "passes": [p["name"] for p in passes], "final": out.name},
         concept=provenance["concept"])
 
+    # Accepting an attempt is the opposite of hiding it.
+    candidate.pop("hidden", None)
     manifest["pick"] = {"index": candidate["index"], "file": candidate["file"],
                         "source": candidate["source"], "base_job": base_job.name,
                         "picked": provenance["created"]}
@@ -1360,6 +1455,9 @@ def pick_view(slug: str, picks: dict[str, int], *, provisional: bool = False,
         if candidate.get("seconds") is None and candidate.get("source") in (*GPU_SOURCES, "views"):
             raise ValueError(f"view {view} candidate {index:02d} has not been rendered yet")
         source = views_dir(slug, work_dir) / candidate["file"]
+        if candidate.get("file_deleted"):
+            raise ValueError(f"view {view} candidate {index:02d}'s file was deleted "
+                             f"on {candidate['file_deleted']}; pick another")
         if not source.exists():
             raise FileNotFoundError(f"{source} is missing; run `anim concept --views` again")
         png = source.read_bytes()
@@ -1372,6 +1470,7 @@ def pick_view(slug: str, picks: dict[str, int], *, provisional: bool = False,
                  "provisional": bool(provisional), "picked": _now()}
         stored[view] = entry
         written[view] = entry
+        candidate.pop("hidden", None)
         row["pick"] = {"index": index, "file": candidate["file"], "sha256": entry["sha256"],
                        "provisional": bool(provisional), "picked": entry["picked"]}
     block["views"] = {v: stored[v] for v in config.CONCEPT_VIEWS if v in stored}
@@ -1427,6 +1526,8 @@ def build_views_page(record: dict[str, Any], page_dir: Path, *, base_path: Path,
                    f'<figcaption>the base (front), <code>{Path(base_path).name}</code></figcaption></figure>']
         pick = row.get("pick") or {}
         for c in row["candidates"]:
+            if c.get("hidden"):
+                continue      # the printout is what the owner kept
             src = out_dir / c["file"]
             if src.exists():
                 write_bytes_in_place(img_dir / c["file"], src.read_bytes())
@@ -1515,6 +1616,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "--instruction (\"make the helmet red\")")
     parser.add_argument("--instruction", default=None, metavar="TEXT",
                         help="with --edit: what should change")
+    parser.add_argument("--hide", default=None, metavar="REF",
+                        help="hide the attempt REF (base:NN or <view>:NN) from the strips "
+                             "and the views page; the file and the record stay")
+    parser.add_argument("--show", default=None, metavar="REF",
+                        help="show a hidden attempt again")
+    parser.add_argument("--delete-file", dest="delete_file", default=None, metavar="REF",
+                        help="delete a HIDDEN attempt's PNG; the row stays with its prompt, "
+                             "seed and parent (its number is never reused)")
     parser.add_argument("--pick", default=None, metavar="NN|existing",
                         help="make that candidate the unit's base render "
                              "(work/<slug>_base/render/concept_pick.png) and stop")
@@ -1551,12 +1660,33 @@ def _print_attempts(rows: Sequence[dict[str, Any]]) -> None:
         seconds = row.get("seconds")
         parent = row.get("parent")
         origin = row["source"] + (f" of {parent['target']}:{int(parent['index']):02d}" if parent else "")
+        # A hidden attempt is marked, not dropped: the CLI shows the whole
+        # record, the tab and the page show what the owner kept.
+        mark = ("  [file deleted]" if row.get("file_deleted")
+                else "  [hidden]" if row.get("hidden") else "")
         print(f"  {row['file']:<18} {origin:<22} "
               f"seed {row['seed'] if row['seed'] is not None else '-':<18} "
-              f"{f'{seconds:.1f} s' if seconds is not None else ''}")
+              f"{f'{seconds:.1f} s' if seconds is not None else ''}{mark}")
 
 
 def run_stage(args: argparse.Namespace) -> int:
+    for flag, call in (("hide", lambda ref: hide_attempt(args.slug, ref, hidden=True)),
+                       ("show", lambda ref: hide_attempt(args.slug, ref, hidden=False)),
+                       ("delete_file", lambda ref: delete_attempt_file(args.slug, ref))):
+        ref = getattr(args, flag)
+        if ref is None:
+            continue
+        try:
+            row = call(ref)
+        except (ValueError, FileNotFoundError) as exc:
+            raise SystemExit(f"anim concept: {exc}") from None
+        what = {"hide": "hidden", "show": "shown", "delete_file": "file deleted"}[flag]
+        print(f"concept: {ref} {what}"
+              f"{' (' + row['file'] + ')' if flag != 'show' else ''}")
+        if flag == "hide":
+            print(f"  it stays in the record; --show brings it back, --delete-file {ref} "
+                  f"removes the PNG")
+        return 0
     if args.pick is not None:
         result = pick(args.slug, args.pick, parts=args.parts, avoid=args.avoid)
         candidate = result["candidate"]
