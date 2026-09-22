@@ -39,11 +39,14 @@ import {
   attemptCaption,
   busyText,
   choicesFor,
+  choosable,
   familyOf,
   generateBody,
   initialLoras,
   initialModel,
   isActive,
+  notInstalled,
+  offerableLoras,
   reduceConcept,
   refOf,
   rowLabel,
@@ -105,6 +108,7 @@ class FamilyPicker {
   private loras: LoraChoice[] = [];
   private touched = false;
   private choices: { checkpoints: RegistryRow[]; loras: RegistryRow[] } = { checkpoints: [], loras: [] };
+  private offerable: RegistryRow[] = [];
 
   constructor(readonly family: ModelFamily, label: string, title: string,
               private readonly onSave: (family: ModelFamily) => Promise<void>,
@@ -119,10 +123,12 @@ class FamilyPicker {
   /** Repopulate from the registry and the unit's defaults (a new unit, or a save). */
   reset(listing: ModelsListing | null, state: ConceptState | null): void {
     this.choices = choicesFor(listing, this.family);
+    this.offerable = offerableLoras(listing, this.family);
     const model = initialModel(state, this.family);
     this.modelSelect.replaceChildren(
       el("option", { value: "" }, `checkpoint: the workflow's own${listing ? ` (${listing.workflow_defaults[this.family]})` : ""}`),
-      ...this.choices.checkpoints.map((row) => el("option", { value: row.file, title: row.file }, rowLabel(row))));
+      ...this.choices.checkpoints.map((row) =>
+        el("option", { value: row.file, title: row.file, disabled: !choosable(row) }, rowLabel(row))));
     this.modelSelect.value = model && this.choices.checkpoints.some((r) => r.file === model) ? model : "";
     this.loras = initialLoras(state, listing, this.family);
     this.touched = false;
@@ -131,14 +137,19 @@ class FamilyPicker {
 
   private draw(state: ConceptState | null): void {
     this.loraList.replaceChildren(...this.loras.map((lora, i) => this.loraRow(lora, i)));
-    this.addButton.disabled = !this.choices.loras.length;
+    this.addButton.disabled = !this.offerable.length;
+    this.addButton.title = this.offerable.length ? "stack another LoRA"
+      : `no ${this.family} LoRA is installed on the GPU service (gpu/models.registry.tsv lists them)`;
     this.saveButton.disabled = !state || sameAsDefault(state, this.family, this.model(), this.loras);
   }
 
   private loraRow(lora: LoraChoice, i: number): HTMLElement {
     const select = el("select", { class: "studio-select small", title: "the LoRA file (gpu/models.registry.tsv)" },
       ...(this.choices.loras.some((r) => r.file === lora.file) ? [] : [el("option", { value: lora.file }, `${lora.file} (not in the registry)`)]),
-      ...this.choices.loras.map((row) => el("option", { value: row.file, title: row.trigger ? `trigger: ${row.trigger}` : row.file }, rowLabel(row))));
+      ...this.choices.loras.map((row) =>
+        el("option", { value: row.file, disabled: !choosable(row),
+          title: row.installed === false ? `${row.file} is not on the GPU service - gpu/download_models.sh`
+            : row.trigger ? `trigger: ${row.trigger}` : row.file }, rowLabel(row))));
     select.value = lora.file;
     select.addEventListener("change", () => {
       const row = this.choices.loras.find((r) => r.file === select.value);
@@ -159,7 +170,8 @@ class FamilyPicker {
   }
 
   private add(): void {
-    const unused = this.choices.loras.find((row) => !this.loras.some((l) => l.file === row.file)) ?? this.choices.loras[0];
+    const offerable = this.offerable;
+    const unused = offerable.find((row) => !this.loras.some((l) => l.file === row.file)) ?? offerable[0];
     if (!unused) return;
     this.loras.push({ file: unused.file, strength: unused.default_strength ?? 1 });
     this.touched = true;
@@ -258,7 +270,9 @@ export class ConceptTab {
   // --- loading ---------------------------------------------------------------
   async start(): Promise<void> {
     try {
-      this.listing = await getModels();
+      // Probed: a file the service does not have must not be offered - the
+      // Qwen pixel LoRA is registered and deliberately not installed.
+      this.listing = await getModels(true);
     } catch (error) {
       this.say(`could not read /models - ${errorText(error)}`, "warn");
     }
@@ -385,10 +399,20 @@ export class ConceptTab {
     const state = this.state;
     if (!state) return;
     let body;
+    const form = this.form(ask.op);
     try {
-      body = generateBody(ask, this.form(ask.op));
+      body = generateBody(ask, form);
     } catch (error) {
       this.say(errorText(error), "bad");
+      return;
+    }
+    // The GPU service validates every model filename before it executes, so a
+    // registered-but-missing file is a 400 on the whole graph. Say so here.
+    const family = familyOf(ask.op, this.listing);
+    const missing = notInstalled(this.listing, family, form.model, form.loras ?? []);
+    if (missing.length) {
+      this.say(`${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not installed on the `
+        + "GPU service - pick another, or install it with gpu/download_models.sh", "bad");
       return;
     }
     const what = ask.op === "views" ? `${ask.views!.map(viewLabel).join(", ")} view${ask.views!.length === 1 ? "" : "s"}` : ask.op === "txt2img" ? "the base" : `${ask.op} of ${ask.ref}`;

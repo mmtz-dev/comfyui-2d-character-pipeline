@@ -222,12 +222,39 @@ export function rowLabel(row: RegistryRow): string {
   return flags.length ? `${row.label} (${flags.join(", ")})` : row.label;
 }
 
+/** A file ComfyUI told us it does not have cannot be chosen: it would be a
+ * 400 on the whole graph at `/prompt`, after the inputs went up. `null`
+ * (unprobed) stays choosable - the stage checks again before it posts. */
+export function choosable(row: RegistryRow): boolean {
+  return row.installed !== false;
+}
+
+/** The LoRAs a family can actually offer right now. */
+export function offerableLoras(listing: ModelsListing | null, family: ModelFamily): RegistryRow[] {
+  return choicesFor(listing, family).loras.filter(choosable);
+}
+
 /** The form's starting LoRA list for a family: the unit's default when it
  * has one, else the workflow's (the pixel LoRA for Z-Image, none for Qwen). */
 export function initialLoras(state: ConceptState | null, listing: ModelsListing | null, family: ModelFamily): LoraChoice[] {
   const saved = state?.defaults[family];
   if (saved?.loras) return saved.loras.map((lora) => ({ ...lora }));
   return (listing?.default_lora[family] ?? []).map((lora) => ({ ...lora }));
+}
+
+/** The LoRAs of a form that the GPU service does not have - what a press
+ * would be refused for, named before it is pressed. */
+export function notInstalled(listing: ModelsListing | null, family: ModelFamily,
+                             model: string | null, loras: LoraChoice[]): string[] {
+  const rows = choicesFor(listing, family);
+  const missing: string[] = [];
+  const check = (file: string, from: RegistryRow[]) => {
+    const row = from.find((r) => r.file === file);
+    if (row && row.installed === false) missing.push(row.label);
+  };
+  if (model) check(model, rows.checkpoints);
+  for (const lora of loras) check(lora.file, rows.loras);
+  return missing;
 }
 
 export function initialModel(state: ConceptState | null, family: ModelFamily): string | null {

@@ -26,15 +26,10 @@ from anim.job import Job
 from anim.stages import concept as concept_stage
 from anim.util import read_json
 
-# The loaders whose combo lists say which files ComfyUI can see, per family
-# and role - `GET /models?probe=1` reads them out of `/object_info`.
-PROBE_INPUTS: dict[tuple[str, str], tuple[str, str]] = {
-    ("zimage", "checkpoint"): ("UNETLoader", "unet_name"),
-    ("zimage", "lora"): ("LoraLoaderModelOnly", "lora_name"),
-    ("qwen-edit", "checkpoint"): ("NunchakuQwenImageDiTLoader", "model_name"),
-    ("qwen-edit", "lora"): ("LoraLoaderModelOnly", "lora_name"),
-    ("wan", "checkpoint"): ("UNETLoader", "unet_name"),
-}
+# The loaders whose combo lists say which files ComfyUI can see, per family and
+# role; `GET /models?probe=1` reads them out of `/object_info`. The same map
+# is what `concept.check_installed` refuses on before posting.
+PROBE_INPUTS = comfy.LOADER_INPUTS
 
 
 def _url_index(files: list[Path], name: str | None) -> int | None:

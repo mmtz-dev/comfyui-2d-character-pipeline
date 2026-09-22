@@ -447,6 +447,24 @@ class Attempts:
             self.record["next_index"] = index + 1
         return row
 
+    def drop_unrendered(self) -> list[dict[str, Any]]:
+        """Forget the GPU attempts that never produced a file - what a failed
+        run planned. Their settings are the ones that failed, so keeping them
+        would make the next run repeat the failure and the record claim
+        attempts that do not exist. Returns the rows dropped."""
+        dropped = [r for r in self.rows
+                   if r.get("seconds") is None and r.get("source") in (*GPU_SOURCES, "views")
+                   and not self.path(r).exists()]
+        if not dropped:
+            return []
+        keep = [r for r in self.rows if r not in dropped]
+        if self.target == BASE_TARGET:
+            self.record["candidates"] = keep
+            self.record["next_index"] = _next_index(keep)
+        else:
+            self.record["views"][self.target]["candidates"] = keep
+        return dropped
+
     def save(self) -> None:
         self.record["updated"] = _now()
         if self.target == BASE_TARGET:
@@ -754,6 +772,42 @@ def _client(client: comfy.ComfyClient | None) -> tuple[comfy.ComfyClient, dict[s
     return client, stats
 
 
+def check_installed(client: comfy.ComfyClient, family: str, *, model: str | None,
+                    loras: Sequence[dict[str, Any]] | None) -> None:
+    """Refuse a checkpoint or LoRA the GPU service does not have, BEFORE the
+    first `/prompt`.
+
+    ComfyUI validates every combo input against the loader's file list, so a
+    file that is registered but not installed - the Qwen pixel LoRA is exactly
+    that, see the KNOWN DISCREPANCY in `gpu/models.lock` - comes back as a 400
+    on the whole graph naming only a node id, after the inputs have been
+    uploaded. The registry says what may be asked for; this says what is
+    actually there. A node class ComfyUI does not have answers with an empty
+    list and is not judged - the graph's own validation is the backstop.
+    """
+    missing: list[str] = []
+    checkpoint = comfy.LOADER_INPUTS.get((family, "checkpoint"))
+    if model and checkpoint:
+        available = client.combo_values(*checkpoint)
+        if available and model not in available:
+            missing.append(f"checkpoint {model!r}")
+    lora_input = comfy.LOADER_INPUTS.get((family, "lora"))
+    if loras and lora_input:
+        available = client.combo_values(*lora_input)
+        if available:
+            missing.extend(f"LoRA {row['file']!r}" for row in loras
+                           if row.get("file") and row["file"] not in available)
+    if not missing:
+        return
+    raise comfy.ComfyError(
+        f"the GPU service at {client.base_url} does not have the "
+        f"{' and the '.join(missing)} this run asks for. Install it "
+        f"(`gpu/download_models.sh --only <part of the filename>`) or choose "
+        f"another in the Concept tab's picker - `gpu/models.registry.tsv` lists "
+        f"what may be asked for, `gpu/models.lock` whether it installs "
+        f"(the Qwen pixel LoRA is registered and deliberately NOT installed)")
+
+
 def _run_one(client: comfy.ComfyClient, workflow: dict[str, Any], *, timeout_s: float
              ) -> tuple[str, dict[str, Any], bytes, float]:
     started = time.monotonic()
@@ -780,6 +834,11 @@ def render_pending(store: Attempts, *, client: comfy.ComfyClient | None = None,
     if not pending:
         return []
     client, stats = _client(client)
+    for family in {family_of(row["source"]) for row in pending}:
+        rows = [r for r in pending if family_of(r["source"]) == family]
+        check_installed(client, family,
+                        model=next((r["model"] for r in rows if r.get("model")), None),
+                        loras=[lora for r in rows for lora in (r.get("loras") or [])])
     manifest = store.job.read_manifest()
     sketch_name: str | None = None
     uploaded: dict[str, str] = {}
@@ -790,49 +849,57 @@ def render_pending(store: Attempts, *, client: comfy.ComfyClient | None = None,
         return uploaded[name]
 
     done: list[dict[str, Any]] = []
-    for row in pending:
-        source = row["source"]
-        if source == "txt2img":
-            if row.get("sketch") and sketch_name is None:
-                # The input ROOT under a job-unique name, like `clip`'s uploads.
-                sketch_name = upload(store.job.root / row["sketch"]["file"],
-                                     f"anim_{store.job.name}_sketch.png")
-            workflow = build_workflow(manifest, seed=row["seed"], sketch_name=sketch_name,
-                                      job=store.job, workflow_dir=workflow_dir, attempt=row)
-        else:
-            parent = row["parent"]
-            parent_store = store if parent["target"] == store.target else \
-                Attempts(store.slug, parent["target"], store.work_dir)
-            parent_path = parent_store.path(parent_store.get(int(parent["index"])))
-            name = upload(parent_path,
-                          f"anim_{store.job.name}_src_{parent['target']}_{int(parent['index']):02d}.png")
-            if source == "img2img":
-                workflow = build_img2img_workflow(row, source_name=name, job=store.job,
-                                                  workflow_dir=workflow_dir)
+    try:
+        for row in pending:
+            source = row["source"]
+            if source == "txt2img":
+                if row.get("sketch") and sketch_name is None:
+                    # The input ROOT under a job-unique name, like `clip`'s uploads.
+                    sketch_name = upload(store.job.root / row["sketch"]["file"],
+                                         f"anim_{store.job.name}_sketch.png")
+                workflow = build_workflow(manifest, seed=row["seed"], sketch_name=sketch_name,
+                                          job=store.job, workflow_dir=workflow_dir, attempt=row)
             else:
-                workflow = build_view_workflow(
-                    row["prompt"], seed=row["seed"], base_name=name, slug=store.slug,
-                    workflow_dir=workflow_dir, model=row.get("model"), loras=row.get("loras"),
-                    prefix=f"edit/{VIEW_WORKFLOW}")
-        log(f"concept {source}: {store.target}:{row['index']:02d} (seed {row['seed']}) ...")
-        prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
-        path = write_bytes_in_place(store.path(row), png)
-        log(f"  -> {path.name}  {elapsed:.1f} s")
-        row |= {"prompt_id": prompt_id, "seconds": round(elapsed, 1), "file": path.name,
-                "sha256": sha256_bytes(png),
-                # The graph AS SENT, seed included - what `render` records per
-                # pass and what the pick's provenance copies.
-                "workflow_sha256": comfy.workflow_sha256(workflow),
-                "models": [m.as_sidecar_entry()
-                           for m in models_lock.for_workflow(workflow, lock_path)],
-                "embedded_prompt": render_stage.prompt_chunk(png) is not None}
-        done.append(row)
-        if store.target == BASE_TARGET and source == "txt2img" \
-                and not store.record.get("workflow_sha256"):
-            # Same graph for every candidate but the seed; the job-level hash
-            # is the first one with its seed zeroed - the SET's, not a member's.
-            unseeded = comfy.patch(copy.deepcopy(workflow), "seed", seed=0)
-            store.record["workflow_sha256"] = comfy.workflow_sha256(unseeded)
+                parent = row["parent"]
+                parent_store = store if parent["target"] == store.target else \
+                    Attempts(store.slug, parent["target"], store.work_dir)
+                parent_path = parent_store.path(parent_store.get(int(parent["index"])))
+                name = upload(parent_path,
+                              f"anim_{store.job.name}_src_{parent['target']}_{int(parent['index']):02d}.png")
+                if source == "img2img":
+                    workflow = build_img2img_workflow(row, source_name=name, job=store.job,
+                                                      workflow_dir=workflow_dir)
+                else:
+                    workflow = build_view_workflow(
+                        row["prompt"], seed=row["seed"], base_name=name, slug=store.slug,
+                        workflow_dir=workflow_dir, model=row.get("model"), loras=row.get("loras"),
+                        prefix=f"edit/{VIEW_WORKFLOW}")
+            log(f"concept {source}: {store.target}:{row['index']:02d} (seed {row['seed']}) ...")
+            prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
+            path = write_bytes_in_place(store.path(row), png)
+            log(f"  -> {path.name}  {elapsed:.1f} s")
+            row |= {"prompt_id": prompt_id, "seconds": round(elapsed, 1), "file": path.name,
+                    "sha256": sha256_bytes(png),
+                    # The graph AS SENT, seed included - what `render` records per
+                    # pass and what the pick's provenance copies.
+                    "workflow_sha256": comfy.workflow_sha256(workflow),
+                    "models": [m.as_sidecar_entry()
+                               for m in models_lock.for_workflow(workflow, lock_path)],
+                    "embedded_prompt": render_stage.prompt_chunk(png) is not None}
+            done.append(row)
+            if store.target == BASE_TARGET and source == "txt2img" \
+                    and not store.record.get("workflow_sha256"):
+                # Same graph for every candidate but the seed; the job-level hash
+                # is the first one with its seed zeroed - the SET's, not a member's.
+                unseeded = comfy.patch(copy.deepcopy(workflow), "seed", seed=0)
+                store.record["workflow_sha256"] = comfy.workflow_sha256(unseeded)
+    except BaseException:
+        # A failed run's planned rows carry the settings that failed; keep only
+        # what actually rendered, so a rerun starts clean and the record never
+        # claims an attempt that has no file.
+        store.drop_unrendered()
+        store.save()
+        raise
     comfyui = render_stage.build_provenance(client.base_url, stats,
                                             store.record.get("seed") or 0, [])["comfyui"]
     seen: list[dict[str, Any]] = list(store.record.get("models") or [])
@@ -1191,27 +1258,41 @@ def render_views(slug: str, *, views: str | Sequence[str] | None = None,
     write_json_in_place(path, record)
 
     client, stats = _client(client)
+    try:
+        check_installed(client, "qwen-edit", model=generation["model"],
+                        loras=generation["loras"])
+    except BaseException:
+        _drop_planned(record, planned)
+        write_json_in_place(path, record)
+        raise
     base_name = client.upload_image(base_path, name=f"anim_{job_name(slug)}_view_base.png")
     models: list[dict[str, Any]] = list(record.get("models") or [])
-    for view, row in planned:
-        workflow = build_view_workflow(row["prompt"], seed=row["seed"], base_name=base_name,
-                                       slug=slug, workflow_dir=workflow_dir,
-                                       model=row["model"], loras=row["loras"])
-        log(f"concept views: {view} {row['index']:02d} (seed {row['seed']}) ...")
-        prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
-        file = write_bytes_in_place(out_dir / row["file"], png)
-        log(f"  -> {file.name}  {elapsed:.1f} s")
-        row_models = [m.as_sidecar_entry() for m in models_lock.for_workflow(workflow, lock_path)]
-        row |= {"prompt_id": prompt_id, "seconds": round(elapsed, 1), "sha256": sha256_bytes(png),
-                "workflow_sha256": comfy.workflow_sha256(workflow), "models": row_models,
-                "embedded_prompt": render_stage.prompt_chunk(png) is not None}
-        for m in row_models:
-            if m not in models:
-                models.append(m)
-        if not record.get("workflow_sha256"):
-            unseeded = comfy.patch(copy.deepcopy(workflow), "seed", seed=0)
-            record["workflow_sha256"] = comfy.workflow_sha256(unseeded)
+    try:
+        for view, row in planned:
+            workflow = build_view_workflow(row["prompt"], seed=row["seed"], base_name=base_name,
+                                           slug=slug, workflow_dir=workflow_dir,
+                                           model=row["model"], loras=row["loras"])
+            log(f"concept views: {view} {row['index']:02d} (seed {row['seed']}) ...")
+            prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
+            file = write_bytes_in_place(out_dir / row["file"], png)
+            log(f"  -> {file.name}  {elapsed:.1f} s")
+            row_models = [m.as_sidecar_entry() for m in models_lock.for_workflow(workflow, lock_path)]
+            row |= {"prompt_id": prompt_id, "seconds": round(elapsed, 1), "sha256": sha256_bytes(png),
+                    "workflow_sha256": comfy.workflow_sha256(workflow), "models": row_models,
+                    "embedded_prompt": render_stage.prompt_chunk(png) is not None}
+            for m in row_models:
+                if m not in models:
+                    models.append(m)
+            if not record.get("workflow_sha256"):
+                unseeded = comfy.patch(copy.deepcopy(workflow), "seed", seed=0)
+                record["workflow_sha256"] = comfy.workflow_sha256(unseeded)
+            write_json_in_place(path, record)
+    except BaseException:
+        # The rows this run planned and did not render carry the settings that
+        # failed; drop them so a rerun starts clean (what rendered is kept).
+        _drop_planned(record, planned)
         write_json_in_place(path, record)
+        raise
     record |= {
         "updated": _now(),
         "comfyui": render_stage.build_provenance(client.base_url, stats, seed, [])["comfyui"],
@@ -1223,6 +1304,15 @@ def render_views(slug: str, *, views: str | Sequence[str] | None = None,
                                           base_path=base_path, out_dir=out_dir))
     record["rendered"] = [{"view": v, "index": r["index"]} for v, r in planned]
     return record
+
+
+def _drop_planned(record: dict[str, Any],
+                  planned: Sequence[tuple[str, dict[str, Any]]]) -> None:
+    """Forget the planned view attempts that never rendered (a failed run)."""
+    for view, row in planned:
+        rows = (record.get("views", {}).get(view) or {}).get("candidates") or []
+        if row.get("seconds") is None and row in rows:
+            rows.remove(row)
 
 
 def parse_view_picks(specs: Sequence[str]) -> dict[str, int]:

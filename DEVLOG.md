@@ -4,6 +4,30 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-22 — the concept generation feature: the model pickers work before a unit does
+
+**What.** A fix on top of the entry below. On a fresh Concept tab both checkpoint `<select>`s
+were empty — no `<option>` at all — and typing a new unit slug was refused as often as not.
+`FamilyPicker.reset()` is the only place the options are made, and `ConceptTab.load()` called it
+only after a unit's state came back, while `load()` returned early whenever no unit was picked.
+So with two units in the list (nothing auto-selects) the settings row never saw `/models`,
+however well `/models` answered. `load()` now fills the pickers from the registry alone when
+there is no unit, and `ensureModels()` refetches `/models` on any later load, so a registry that
+failed once at startup is not empty for the rest of the session (the ↻ retries it too).
+
+**Why the slug is normalised, not just checked.** The tab refused anything outside
+`^[a-z0-9][a-z0-9_-]*$` with "a unit slug is letters, digits, - and _", which is the rule and not
+an instruction — a person who types "War Hound" is told nothing about what to do. `normaliseSlug`
+in concept.ts (pure, tested) trims, lowercases and turns a space into `_`, so "War Hound" loads
+`war_hound`; what is left over is refused with the slug to type instead ("_draft" → try "draft").
+It matches `anim/api/jobs.py::JOB_NAME` rather than being stricter, so the tab never sends a name
+the API would 404 on — confirmed against the running API: `war_hound` 200, `war hound` and
+`_draft` 404. A checkpoint chosen before a unit was loaded now survives that load unless the
+unit has its own saved default, because the old behaviour silently swapped the model out from
+under the first press.
+
+---
+
 ## 2026-09-22 — the concept generation feature: the Concept tab, every attempt kept, img2img and edit, the model picker, Cancel
 
 **What.** [#300](http://192.168.1.158:8700/work_packages/300); manual test
@@ -128,6 +152,29 @@ img2img / edit / the registry / chaining / the gate, FakeComfy's `/object_info` 
 job read through the new state builder; the manual test (#301) is the first real generate,
 img2img, edit and cancel from the tab. The API container bind-mounts the repo, so `web/dist`
 is live at once and the Python routes appear on the next `docker compose restart anim-api`.
+
+**First real run, and the hole it found** (`claoked_assassin`, views/back from the tab):
+ComfyUI answered `400 prompt_outputs_failed_validation`, `node_errors.13: lora_name
+'Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors' not in [...]`. The tab's "+ LoRA" offered
+the one qwen-edit LoRA the registry lists — the file `models.lock` deliberately does **not**
+install (the upstream hash discrepancy) — because the tab fetched `/models` without
+`?probe=1`, so every row's `installed` was `null` and the "(not installed)" flag never
+showed. Three fixes, each at a different layer:
+1. **The tab probes** (`getModels(true)`): a row the service does not have is disabled in
+   both selects, "+ LoRA" skips it (and says so when none is left), and a press whose form
+   names one is refused client-side with the file's label.
+2. **The stage checks before it posts** (`concept.check_installed`, `comfy.LOADER_INPUTS`
+   shared with `GET /models?probe=1`): one `/object_info` read per (family, role) and a
+   `ComfyError` naming the checkpoint or LoRA and the `gpu/download_models.sh` line. This is
+   the layer that matters — ComfyUI validates every combo input before executing, so a
+   missing file fails the *whole* graph with only a node id, after the base image has gone
+   up, and the CLI can reach it without the tab.
+3. **A failed run drops what it only planned** (`Attempts.drop_unrendered`, `_drop_planned`):
+   the rows carry the settings that failed, so keeping them made the next run repeat the
+   failure and the record claim an attempt with no file. The one phantom row the failing run
+   left in `claoked_assassin`'s views.json was removed with the same call.
+
+pytest 626 → **628**; vitest 59 → **61**.
 
 ---
 

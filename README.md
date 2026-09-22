@@ -622,8 +622,18 @@ redoing the rest.
   `resolve_loras`). LoRAs stack (`--lora FILE[:STRENGTH]` repeatable → chained
   `LoraLoaderModelOnly` nodes, `comfy.chain_loras`; none → the node is bypassed). A choice
   applies to that press; **save as unit default** writes `job.json["defaults"][family]`
-  (`PUT /concept/{unit}/defaults`) and later presses without a choice use it. `?probe=1`
-  marks each row `installed` from ComfyUI's own file lists.
+  (`PUT /concept/{unit}/defaults`) and later presses without a choice use it.
+- **What is registered is not always installed.** `?probe=1` marks each row `installed`
+  from ComfyUI's own file lists — the tab always probes, so a missing file is greyed out
+  and named before the press (the Qwen pixel LoRA is registered and deliberately *not*
+  installed: `models.lock`'s KNOWN DISCREPANCY). The stage checks again before its first
+  `/prompt` (`concept.check_installed`) and refuses with the filename and the
+  `gpu/download_models.sh` line, because ComfyUI validates every model name against the
+  loader's file list and would otherwise answer `400` on the whole graph — after the inputs
+  had been uploaded — naming only a node id.
+- **A failed run leaves nothing behind.** The attempts it planned and did not render are
+  dropped (they carry the settings that failed), so the record never claims an attempt with
+  no file and a rerun starts clean.
 - **Seed.** Random per press; **lock seed** resends the last one so a prompt tweak changes
   only what you changed.
 - **The GPU is one card.** While a run holds it every generate button waits — a run started
@@ -1064,8 +1074,8 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 626 passed, 4 skipped (2026-09-22)
-cd web && npm test                                  # 59 passed - the editor panel's pure parts
+docker compose run --rm anim-pipeline pytest        # 628 passed, 4 skipped (2026-09-22)
+cd web && npm test                                  # 61 passed - the editor panel's pure parts
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

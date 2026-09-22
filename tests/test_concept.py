@@ -962,3 +962,58 @@ def test_the_views_wait_behind_the_base_gate(work_dir, workflow_dir):
     assert curation.gate_for_request("concept", ["--unit", "knight", "--views"], work_dir)
     assert curation.gate_for_request("concept", ["--unit", "knight", "--views", "--force"],
                                      work_dir) is None
+
+
+def test_a_model_the_service_does_not_have_is_refused_before_anything_is_posted(
+        work_dir, workflow_dir):
+    """The Qwen pixel LoRA is registered and deliberately NOT installed (the
+    KNOWN DISCREPANCY in models.lock). ComfyUI would answer 400 on the whole
+    graph after the inputs went up, naming a node id; the stage says which
+    file, before the first /prompt."""
+    _views_ready(work_dir, workflow_dir)
+    qwen_lora = "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors"
+    installed = {"UNETLoader": {"unet_name": [config.CONCEPT_MODELS["zimage"]]},
+                 "LoraLoaderModelOnly": {"lora_name": [config.CONCEPT_LORA["file"]]},
+                 "NunchakuQwenImageDiTLoader": {"model_name": [config.CONCEPT_MODELS["qwen-edit"]]}}
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL), object_info=installed) as fake:
+        with pytest.raises(comfy.ComfyError, match=f"does not have the LoRA '{qwen_lora}'"):
+            concept_stage.render_views("knight", views="back", count=1, seed=1,
+                                       loras=[f"{qwen_lora}:0.8"], registry_path=REGISTRY,
+                                       client=comfy.ComfyClient(fake.url),
+                                       workflow_dir=workflow_dir, work_dir=work_dir,
+                                       log=lambda _: None)
+        assert fake.prompts == [] and fake.uploads == [], "nothing was sent"
+        # The row the run planned is gone: its settings are the ones that failed.
+        saved = json.loads(concept_stage.views_path("knight", work_dir).read_text())
+        assert saved["views"].get("back", {}).get("candidates") == []
+        # The same check on the base's own stack: a checkpoint the service does
+        # not have, refused with the line that installs it.
+        with pytest.raises(comfy.ComfyError, match="download_models.sh"):
+            concept_stage.check_installed(comfy.ComfyClient(fake.url), "zimage",
+                                          model="not_here.safetensors", loras=[])
+        # What IS installed goes through, and the views land.
+        record = concept_stage.render_views("knight", views="back", count=1, seed=2,
+                                            registry_path=REGISTRY,
+                                            client=comfy.ComfyClient(fake.url),
+                                            workflow_dir=workflow_dir, work_dir=work_dir,
+                                            log=lambda _: None)
+    assert [c["index"] for c in record["views"]["back"]["candidates"]] == [0], "numbering starts clean"
+    assert len(fake.prompts) == 1
+
+
+def test_a_failed_render_leaves_no_phantom_attempts(work_dir, workflow_dir):
+    """A run that dies mid-flight keeps what rendered and forgets what it only
+    planned - the record never claims an attempt with no file."""
+    _concept_job(work_dir, workflow_dir)
+    job = Job.open("knight_concept", work_dir)
+    before = [c["index"] for c in job.read_manifest()["candidates"]]
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL), error_job=True) as fake:
+        with pytest.raises(comfy.ComfyError):
+            concept_stage.concept("knight", description="a knight", count=2, seed=77,
+                                  client=comfy.ComfyClient(fake.url),
+                                  workflow_dir=workflow_dir, work_dir=work_dir)
+    manifest = job.read_manifest()
+    assert [c["index"] for c in manifest["candidates"]] == before, "the planned rows are gone"
+    assert manifest["next_index"] == len(before)
+    assert sorted(p.name for p in job.candidates_dir.glob("*.png")) == \
+        sorted(f"{i:02d}.png" for i in before), "and no stray files"

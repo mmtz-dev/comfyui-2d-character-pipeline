@@ -33,6 +33,19 @@ from anim.util import canonical_json, sha256_bytes
 
 PATCH_PREFIX = "PATCH"
 
+# Which loader's combo input lists the files of a given (family, role) - what
+# `/object_info` is asked for the concept generation feature's model picker
+# (`GET /models?probe=1`) and for the check the stage makes BEFORE it posts.
+# ComfyUI validates every combo input against the loader's file list, so a
+# missing file is a 400 on the whole graph, named only by node id.
+LOADER_INPUTS: dict[tuple[str, str], tuple[str, str]] = {
+    ("zimage", "checkpoint"): ("UNETLoader", "unet_name"),
+    ("zimage", "lora"): ("LoraLoaderModelOnly", "lora_name"),
+    ("qwen-edit", "checkpoint"): ("NunchakuQwenImageDiTLoader", "model_name"),
+    ("qwen-edit", "lora"): ("LoraLoaderModelOnly", "lora_name"),
+    ("wan", "checkpoint"): ("UNETLoader", "unet_name"),
+}
+
 
 class ComfyError(RuntimeError):
     """The service answered, and the answer was no."""

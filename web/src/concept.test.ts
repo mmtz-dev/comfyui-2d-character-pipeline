@@ -4,11 +4,14 @@ import {
   attemptCaption,
   busyText,
   choicesFor,
+  choosable,
   familyOf,
   generateBody,
   initialLoras,
   initialModel,
   isActive,
+  notInstalled,
+  offerableLoras,
   reduceConcept,
   refOf,
   rowLabel,
@@ -188,5 +191,32 @@ describe("the model picker", () => {
     expect(sameAsDefault(s, "zimage", null, [])).toBe(false);
     expect(sameAsDefault(s, "zimage", "z.safetensors", [{ file: "a", strength: 1 }])).toBe(false);
     expect(sameAsDefault(state(), "zimage", null, [])).toBe(false);
+  });
+});
+
+describe("what the GPU service does not have", () => {
+  const withQwenLora = (): ModelsListing => {
+    const l = listing();
+    l.families["qwen-edit"].lora = [row("qwen-pixel.safetensors", "lora",
+      { family: "qwen-edit", label: "Qwen pixel", installed: false })];
+    l.families.zimage.lora = [row("pixel.safetensors", "lora", { installed: true })];
+    return l;
+  };
+  it("is not offerable and is named before the press", () => {
+    const l = withQwenLora();
+    expect(offerableLoras(l, "qwen-edit")).toEqual([]);
+    expect(offerableLoras(l, "zimage").map((r) => r.file)).toEqual(["pixel.safetensors"]);
+    expect(choosable(l.families["qwen-edit"].lora[0]!)).toBe(false);
+    expect(choosable(l.families.zimage.lora[0]!)).toBe(true);
+    expect(notInstalled(l, "qwen-edit", null, [{ file: "qwen-pixel.safetensors", strength: 0.8 }]))
+      .toEqual(["Qwen pixel"]);
+    expect(notInstalled(l, "zimage", null, [{ file: "pixel.safetensors", strength: 0.8 }])).toEqual([]);
+  });
+  it("an unprobed listing stays choosable - the stage checks again before it posts", () => {
+    const l = listing();
+    expect(l.families["qwen-edit"].lora).toEqual([]);
+    expect(choosable(row("a", "lora", { installed: null }))).toBe(true);
+    expect(notInstalled(l, "zimage", "z.safetensors", [{ file: "pixel.safetensors", strength: 0.8 }]))
+      .toEqual([]);
   });
 });
