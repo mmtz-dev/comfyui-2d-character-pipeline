@@ -1075,7 +1075,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 
 ```bash
 docker compose run --rm anim-pipeline pytest        # 628 passed, 4 skipped (2026-09-22)
-cd web && npm test                                  # 61 passed - the editor panel's pure parts
+cd web && npm test                                  # 63 passed - the editor panel's pure parts
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

@@ -17,6 +17,7 @@ import {
   rowLabel,
   sameAsDefault,
   seedFor,
+  unitSlug,
   viewGroups,
   viewLabel,
   type GenerateForm,
@@ -218,5 +219,23 @@ describe("what the GPU service does not have", () => {
     expect(choosable(row("a", "lora", { installed: null }))).toBe(true);
     expect(notInstalled(l, "zimage", "z.safetensors", [{ file: "pixel.safetensors", strength: 0.8 }]))
       .toEqual([]);
+  });
+});
+
+describe("unitSlug", () => {
+  it("makes the pipeline's slug out of what the owner typed", () => {
+    expect(unitSlug("Cloaked Assassin")).toBe("cloaked_assassin");
+    expect(unitSlug("  Barrow Warden  ")).toBe("barrow_warden");
+    expect(unitSlug("knight")).toBe("knight");
+    expect(unitSlug("hound-2")).toBe("hound-2");
+    expect(unitSlug("Fée du bois")).toBe("fee_du_bois");
+    expect(unitSlug("knight's squire!")).toBe("knight_s_squire");
+    expect(unitSlug("__knight__")).toBe("knight");
+    expect(unitSlug("a  b")).toBe("a_b");
+  });
+  it("is empty when there is nothing to make one of", () => {
+    expect(unitSlug("")).toBe("");
+    expect(unitSlug("   ")).toBe("");
+    expect(unitSlug("!!!")).toBe("");
   });
 });

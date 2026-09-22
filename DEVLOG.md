@@ -176,6 +176,13 @@ showed. Three fixes, each at a different layer:
 
 pytest 626 → **628**; vitest 59 → **61**.
 
+**And the unit box refused a name instead of making a slug.** Typing "Cloaked Assassin" for a
+unit that has nothing yet answered "a unit slug is letters, digits, - and _" — the box
+validated against the pipeline's rule (`export.UNIT_RE`) instead of meeting it. Now
+`concept.unitSlug` slugifies what was typed (NFKD, lower case, anything else to `_`, runs
+collapsed, ends trimmed) and the tab says which slug it used; only a name with no letter or
+digit in it is refused, with an example. vitest 61 → **63**.
+
 ---
 
 ## 2026-09-22 — the multi-view reference feature: the prompt names the parts, no face off-front, one reference per view

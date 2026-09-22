@@ -148,6 +148,23 @@ export function refOf(target: string, attempt: Attempt): string {
   return `${target}:${String(attempt.index).padStart(2, "0")}`;
 }
 
+/** A unit slug from whatever the owner typed: "Cloaked Assassin" ->
+ * "cloaked_assassin". The rule is the pipeline's own (`export.UNIT_RE`,
+ * `jobs_api.JOB_NAME`): lower case, starting with a letter or a digit, then
+ * letters, digits, `-` and `_`. Anything else becomes `_`, runs collapse, and
+ * the ends are trimmed; "" means there was nothing usable in it. Slugifying
+ * rather than refusing, because a unit's name is the owner's words and the
+ * slug is the pipeline's filename for them. */
+export function unitSlug(typed: string): string {
+  return typed
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/_{2,}/g, "_")
+    .replace(/^[_-]+|[_-]+$/g, "");
+}
+
 export type ConceptAction =
   | { type: "pick"; index: number }
   | { type: "pickView"; view: string; index: number }

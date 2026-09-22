@@ -51,6 +51,7 @@ import {
   refOf,
   rowLabel,
   sameAsDefault,
+  unitSlug,
   viewGroups,
   viewLabel,
   type GenerateAsk,
@@ -207,7 +208,7 @@ export class ConceptTab {
 
   readonly root = el("div", { class: "concept" });
   private readonly unitSelect = el("select", { class: "studio-select", title: "the unit (GET /curation, plus every *_concept job)" });
-  private readonly unitInput = el("input", { class: "studio-input small", type: "text", placeholder: "or a new unit slug", title: "a unit that has nothing yet: type its slug and press Enter" });
+  private readonly unitInput = el("input", { class: "studio-input small", type: "text", placeholder: "or a new unit - type a name, Enter", title: "a unit that has nothing yet: type a name and press Enter (\"Cloaked Assassin\" becomes cloaked_assassin)" });
   private readonly pickers = FAMILIES.map((f) => new FamilyPicker(f.family, f.label, f.title, (family) => this.saveDefaults(family), () => this.refreshSaveButtons()));
   private readonly countSelect = el("select", { class: "studio-select small", title: "attempts per press (each is one /prompt on the card)" },
     ...[1, 2, 3, 4].map((n) => el("option", { value: String(n) }, `× ${n}`)));
@@ -299,11 +300,15 @@ export class ConceptTab {
   }
 
   private async loadTyped(): Promise<void> {
-    const slug = this.unitInput.value.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9_-]*$/.test(slug)) {
-      this.say("a unit slug is letters, digits, - and _", "bad");
+    const typed = this.unitInput.value.trim();
+    const slug = unitSlug(typed);
+    if (!slug) {
+      this.say(`"${typed}" has nothing a unit slug can be made of - letters or digits, `
+        + "e.g. \"Cloaked Assassin\" -> cloaked_assassin", "bad");
       return;
     }
+    this.unitInput.value = "";
+    if (slug !== typed) this.say(`unit ${slug} (from "${typed}")`);
     if (!this.units.includes(slug)) {
       this.units.push(slug);
       this.units.sort();
