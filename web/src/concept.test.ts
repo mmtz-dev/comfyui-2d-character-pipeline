@@ -34,13 +34,13 @@ const attempt = (index: number, extra: Partial<Attempt> = {}): Attempt => ({
 
 const view = (name: string, group: "main" | "advanced", extra: Partial<ConceptView> = {}): ConceptView => ({
   view: name, yaw: 90, elevation: name === "top" ? "top" : "side", group, prompt: `see ${name}`, default_prompt: `see ${name}`,
-  candidates: [], pick: null, hidden_count: 0, state: "pending", accepted_file: null, ...extra,
+  candidates: [], pick: null, hidden_count: 0, pick_stale: false, state: "pending", accepted_file: null, ...extra,
 });
 
 const state = (): ConceptState => ({
   unit: "knight", job: "knight_concept", exists: true, cell: [768, 768], locked: null,
   gates: { base: "accepted", turnaround: "pending" }, defaults: {}, last_seed: 42, parts_phrase: "helm",
-  base: { description: "a knight", prompt: "p", sketch: null, candidates: [attempt(0), attempt(1)], pick: 1, hidden_count: 0, accepted: true, front_url: "/f.png" },
+  base: { description: "a knight", prompt: "p", sketch: null, candidates: [attempt(0), attempt(1)], pick: 1, hidden_count: 0, pick_stale: false, accepted: true, front_url: "/f.png" },
   views: {
     back: view("back", "main", { candidates: [attempt(0, { source: "views", file: "back_00.png" })] }),
     left: view("left", "main"),

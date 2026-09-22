@@ -668,6 +668,8 @@ body.studio-collapsed .studio-head {
 .concept-tile.hidden-attempt .concept-tile-miss { opacity: 0.4; border-style: dashed; }
 .concept-tile.hidden-attempt figcaption { font-style: italic; }
 .concept-hidden-note { align-self: center; }
+/* the retouch feature: the accepted copy is older than the attempt */
+.concept-tile.stale img { border-color: var(--studio-gold); border-style: dashed; }
 .concept-tile figcaption {
   margin-top: 2px;
   overflow: hidden;

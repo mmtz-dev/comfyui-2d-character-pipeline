@@ -28,6 +28,68 @@ under the first press.
 
 ---
 
+## 2026-09-22 — the retouch feature: edit an attempt where it sits, by hand, masked, or in place
+
+**What.** Part of [#300](http://192.168.1.158:8700/work_packages/300); manual test
+[#301](http://192.168.1.158:8700/work_packages/301). Every op so far made a NEW attempt — the
+owner's ask was the opposite: "edit in place a generated image, not regenerate a new one."
+Three ways in, all overwriting the attempt you clicked:
+
+- **By hand.** *Edit pixels* opens that one attempt in Piskel — one frame, its own size — and
+  switches to the editor tab; **Save** writes it back over itself and returns to Concept. The
+  existing frame PUT was not reused: it knows nothing about attempt rows, and it would turn a
+  rubbed-out area into a transparent hole (`imaging.binarise_alpha` zeroes RGB under alpha).
+  `PUT /concept/{unit}/attempts/{target}/{index}/image` flattens any transparency onto white
+  instead, because a concept image is opaque on white and here transparency means *mask*.
+- **Masked (inpaint).** Rub out what should be redrawn and press **Inpaint** instead of Save:
+  the canvas as you left it goes up as RGBA, so core `LoadImage` hands the graph the colours
+  as the image and `1 - alpha` as the mask, and `SetLatentNoiseMask` lets the sampler denoise
+  only there (`gpu/workflows/inpaint_pass.json` — `img2img_pass.json` plus that one node; no
+  custom node pack, no inpainting checkpoint). What you painted is the source, so a rough
+  shape guides the model. **The promise that nothing else changes is kept on the CPU, not by
+  the graph**: a VAE decode re-renders the whole frame, so `inpaint_attempt` pastes the output
+  back through the mask and every pixel outside it stays byte-identical
+  (`test_inpaint_redraws_only_what_was_erased` checks all three regions).
+- **In place.** A tick in the settings row makes img2img and Edit write over the attempt
+  instead of appending (`rework_in_place`, `--in-place`).
+
+**Honesty about the pixels.** A retouched row keeps its generation record — seed, model,
+LoRAs, prompt — because that is the history the pixels grew out of, and gains an `edited`
+block (`how`: hand | inpaint | img2img | edit, `at`, and the prompt/strength/seed/instruction
+of the pass). `sha256` is recomputed and `embedded_prompt` cleared: Pillow's re-save drops
+ComfyUI's text chunks, and the old hash described bytes that no longer exist. Before this
+there was **no** re-hash anywhere after an edit — the editor's frame save has always written
+bytes and stopped — so this is the first place the record follows the file.
+
+**The accepted attempt — decided, with the alternative.** `--pick` copies the attempt into
+`work/<unit>_base/render/concept_pick.png`; editing the attempt does not move that copy. The
+alternative was to re-copy automatically, which would change what the turnaround reads without
+being asked. So the copy waits and the tab says so: the pick now records the **hash it
+copied**, `pick_stale` compares it with the attempt's current one, and the attempt and the
+Front tile read "edited since accepted — Accept again to push it through" until you do.
+Timestamps were the first attempt at that check and were wrong: `_now()` is second-resolution,
+so an edit in the same second as the accept read as clean.
+
+A hidden or file-deleted attempt is refused (`_editable`) — retouching is for what you are
+looking at. CLI parity throughout: `--replace REF --image FILE`, `--inpaint REF --mask FILE
+[--prompt --strength --seed]`, `--in-place` on `--img2img` / `--edit`; the API's inpaint route
+stashes the canvas under `work/<slug>_concept/masks/` and starts the same CLI through the run
+manager, so it queues behind the card and **Cancel** stops it like any other GPU op.
+
+New: `gpu/workflows/inpaint_pass.json` (+ NOTES.md), `concept.replace_attempt` /
+`inpaint_attempt` / `rework_in_place` / `stash_canvas` / `flatten_on_white` / `_editable` /
+`_record_edit`, `build_inpaint_workflow`, `config.CONCEPT_INPAINT_STRENGTH`,
+`api/concept._edited_since_accepted`, the two attempt routes, `panel.editAttempt` /
+`saveAttempt` / `inpaint` (one attempt in Piskel, `Opened.attempt`), the Edit pixels button and
+the "edit in place" tick. pytest 634 → **641 passed**, 4 skipped; vitest 66.
+
+**Not yet run on the GPU.** The masked pass is unproven on the card, the same caveat as
+img2img at denoise < 1: the turbo schedule at 8 steps, and whether a hard mask edge seams
+(a blur of the mask before upload is the fix if it does). Everything else is green against
+FakeComfy.
+
+---
+
 ## 2026-09-22 — the concept generation feature: the Concept tab, every attempt kept, img2img and edit, the model picker, Cancel
 
 **What.** [#300](http://192.168.1.158:8700/work_packages/300); manual test

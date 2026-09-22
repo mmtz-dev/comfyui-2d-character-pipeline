@@ -232,6 +232,7 @@ export function attemptCaption(attempt: Attempt): string {
   if (attempt.seed !== null) parts.push(`seed ${attempt.seed}`);
   if (!attempt.rendered) parts.push("waiting for the GPU");
   else if (typeof attempt.seconds === "number") parts.push(`${attempt.seconds.toFixed(1)} s`);
+  if (attempt.edited) parts.push(`edited (${attempt.edited.how})`);
   if (attempt.file_deleted) parts.push("file deleted");
   else if (attempt.hidden) parts.push("hidden");
   return parts.join(" · ");

@@ -1123,3 +1123,157 @@ def test_a_hidden_view_attempt_leaves_the_page_and_its_children_still_name_it(
         concept_stage.hide_attempt("knight", "back:01", work_dir=work_dir)
     assert concept_stage.hide_attempt("knight", f"back:{child['index']:02d}",
                                       work_dir=work_dir)["hidden"] is True
+
+
+# ---------------------------------------------------------------------------
+# The retouch feature: change an attempt where it sits
+# ---------------------------------------------------------------------------
+def _canvas_png(size, *, erase: tuple[int, int, int, int] | None = None,
+                paint: tuple[int, int, int, int] | None = None) -> bytes:
+    """An attempt as the editor leaves it: opaque, with a rubbed-out box."""
+    from io import BytesIO
+
+    img = Image.new("RGBA", size, (255, 255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([10, 10, size[0] - 10, size[1] - 10], fill=(40, 60, 90, 255))
+    if paint:
+        draw.rectangle(list(paint), fill=(200, 30, 30, 255))
+    if erase:
+        draw.rectangle(list(erase), fill=(0, 0, 0, 0))
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_replace_writes_over_the_attempt_and_says_so_on_the_record(work_dir, workflow_dir):
+    _concept_job(work_dir, workflow_dir)
+    job = Job.open("knight_concept", work_dir)
+    before = job.read_manifest()["candidates"][0]
+    path = job.candidates_dir / "00.png"
+    canvas = _canvas_png(config.CONCEPT_CELL, erase=(20, 20, 60, 60))
+    row = concept_stage.replace_attempt("knight", "base:00", canvas, work_dir=work_dir)
+    assert row["sha256"] != before["sha256"] and row["edited"]["how"] == "hand"
+    assert row["embedded_prompt"] is False
+    # The generation record is kept as history, not deleted.
+    assert row["seed"] == before["seed"] and row["prompt"] == before["prompt"]
+    assert row["model"] == before["model"] and row["index"] == 0 and row["file"] == "00.png"
+    with Image.open(path) as saved:
+        assert saved.size == tuple(config.CONCEPT_CELL)
+        arr = np.asarray(saved.convert("RGBA"))
+    # The erased box came back white and opaque - transparency means "mask",
+    # not "hole", and every concept image is opaque on white.
+    assert arr[..., 3].min() == 255
+    assert tuple(arr[30, 30][:3]) == (255, 255, 255)
+    assert tuple(arr[400, 400][:3]) == (40, 60, 90), "what was painted is kept"
+    assert json.loads(job.manifest_path.read_text())["candidates"][0]["edited"]["how"] == "hand"
+    # A different size is a different asset.
+    with pytest.raises(ValueError, match="keeps its size"):
+        concept_stage.replace_attempt("knight", "base:00", _canvas_png((256, 256)),
+                                      work_dir=work_dir)
+    with pytest.raises(ValueError, match="not an image"):
+        concept_stage.replace_attempt("knight", "base:00", b"nope", work_dir=work_dir)
+
+
+def test_retouch_refuses_a_hidden_or_deleted_attempt(work_dir, workflow_dir):
+    _concept_job(work_dir, workflow_dir)
+    canvas = _canvas_png(config.CONCEPT_CELL, erase=(20, 20, 60, 60))
+    concept_stage.hide_attempt("knight", "base:00", work_dir=work_dir)
+    with pytest.raises(ValueError, match="is hidden"):
+        concept_stage.replace_attempt("knight", "base:00", canvas, work_dir=work_dir)
+    concept_stage.delete_attempt_file("knight", "base:00", work_dir=work_dir)
+    with pytest.raises(ValueError, match="was deleted"):
+        concept_stage.replace_attempt("knight", "base:00", canvas, work_dir=work_dir)
+    with pytest.raises(ValueError, match="was deleted"):
+        concept_stage.stash_canvas("knight", "base:00", canvas, work_dir=work_dir)
+
+
+def test_inpaint_redraws_only_what_was_erased(work_dir, workflow_dir):
+    """The mask is the canvas's own transparency, and everything outside it is
+    pasted back - so a decode that shifts the frame cannot change a pixel the
+    owner did not rub out."""
+    _concept_job(work_dir, workflow_dir)
+    job = Job.open("knight_concept", work_dir)
+    canvas = _canvas_png(config.CONCEPT_CELL, erase=(20, 20, 80, 80), paint=(300, 300, 360, 360))
+    # What the GPU "draws": a flat red frame, so anything it touches is obvious.
+    from io import BytesIO
+    red = Image.new("RGB", tuple(config.CONCEPT_CELL), (255, 0, 0))
+    buffer = BytesIO()
+    red.save(buffer, format="PNG")
+    with FakeComfy(png=buffer.getvalue()) as fake:
+        row = concept_stage.inpaint_attempt("knight", "base:01", canvas, prompt="a closed helm",
+                                            strength=0.9, seed=7, registry_path=REGISTRY,
+                                            client=comfy.ComfyClient(fake.url),
+                                            workflow_dir=workflow_dir, work_dir=work_dir)
+    assert len(fake.prompts) == 1
+    graph = fake.prompts[0]
+    classes = _graph_classes(graph)
+    assert "SetLatentNoiseMask" in classes and "VAEEncode" in classes
+    assert "EmptySD3LatentImage" not in classes and "ZImageFunControlnet" not in classes
+    mask_node = next(n for n in graph.values() if n["class_type"] == "SetLatentNoiseMask")
+    load = comfy.find_node(graph, "source image")
+    assert mask_node["inputs"]["mask"] == [load, 1], "the mask is the canvas's own alpha"
+    sampler = graph[comfy.find_node(graph, "seed")]["inputs"]
+    assert sampler["denoise"] == 0.9 and sampler["seed"] == 7
+    assert graph[comfy.find_node(graph, "positive prompt")]["inputs"]["text"] == "a closed helm"
+    assert fake.uploads == ["anim_knight_concept_inpaint_base_01.png"]
+    # The record: edited in place, re-hashed, the generation history kept.
+    assert row["index"] == 1 and row["file"] == "01.png"
+    assert row["edited"]["how"] == "inpaint" and row["edited"]["strength"] == 0.9
+    assert row["edited"]["seed"] == 7 and row["edited"]["prompt"] == "a closed helm"
+    assert row["seed"] == 11, "the seed it was generated from is still there"
+    assert len(job.read_manifest()["candidates"]) == 2, "no new attempt"
+    # The pixels: red only inside the erased box.
+    with Image.open(job.candidates_dir / "01.png") as saved:
+        arr = np.asarray(saved.convert("RGB"))
+    assert tuple(arr[40, 40]) == (255, 0, 0), "the erased area was redrawn"
+    assert tuple(arr[330, 330]) == (200, 30, 30), "what was painted survived"
+    assert tuple(arr[600, 600]) == (40, 60, 90), "and everything else is untouched"
+    # A canvas with nothing erased has no mask, and says so before the GPU.
+    with FakeComfy() as fake:
+        with pytest.raises(ValueError, match="nothing is erased"):
+            concept_stage.inpaint_attempt("knight", "base:01", _canvas_png(config.CONCEPT_CELL),
+                                          client=comfy.ComfyClient(fake.url),
+                                          workflow_dir=workflow_dir, work_dir=work_dir)
+        assert fake.prompts == []
+
+
+def test_img2img_in_place_overwrites_the_attempt_instead_of_appending(work_dir, workflow_dir):
+    _concept_job(work_dir, workflow_dir)
+    job = Job.open("knight_concept", work_dir)
+    before = job.read_manifest()["candidates"][1]
+    # A PNG the original run did not produce, so the bytes are visibly new.
+    from io import BytesIO
+    replacement = Image.new("RGB", tuple(config.CONCEPT_CELL), (12, 200, 90))
+    buffer = BytesIO()
+    replacement.save(buffer, format="PNG")
+    png = buffer.getvalue()
+    with FakeComfy(png=png) as fake:
+        row = concept_stage.rework_in_place("knight", "base:01", op="img2img", strength=0.5,
+                                            seed=3, registry_path=REGISTRY,
+                                            client=comfy.ComfyClient(fake.url),
+                                            workflow_dir=workflow_dir, work_dir=work_dir)
+    manifest = job.read_manifest()
+    assert [c["index"] for c in manifest["candidates"]] == [0, 1], "no new attempt"
+    assert (job.candidates_dir / "01.png").read_bytes() == png
+    assert row["edited"]["how"] == "img2img" and row["edited"]["strength"] == 0.5
+    assert row["edited"]["seed"] == 3 and row["sha256"] != before["sha256"]
+    assert row["prompt"] == before["prompt"] and row["parent"] is None
+    assert fake.uploads == ["anim_knight_concept_src_base_01.png"]
+    graph = fake.prompts[0]
+    assert graph[comfy.find_node(graph, "seed")]["inputs"]["denoise"] == 0.5
+    # And an edit in place, on a view attempt, through the edit path.
+    concept_stage.pick("knight", "00", parts=PARTS, work_dir=work_dir)
+    with FakeComfy(png=png) as fake:
+        concept_stage.render_views("knight", views="back", count=1, seed=1,
+                                   client=comfy.ComfyClient(fake.url), workflow_dir=workflow_dir,
+                                   work_dir=work_dir, log=lambda _: None)
+        edited = concept_stage.rework_in_place("knight", "back:00", op="edit",
+                                               instruction="make the helmet red", seed=4,
+                                               registry_path=REGISTRY,
+                                               client=comfy.ComfyClient(fake.url),
+                                               workflow_dir=workflow_dir, work_dir=work_dir)
+    saved = json.loads(concept_stage.views_path("knight", work_dir).read_text())
+    assert [c["index"] for c in saved["views"]["back"]["candidates"]] == [0]
+    assert edited["edited"]["how"] == "edit"
+    assert edited["edited"]["instruction"] == "make the helmet red"
+    assert "TextEncodeQwenImageEditPlus" in _graph_classes(fake.prompts[-1])

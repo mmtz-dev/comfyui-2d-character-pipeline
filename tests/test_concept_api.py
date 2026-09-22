@@ -265,3 +265,72 @@ def test_hide_and_delete_an_attempt_through_the_api(api, work_dir):
     assert api.put("/concept/../x/attempts/base/0", json={"hidden": True}).status_code == 404
     assert api.put("/concept/knight/attempts/base/9", json={"hidden": True}).status_code == 400
     assert api.delete("/concept/knight/attempts/base/9").status_code == 400
+
+
+def _canvas(size, erase=(20, 20, 80, 80)) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", size, (255, 255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([10, 10, size[0] - 10, size[1] - 10], fill=(40, 60, 90, 255))
+    if erase:
+        draw.rectangle(list(erase), fill=(0, 0, 0, 0))
+    out = BytesIO()
+    img.save(out, format="PNG")
+    return out.getvalue()
+
+
+def test_the_editors_save_writes_over_the_attempt(api, work_dir):
+    _base(work_dir)
+    body = _canvas(config.CONCEPT_CELL)
+    r = api.put("/concept/knight/attempts/base/0/image", content=body,
+                headers={"Content-Type": "image/png"})
+    assert r.status_code == 200, r.text
+    row = r.json()["edited"]
+    assert row["edited"]["how"] == "hand" and row["index"] == 0
+    assert r.json()["base"]["candidates"][0]["edited"]["how"] == "hand"
+    assert api.put("/concept/knight/attempts/base/0/image", content=b"nope").status_code == 415
+    assert api.put("/concept/knight/attempts/base/9/image", content=body).status_code == 400
+    assert api.put("/concept/knight/attempts/under/0/image", content=body).status_code == 404
+    # The accepted one is editable - it is the copy under _base/render that waits.
+    assert api.put("/concept/knight/attempts/base/1/image", content=body).status_code == 200
+    state = api.get("/concept/knight").json()
+    assert state["base"]["pick_stale"] is True, "edited after it was accepted"
+    assert state["base"]["pick"] == 1
+    # Accepting it again clears the flag.
+    again = api.post("/concept/knight/pick", json={"index": 1}).json()
+    assert again["base"]["pick_stale"] is False
+
+
+def test_inpaint_stashes_the_canvas_and_runs_the_stage(api, work_dir):
+    _base(work_dir)
+    body = _canvas(config.CONCEPT_CELL)
+    r = api.post("/concept/knight/attempts/base/0/inpaint?prompt=a+closed+helm&strength=0.9",
+                 content=body, headers={"Content-Type": "image/png"})
+    assert r.status_code == 202, r.text
+    argv = wait_for(api, r.json()["id"])["argv"]
+    assert argv[:4] == ["--unit", "knight", "--prompt", "a closed helm"]
+    assert "--inpaint" in argv and "base:00" in argv and "--strength" in argv
+    mask = Path(argv[argv.index("--mask") + 1])
+    assert mask.exists() and mask.parent == Job.open("knight_concept", work_dir).root / "masks"
+    assert mask.read_bytes() == body, "the canvas as the editor left it"
+    # A canvas with nothing erased is refused before a run is started.
+    flat = _canvas(config.CONCEPT_CELL, erase=None)
+    refused = api.post("/concept/knight/attempts/base/0/inpaint", content=flat)
+    assert refused.status_code == 400 and "erased" in refused.json()["detail"]
+    assert api.post("/concept/knight/attempts/base/0/inpaint", content=b"nope").status_code == 415
+
+
+def test_generate_in_place_carries_the_flag(api, work_dir):
+    _base(work_dir)
+    r = api.post("/concept/knight/generate",
+                 json={"op": "img2img", "ref": "base:00", "strength": 0.5, "in_place": True,
+                       "count": 3})
+    assert r.status_code == 202
+    argv = wait_for(api, r.json()["id"])["argv"]
+    assert "--in-place" in argv and "--count" not in argv, "in place is one image"
+    r = api.post("/concept/knight/generate",
+                 json={"op": "edit", "ref": "base:00", "instruction": "red helm", "in_place": True})
+    assert "--in-place" in wait_for(api, r.json()["id"])["argv"]

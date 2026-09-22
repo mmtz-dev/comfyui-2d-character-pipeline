@@ -93,10 +93,12 @@ const FAMILIES: { family: ModelFamily; label: string; title: string }[] = [
   { family: "qwen-edit", label: "views / edit", title: "Qwen-Image-Edit: the views of the base and instruction edits" },
 ];
 
-/** What the panel lends the tab: following a run, the health line. */
+/** What the panel lends the tab: following a run, the health line, and
+ * opening one attempt in the pixel editor (the retouch feature). */
 export interface ConceptHost {
   follow(run: RunRecord): void;
   refreshHealth(): void;
+  editPixels(unit: string, target: string, attempt: Attempt): void;
 }
 
 interface Selected {
@@ -219,6 +221,7 @@ export class ConceptTab {
     ...[1, 2, 3, 4].map((n) => el("option", { value: String(n) }, `× ${n}`)));
   private readonly lockSeed = el("input", { type: "checkbox", title: "lock the seed: resend the last one, so a prompt tweak changes only what you changed" });
   private readonly showHidden = el("input", { type: "checkbox", title: "show the attempts you have hidden, greyed, with Restore" });
+  private readonly inPlace = el("input", { type: "checkbox", title: "the retouch feature: img2img and Edit write over the attempt you clicked instead of adding a new one" });
   private readonly seedLine = el("span", { class: "concept-seed" });
   private readonly busyLine = el("span", { class: "studio-status warn" });
   private readonly cancelButton = el("button", { type: "button", class: "studio-button", hidden: true, title: "POST /runs/{id}/cancel: stop the stage and ComfyUI's current prompt", onclick: () => void this.cancel() }, "Cancel");
@@ -254,6 +257,7 @@ export class ConceptTab {
           this.countSelect,
           el("label", { class: "concept-lock" }, this.lockSeed, " lock seed"),
           el("label", { class: "concept-lock" }, this.showHidden, " show hidden"),
+          el("label", { class: "concept-lock" }, this.inPlace, " edit in place"),
           this.seedLine)),
       el("div", { class: "studio-row concept-busy" }, this.busyLine, this.cancelButton),
       this.statusLine,
@@ -415,6 +419,10 @@ export class ConceptTab {
     const form = this.form(ask.op);
     try {
       body = generateBody(ask, form);
+      if (this.inPlace.checked && (ask.op === "img2img" || ask.op === "edit")) {
+        body.in_place = true;
+        body.count = 1;
+      }
     } catch (error) {
       this.say(errorText(error), "bad");
       return;
@@ -625,8 +633,12 @@ export class ConceptTab {
     this.viewButtons.replaceChildren(all, front, ...buttons);
     for (const button of [all, ...buttons]) button.classList.toggle("locked", !!locked);
     const frontTile = state.base.front_url
-      ? el("figure", { class: "concept-tile picked front", title: "the accepted base - the front view" },
-          el("img", { src: `${state.base.front_url}?t=${state.base.pick ?? ""}`, alt: "front" }), el("figcaption", {}, "front ✓ · the base"))
+      ? el("figure", { class: `concept-tile picked front${state.base.pick_stale ? " stale" : ""}`,
+          title: state.base.pick_stale
+            ? "the accepted base was edited after it was accepted - Accept it again to push the edit through"
+            : "the accepted base - the front view" },
+          el("img", { src: `${state.base.front_url}?t=${state.base.pick ?? ""}`, alt: "front" }),
+          el("figcaption", {}, state.base.pick_stale ? "front · edited since accepted" : "front ✓ · the base"))
       : el("figure", { class: "concept-tile front" }, el("div", { class: "concept-tile-miss" }, "no base"), el("figcaption", {}, "front · accept a base first"));
     this.viewsBox.replaceChildren(
       el("div", { class: "concept-view-row" }, el("div", { class: "concept-view-head" }, el("b", {}, "Front")), el("div", { class: "concept-strip" }, frontTile)),
@@ -693,6 +705,13 @@ export class ConceptTab {
     this.enableButtons();
     // Hide / Restore, and - only once hidden - Delete file. The accepted
     // attempt is refused here and in the API: every later stage reads it.
+    const editPixels = el("button", {
+      type: "button", class: "studio-button",
+      disabled: !attempt.rendered || !!attempt.file_deleted,
+      title: "open this attempt in the pixel editor; Save writes it back over itself, and "
+        + "rubbing an area out lets Inpaint redraw just that",
+      onclick: () => this.host.editPixels(state.unit, target, attempt),
+    }, "Edit pixels");
     const why = lockedReason(state, target, attempt);
     const hide = el("button", {
       type: "button", class: "studio-button", disabled: !!why,
@@ -707,13 +726,18 @@ export class ConceptTab {
           onclick: () => void this.deleteFile(selected),
         }, "Delete file")
       : null;
+    const stale = (isBase ? state.base.pick_stale : state.views[target]?.pick_stale) && picked
+      ? el("div", { class: "studio-status warn" },
+          "edited since accepted - Accept again to push it through to the base render")
+      : null;
     const meta = [attemptCaption(attempt), attempt.model ? `model ${attempt.model}` : null,
       attempt.loras?.length ? `LoRA ${attempt.loras.map((l) => `${l.file} × ${l.strength}`).join(", ")}` : null,
       attempt.instruction ? `"${attempt.instruction}"` : null].filter(Boolean).join(" · ");
     return el("div", { class: "concept-actions-bar" },
       el("div", { class: "concept-actions-head" }, el("b", {}, ref), " ", el("span", { class: "studio-help" }, meta)),
+      stale,
       attempt.prompt ? el("div", { class: "concept-actions-prompt", title: "the prompt this attempt was made from" }, attempt.prompt) : null,
-      el("div", { class: "studio-row" }, accept, regenerate, hide, deleteFile),
+      el("div", { class: "studio-row" }, accept, regenerate, editPixels, hide, deleteFile),
       el("div", { class: "studio-row" }, img2img, strength, strengthLabel, img2imgPrompt),
       el("div", { class: "studio-row" }, edit, instruction));
   }

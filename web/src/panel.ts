@@ -10,6 +10,7 @@
 
 import {
   ApiError,
+  getConcept,
   getHealth,
   getJob,
   getPicks,
@@ -18,8 +19,11 @@ import {
   listFrames,
   listJobs,
   listRuns,
+  inpaintAttempt,
+  putConceptImage,
   putFrame,
   startRun,
+  type Attempt,
   type FrameEntry,
   type JobRow,
   type RunRecord,
@@ -42,14 +46,25 @@ const DEFAULT_FPS = 12;
 const TAB_KEY = "anim-studio.panel-tab";
 type Tab = "pipeline" | "board" | "concept";
 
+/** One concept attempt open in the editor (the retouch feature): Save writes
+ * it back over itself, and Inpaint sends the canvas for a masked redraw. */
+interface OpenedAttempt {
+  unit: string;
+  target: string;
+  index: number;
+  file: string;
+}
+
 /** What is open in the editor, if anything. */
 interface Opened {
-  job: JobRow;
-  set: OpenableSet;
+  job: JobRow | { name: string };
+  set: OpenableSet | "candidates" | "views";
   entries: FrameEntry[];
   fps: number;
   width: number;
   height: number;
+  /** Set when what is open is one concept attempt, not a job's frame set. */
+  attempt?: OpenedAttempt;
 }
 
 // --- tiny DOM helpers ------------------------------------------------------
@@ -100,6 +115,11 @@ export class StudioPanel {
   // Save
   private readonly saveButton = el("button", { type: "button", class: "studio-button primary", disabled: true, onclick: () => void this.save() }, "Save frames");
   private readonly saveStatus = el("div", { class: "studio-status" });
+  // The retouch feature: shown only while one concept attempt is open.
+  private readonly inpaintRow = el("div", { class: "studio-row", hidden: true });
+  private readonly inpaintPrompt = el("input", { class: "studio-input", type: "text", placeholder: "what goes in the erased area", title: "the prompt for the masked redraw; blank keeps the attempt's own" });
+  private readonly inpaintStrength = el("input", { type: "range", min: "0.3", max: "0.9", step: "0.05", value: "0.9", class: "concept-range", title: "how hard the erased region is redrawn (KSampler denoise)" });
+  private readonly inpaintButton = el("button", { type: "button", class: "studio-button gpu", title: "redraw what you rubbed out; everything else is pasted back untouched\nStarts a GPU job on ComfyUI - one at a time.", onclick: () => void this.inpaint() }, "Inpaint");
   // Pipeline
   private readonly postSource = el("select", { class: "studio-select small", title: "post --input: which frames post reads" },
     el("option", { value: "" }, "input: auto"),
@@ -126,6 +146,7 @@ export class StudioPanel {
   private readonly concept = new ConceptTab({
     follow: (run) => this.follow(run),
     refreshHealth: () => void this.refreshHealth(),
+    editPixels: (unit, target, attempt) => void this.editAttempt(unit, target, attempt),
   });
   private readonly tabButtons = new Map<Tab, HTMLButtonElement>();
   private tab: Tab = "pipeline";
@@ -140,6 +161,7 @@ export class StudioPanel {
 
   private build(): void {
     this.jobSelect.addEventListener("change", () => this.describeSelectedJob());
+    this.inpaintRow.replaceChildren(this.inpaintButton, this.inpaintStrength, this.inpaintPrompt);
 
     const cpu = (label: string, title: string, run: () => void) =>
       this.stageButton(label, title, run, false);
@@ -184,6 +206,7 @@ export class StudioPanel {
         el("p", { class: "studio-help" },
           "Writes every frame back to the set it came from, same size, alpha rounded to 0/255. Adding or removing frames is not saved back yet."),
         el("div", { class: "studio-row" }, this.saveButton),
+        this.inpaintRow,
         this.saveStatus,
       ),
       section(
@@ -372,6 +395,7 @@ export class StudioPanel {
         + (tagged ? `, ${tagged} phase tags` : picks ? ", no phase tags (run pick --phases)" : ""), "ok");
       this.saveButton.disabled = false;
       this.saveButton.textContent = `Save frames → ${chosen.set}`;
+      this.inpaintRow.hidden = true;
       status(this.saveStatus, "");
     } catch (error) {
       status(this.jobStatus, errorText(error), "bad");
@@ -380,10 +404,124 @@ export class StudioPanel {
     }
   }
 
+  /**
+   * The retouch feature: open ONE concept attempt in Piskel (not a job's whole
+   * set), show the editor, and remember where it came from so Save writes it
+   * back over itself and Inpaint can send the canvas for a masked redraw.
+   */
+  async editAttempt(unit: string, target: string, attempt: Attempt): Promise<void> {
+    if (!attempt.url) {
+      status(this.saveStatus, `${target}:${attempt.index} has no image to edit`, "bad");
+      return;
+    }
+    const job = `${unit}_concept`;
+    const set = target === "base" ? "candidates" : "views";
+    status(this.jobStatus, `opening ${attempt.file} ...`);
+    this.showTab("pipeline");
+    try {
+      // The frame routes are positional, so the URL the state gave is the
+      // index to write back to - not the attempt's own number.
+      const index = Number(/\/(\d+)\.png$/.exec(attempt.url)?.[1] ?? NaN);
+      if (!Number.isInteger(index)) throw new Error(`cannot tell which frame ${attempt.url} is`);
+      const loaded = await openAnimation(`${unit} ${target}:${attempt.index}`,
+        [`${attempt.url}?t=${Date.now()}`], DEFAULT_FPS);
+      setFrameTags([null]);
+      this.opened = {
+        job: { name: job }, set, fps: DEFAULT_FPS, width: loaded.width, height: loaded.height,
+        entries: [{ index, file: attempt.file, url: attempt.url }],
+        attempt: { unit, target, index: attempt.index, file: attempt.file },
+      };
+      status(this.jobStatus,
+        `${unit} ${target}:${String(attempt.index).padStart(2, "0")} (${attempt.file}), `
+        + `${loaded.width}×${loaded.height} - paint it, then Save; rub an area out and Inpaint redraws it`, "ok");
+      this.saveButton.disabled = false;
+      this.saveButton.textContent = "Save → the attempt";
+      this.inpaintRow.hidden = false;
+      status(this.saveStatus, "");
+    } catch (error) {
+      status(this.jobStatus, errorText(error), "bad");
+    }
+  }
+
+  /** One frame out of the editor, alpha binarised - the canvas as it stands. */
+  private async canvas(): Promise<{ png: Blob; rounded: number } | null> {
+    const opened = this.opened;
+    if (!opened) return null;
+    const count = frameCount();
+    const [width, height] = frameSize();
+    if (count !== 1) {
+      status(this.saveStatus, `the editor has ${count} frames; an attempt is one image`, "bad");
+      return null;
+    }
+    if (width !== opened.width || height !== opened.height) {
+      status(this.saveStatus, `the canvas is ${width}×${height}, the attempt is ${opened.width}×${opened.height}; resize back first`, "bad");
+      return null;
+    }
+    const frames = await exportFrames();
+    const frame = frames[0]!;
+    return { png: frame.png, rounded: frame.alpha.rounded };
+  }
+
+  /** Save the canvas over the attempt it came from. */
+  private async saveAttempt(attempt: OpenedAttempt): Promise<void> {
+    this.saveButton.disabled = true;
+    status(this.saveStatus, `saving ${attempt.file} ...`);
+    try {
+      const canvas = await this.canvas();
+      if (!canvas) return;
+      await putConceptImage(attempt.unit, attempt.target, attempt.index, canvas.png);
+      status(this.saveStatus,
+        `${attempt.file} saved; erased pixels became white. Its record keeps the seed it was `
+        + "generated from and now says it was edited by hand.", "ok");
+      this.showTab("concept");
+      await this.concept.runFinished();
+    } catch (error) {
+      status(this.saveStatus, `save stopped - ${errorText(error)}`, "bad");
+    } finally {
+      this.saveButton.disabled = false;
+    }
+  }
+
+  /** Send the canvas for a masked redraw: what was rubbed out is redrawn. */
+  private async inpaint(): Promise<void> {
+    const attempt = this.opened?.attempt;
+    if (!attempt) return;
+    if (!window.confirm("Inpaint: this starts a GPU job on ComfyUI (one at a time on the card).\n\n"
+      + "The area you rubbed out is redrawn; everything else is pasted back untouched.\n\nContinue?")) return;
+    this.inpaintButton.disabled = true;
+    status(this.saveStatus, "sending the canvas ...");
+    try {
+      const canvas = await this.canvas();
+      if (!canvas) return;
+      const result = await inpaintAttempt(attempt.unit, attempt.target, attempt.index, canvas.png, {
+        prompt: this.inpaintPrompt.value.trim() || undefined,
+        strength: Number(this.inpaintStrength.value),
+      });
+      if ("refused" in result) {
+        const { refused } = result;
+        status(this.saveStatus, refused.status === 409
+          ? `GPU busy with ${refused.run?.id ?? "another run"}; one at a time`
+          : `${refused.status}: ${refused.error}`, refused.status === 409 ? "warn" : "bad");
+        if (refused.run) this.follow(refused.run);
+        return;
+      }
+      status(this.saveStatus, `inpainting ${attempt.file}: run ${result.run.id}`, "ok");
+      this.follow(result.run);
+    } catch (error) {
+      status(this.saveStatus, `inpaint stopped - ${errorText(error)}`, "bad");
+    } finally {
+      this.inpaintButton.disabled = false;
+    }
+  }
+
   // --- Save --------------------------------------------------------------------
   private async save(): Promise<void> {
     const opened = this.opened;
     if (!opened) return;
+    if (opened.attempt) {
+      await this.saveAttempt(opened.attempt);
+      return;
+    }
     const count = frameCount();
     if (count !== opened.entries.length) {
       status(this.saveStatus,
@@ -465,6 +603,16 @@ export class StudioPanel {
         void this.refreshHealth();
         if (this.tab === "board") void this.board.runFinished();
         if (run.gpu) void this.concept.runFinished();
+        if (run.gpu && this.opened?.attempt && view.status === "done") {
+          // An inpaint rewrote the attempt that is open: show what came back.
+          const attempt = this.opened.attempt;
+          void getConcept(attempt.unit).then((state) => {
+            const rows = attempt.target === "base"
+              ? state.base.candidates : state.views[attempt.target]?.candidates ?? [];
+            const row = rows.find((a) => a.index === attempt.index);
+            if (row) void this.editAttempt(attempt.unit, attempt.target, row);
+          }).catch(() => undefined);
+        }
       }
     });
   }

@@ -408,6 +408,8 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `PUT /concept/{unit}/upload` | the body is the PNG (`X-Filename` optional) → a base candidate of source `upload`; `415` when it is not a PNG. No run: the state comes back with `uploaded` |
 | `POST /concept/{unit}/pick` `{"index", "parts"?, "avoid"?}` | accept that base candidate — `anim concept --pick`, the base gate; `400` no such candidate |
 | `POST /concept/{unit}/views/{view}/pick` `{"index"}` | accept that view attempt for the turnaround — `--pick-view view=NN` |
+| `PUT /concept/{unit}/attempts/{target}/{index}/image` | the retouch feature: the body is a PNG of that attempt's own size, written over it (transparency flattened onto white); the row gains an `edited` block and a new `sha256`. `400` wrong size / hidden / deleted, `415` not a PNG |
+| `POST /concept/{unit}/attempts/{target}/{index}/inpaint` | the body is the canvas as the editor left it (RGBA, erased = redraw); it is stashed under the job and redrawn by `anim concept --inpaint` through the run manager → `202` + the run. `?prompt=`, `?strength=`, `?seed=`, `?model=`. `400` when nothing is erased |
 | `PUT /concept/{unit}/attempts/{target}/{index}` `{"hidden"}` | hide one attempt from the strips and the views page, or show it again; `target` is `base` or a view name. `400` on the accepted one with the reason, `404` on an unknown target |
 | `DELETE /concept/{unit}/attempts/{target}/{index}` | delete a **hidden** attempt's PNG; the row stays as its record (its number is never reused). `400` when it is not hidden, or is the accepted one |
 | `PUT /concept/{unit}/defaults` `{"family", "model", "loras"}` | the unit's default checkpoint + LoRAs for one family, checked against the registry (`400` otherwise) |
@@ -469,7 +471,7 @@ timeline tiles carry a text tag); a re-pull is "copy upstream's `src/` over, re-
 | Run | the run's log live over `/runs/{id}/events` (SSE) with a progress bar; recent runs are one click to follow |
 | Palette | the project palette from `GET /settings` (`palette.colours`, the palette feature's shape) goes into Piskel's palette list and is selected; a path-only or empty `palette` reads "no project palette" |
 | Board (a second tab) | the curation board — see "The curation board" below. The tab widens the panel; the Run section shows on every tab |
-| Concept (a third tab) | the concept generation feature — the base, its views, regenerate / img2img / edit per attempt, the model and LoRA picker, Cancel. See "The Concept tab" below |
+| Concept (a third tab) | the concept generation feature — the base, its views, regenerate / img2img / edit per attempt, the model and LoRA picker, Cancel. See "The Concept tab" below. **Edit pixels** there opens one attempt here and Save writes it back over itself (the retouch feature) |
 
 **Build.** `web/dist/` is generated, never committed. The Dockerfile's node stage runs
 `npm ci && npm run build` and bakes it into the image at `/opt/anim/web/dist`; the API
@@ -524,6 +526,12 @@ docker compose run --rm anim concept --unit knight --prompt "…" --lora pixel_a
 docker compose run --rm anim concept --unit knight --prompt "…" --fresh                   # start the unit's attempts over
 docker compose run --rm anim concept --unit knight --hide base:03                        # out of the strips; --show brings it back
 docker compose run --rm anim concept --unit knight --delete-file base:03                 # the PNG of a hidden attempt; the row stays
+
+# the retouch feature: change an attempt where it sits (the Concept tab does this with buttons)
+docker compose run --rm anim concept --unit knight --replace base:02 --image fixed.png    # write over it by hand
+docker compose run --rm anim concept --unit knight --inpaint base:02 --mask erased.png \
+  --prompt "a closed great helm" --strength 0.9                                            # redraw only what was erased
+docker compose run --rm anim concept --unit knight --edit base:02 --instruction "…" --in-place
 ```
 
 Or none of that: the studio's **Concept tab** (<http://192.168.1.158:8720/> → Concept) is the
@@ -640,6 +648,24 @@ redoing the rest.
   no file and a rerun starts clean.
 - **Seed.** Random per press; **lock seed** resends the last one so a prompt tweak changes
   only what you changed.
+- **Retouch instead of rerolling — the retouch feature.** Three ways to change an attempt
+  *where it sits*, so the strip does not grow. **Edit pixels** opens that one attempt in the
+  studio's Piskel canvas and switches to the editor; **Save** writes it back over itself
+  (`PUT /concept/{unit}/attempts/{target}/{index}/image`, `--replace REF --image FILE`) with
+  any transparency flattened onto white, because a concept image is opaque on white and
+  transparency here means *mask*. Rub an area out and press **Inpaint** instead: the canvas as
+  you left it is the source — what you painted guides the model — and the hole is the region
+  redrawn (`gpu/workflows/inpaint_pass.json`, Z-Image + core `SetLatentNoiseMask`, strength
+  `config.CONCEPT_INPAINT_STRENGTH` 0.9; `--inpaint REF --mask FILE`). Everything outside the
+  mask is pasted back on the CPU afterwards, so not one pixel you kept can change. And the
+  **edit in place** tick in the settings row makes img2img and Edit overwrite the attempt you
+  clicked instead of appending (`--in-place`).
+  The row keeps its generation record — seed, model, LoRAs, prompt, now as the history of what
+  the pixels grew out of — and gains an `edited` block (how and when); `sha256` is recomputed
+  and `embedded_prompt` cleared, because a re-save drops ComfyUI's text chunks. A hidden or
+  file-deleted attempt is refused. Editing the **accepted** attempt does not touch
+  `work/<unit>_base/render/`: the tab flags *"edited since accepted — Accept again to push it
+  through"* (the pick records the hash it copied) until you do.
 - **Hide what you do not want to look at.** Under a selected attempt, **Hide** takes it out of
   the strip and off the views page (`--hide base:03`); **show hidden** brings the hidden ones
   back, greyed, with **Restore** (`--show`). Once hidden, **Delete file** removes the PNG from
@@ -1087,7 +1113,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 634 passed, 4 skipped (2026-09-22)
+docker compose run --rm anim-pipeline pytest        # 641 passed, 4 skipped (2026-09-22)
 cd web && npm test                                  # 66 passed - the editor panel's pure parts
 ```
 

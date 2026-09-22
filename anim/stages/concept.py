@@ -137,6 +137,7 @@ CONCEPT_SCHEMA = "anim.concept/2"
 VIEWS_SCHEMA = "anim.concept-views/2"
 WORKFLOW = "concept_pass"
 IMG2IMG_WORKFLOW = "img2img_pass"
+INPAINT_WORKFLOW = "inpaint_pass"
 VIEW_WORKFLOW = "view_pass"
 PICK_FILE = "concept_pick.png"
 VIEW_FILE = "view_{view}.png"
@@ -1002,6 +1003,78 @@ def concept(slug: str, *, description: str, count: int | None = None,
     return job.read_manifest()
 
 
+def rework_in_place(slug: str, ref: str, *, op: str, instruction: str | None = None,
+                    prompt: str | None = None, strength: float | None = None,
+                    seed: int | None = None, model: str | None = None,
+                    loras: Sequence[str | dict[str, Any]] | None = None,
+                    lora_strength: float | None = None, registry_path: Path | None = None,
+                    client: comfy.ComfyClient | None = None,
+                    workflow_dir: Path | None = None, lock_path: Path | None = None,
+                    work_dir: Path | None = None, timeout_s: float = 900.0,
+                    log: Callable[[str], None] = lambda _: None) -> dict[str, Any]:
+    """The retouch feature: run `img2img` or `edit` and write the result over
+    the attempt it was made from, instead of appending a new one. One image,
+    no `parent` - the row keeps its generation record and gains an `edited`
+    block saying what was done to it."""
+    if op not in ("img2img", "edit"):
+        raise ValueError(f"op is img2img or edit, not {op!r}")
+    target, index = parse_ref(ref)
+    store = Attempts(slug, target, work_dir)
+    row = _editable(store, index)
+    seed = random_seed() if seed is None else int(seed)
+    family = family_of(op)
+    generation = resolve_generation(family, model=model, loras=loras,
+                                    lora_strength=lora_strength,
+                                    defaults=store.job.read_manifest().get("defaults"),
+                                    registry_path=registry_path, lock_path=lock_path)
+    parts, _avoid = base_phrases(slug, work_dir)
+    description = store.job.read_manifest().get("description") or "character"
+    if op == "img2img":
+        strength = float(config.CONCEPT_IMG2IMG_STRENGTH if strength is None else strength)
+        if not 0 < strength <= 1:
+            raise ValueError(f"--strength is in (0, 1], not {strength}")
+        if prompt and prompt.strip():
+            text = prompt.strip()
+        elif target == BASE_TARGET:
+            text = (row.get("prompt") if row.get("source") in ("txt2img", "img2img") else None) \
+                or config.concept_prompt(description)
+        else:
+            text = config.concept_view_img2img_prompt(description, target, parts)
+    else:
+        text = config.concept_edit_prompt(instruction or "", parts)
+
+    client, stats = _client(client)
+    check_installed(client, family, model=generation["model"], loras=generation["loras"])
+    source = client.upload_image(
+        store.path(row), name=f"anim_{store.job.name}_src_{target}_{index:02d}.png")
+    if op == "img2img":
+        transient = {"prompt": text, "seed": seed, "strength": strength,
+                     "model": generation["model"], "loras": generation["loras"]}
+        workflow = build_img2img_workflow(transient, source_name=source, job=store.job,
+                                          workflow_dir=workflow_dir)
+    else:
+        workflow = build_view_workflow(text, seed=seed, base_name=source, slug=slug,
+                                       workflow_dir=workflow_dir, model=generation["model"],
+                                       loras=generation["loras"], prefix=f"edit/{VIEW_WORKFLOW}")
+    log(f"concept {op} in place: {target}:{index:02d} (seed {seed}) ...")
+    prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
+    path = write_bytes_in_place(store.path(row), png)
+    log(f"  -> {path.name}  {elapsed:.1f} s")
+    _record_edit(store, row, op, prompt=text, seed=seed, strength=strength,
+                 instruction=(" ".join(str(instruction).split()) if op == "edit" else None),
+                 model=generation["model"],
+                 loras=[{"file": r["file"], "strength": r["strength"]} for r in generation["loras"]],
+                 prompt_id=prompt_id, seconds=round(elapsed, 1),
+                 workflow=f"{IMG2IMG_WORKFLOW if op == 'img2img' else VIEW_WORKFLOW}.json",
+                 workflow_sha256=comfy.workflow_sha256(workflow))
+    # The bytes came straight from the model, so the text chunks are there.
+    row["embedded_prompt"] = render_stage.prompt_chunk(png) is not None
+    store.save()
+    if target != BASE_TARGET:
+        _refresh_views_page(slug, store, work_dir)
+    return row
+
+
 def rework(slug: str, ref: str, *, op: str, client: comfy.ComfyClient | None = None,
            workflow_dir: Path | None = None, lock_path: Path | None = None,
            work_dir: Path | None = None, timeout_s: float = 900.0,
@@ -1052,6 +1125,225 @@ def _refresh_views_page(slug: str, store: Attempts, work_dir: Path | None) -> st
         return None
     return str(build_views_page(store.record, views_page_dir(slug, work_dir),
                                 base_path=base_path, out_dir=store.dir))
+
+
+# ---------------------------------------------------------------------------
+# The retouch feature: change an attempt where it sits
+# ---------------------------------------------------------------------------
+# An attempt is normally immutable - a press appends and the record says what
+# the model drew. Retouching breaks that on purpose, so it is explicit about
+# it: the file is overwritten, `sha256` is recomputed, `embedded_prompt` goes
+# (Pillow's re-save drops ComfyUI's text chunks), and an `edited` block says
+# when and how. The generation record - seed, model, LoRAs, prompt - stays as
+# the history of what the pixels grew out of. A hidden or file-deleted attempt
+# is refused: retouching is for what you are looking at.
+def _editable(store: "Attempts", index: int) -> dict[str, Any]:
+    row = store.get(index)
+    if row.get("file_deleted"):
+        raise ValueError(f"{store.target}:{index:02d}'s file was deleted; there is nothing "
+                         f"to edit")
+    if row.get("hidden"):
+        raise ValueError(f"{store.target}:{index:02d} is hidden; show it first "
+                         f"(`anim concept --unit {store.slug} --show {store.target}:{index:02d}`)")
+    if not store.path(row).exists():
+        raise FileNotFoundError(f"{store.path(row)} is missing")
+    return row
+
+
+def flatten_on_white(data: bytes) -> tuple[Image.Image, Image.Image | None]:
+    """`(the image on white, its transparency as a mask)` - the two halves of
+    a retouched canvas.
+
+    What comes back from the editor is RGBA with binary alpha: what you
+    painted is opaque, what you rubbed out is (0,0,0,0). A concept image is
+    opaque on white, so on a save the hole becomes white; on an inpaint the
+    same hole is the region to redraw. Mask is None when nothing was erased.
+    """
+    from io import BytesIO
+
+    try:
+        with Image.open(BytesIO(data)) as raw:
+            raw.load()
+            rgba = raw.convert("RGBA")
+    except Exception as exc:  # noqa: BLE001 - PIL raises a zoo
+        raise ValueError(f"not an image PIL can read: {exc}") from None
+    alpha = rgba.getchannel("A")
+    flat = Image.new("RGB", rgba.size, BACKGROUND)
+    flat.paste(rgba, (0, 0), rgba)
+    erased = [count for value, count in enumerate(alpha.histogram()) if value < 128 and count]
+    return flat, (alpha if erased else None)
+
+
+def _record_edit(store: "Attempts", row: dict[str, Any], how: str, **extra: Any) -> dict[str, Any]:
+    """Re-hash the file and note what was done to it."""
+    path = store.path(row)
+    row["sha256"] = sha256_file(path)
+    row["embedded_prompt"] = False
+    row["edited"] = {"how": how, "at": _now(),
+                     **{k: v for k, v in extra.items() if v is not None}}
+    return row
+
+
+def replace_attempt(slug: str, ref: str, data: bytes, *, how: str = "hand",
+                    work_dir: Path | None = None) -> dict[str, Any]:
+    """Write `data` over the attempt `ref` names (the editor's Save).
+
+    The PNG keeps the attempt's size - a different size is a different asset,
+    the rule the frame editor already holds to - and any transparency is
+    flattened onto white, because that is what every other concept image is
+    and transparency here means "mask", not "hole".
+    """
+    target, index = parse_ref(ref)
+    store = Attempts(slug, target, work_dir)
+    row = _editable(store, index)
+    path = store.path(row)
+    flat, _mask = flatten_on_white(data)
+    with Image.open(path) as current:
+        size = current.size
+    if flat.size != size:
+        raise ValueError(f"{row['file']} is {size[0]}x{size[1]}; the image sent is "
+                         f"{flat.size[0]}x{flat.size[1]} - an attempt keeps its size")
+    from io import BytesIO
+
+    out = BytesIO()
+    flat.save(out, format="PNG", optimize=True)
+    write_bytes_in_place(path, out.getvalue())
+    _record_edit(store, row, how)
+    store.save()
+    if target != BASE_TARGET:
+        _refresh_views_page(slug, store, work_dir)
+    return row
+
+
+def stash_canvas(slug: str, ref: str, data: bytes, work_dir: Path | None = None) -> Path:
+    """Put the editor's canvas under the job so a run can read it as a file.
+
+    The API takes the canvas as a body but the redraw is a GPU stage, and a
+    stage is the CLI in a subprocess - so the bytes land here first and the
+    run is handed the path. Checked before it is written: the attempt must be
+    one that can be edited, and something must be erased.
+    """
+    target, index = parse_ref(ref)
+    store = Attempts(slug, target, work_dir)
+    row = _editable(store, index)
+    _source, mask = flatten_on_white(data)
+    if mask is None:
+        raise ValueError("nothing is erased on this canvas - rub out the area the model "
+                         "should redraw, then inpaint")
+    masks = store.job.root / "masks"
+    masks.mkdir(parents=True, exist_ok=True)
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S")
+    return write_bytes_in_place(masks / f"{stamp}_{target}_{index:02d}_canvas.png", data)
+
+
+def build_inpaint_workflow(attempt: dict[str, Any], *, canvas_name: str, prompt: str,
+                           seed: int, strength: float, job: Job,
+                           workflow_dir: Path | None = None) -> dict[str, Any]:
+    """inpaint_pass.json: the canvas as the latent, its transparency as the
+    noise mask, so only the erased region is denoised."""
+    workflow = comfy.load_workflow(INPAINT_WORKFLOW, workflow_dir)
+    comfy.patch(workflow, "source image", image=canvas_name)
+    comfy.patch(workflow, "positive prompt", text=prompt)
+    comfy.patch(workflow, "seed", seed=int(seed), denoise=float(strength))
+    comfy.patch(workflow, "output prefix",
+                filename_prefix=f"anim_pipeline/{job.name}/{INPAINT_WORKFLOW}")
+    if attempt.get("model"):
+        comfy.patch_checkpoint(workflow, attempt["model"])
+    comfy.chain_loras(workflow, "Pixel-Art LoRA", attempt.get("loras") or [])
+    return workflow
+
+
+def inpaint_attempt(slug: str, ref: str, canvas: bytes | Path, *, prompt: str | None = None,
+                    strength: float | None = None, seed: int | None = None,
+                    model: str | None = None,
+                    loras: Sequence[str | dict[str, Any]] | None = None,
+                    registry_path: Path | None = None,
+                    client: comfy.ComfyClient | None = None,
+                    workflow_dir: Path | None = None, lock_path: Path | None = None,
+                    work_dir: Path | None = None, timeout_s: float = 900.0,
+                    log: Callable[[str], None] = lambda _: None) -> dict[str, Any]:
+    """Redraw the erased region of `canvas` into the attempt `ref` names.
+
+    `canvas` is the attempt as the editor left it: what you painted is the
+    source (so a rough shape guides the model) and what you rubbed out is the
+    mask. Everything outside the mask is pasted back from the canvas
+    afterwards, so a decode that shifts the whole frame cannot change a pixel
+    you did not erase.
+    """
+    target, index = parse_ref(ref)
+    store = Attempts(slug, target, work_dir)
+    row = _editable(store, index)
+    data = Path(canvas).read_bytes() if isinstance(canvas, (str, Path)) else bytes(canvas)
+    source, mask = flatten_on_white(data)
+    if mask is None:
+        raise ValueError("nothing is erased on this canvas - rub out the area the model "
+                         "should redraw, then inpaint")
+    path = store.path(row)
+    with Image.open(path) as current:
+        size = current.size
+    if source.size != size:
+        raise ValueError(f"{row['file']} is {size[0]}x{size[1]}; the canvas is "
+                         f"{source.size[0]}x{source.size[1]} - an attempt keeps its size")
+    strength = float(config.CONCEPT_INPAINT_STRENGTH if strength is None else strength)
+    if not 0 < strength <= 1:
+        raise ValueError(f"--strength is in (0, 1], not {strength}")
+    seed = random_seed() if seed is None else int(seed)
+    parts, _avoid = base_phrases(slug, work_dir)
+    text = (prompt or "").strip() or row.get("prompt") or config.concept_prompt(
+        store.job.read_manifest().get("description") or "character")
+    generation = resolve_generation(
+        "zimage", model=model, loras=loras,
+        defaults=store.job.read_manifest().get("defaults"),
+        registry_path=registry_path, lock_path=lock_path)
+
+    client, stats = _client(client)
+    check_installed(client, "zimage", model=generation["model"], loras=generation["loras"])
+    # The canvas goes up as RGBA: LoadImage reads its colours as the image and
+    # its alpha as the mask, so one upload carries both.
+    from io import BytesIO
+
+    rgba = source.convert("RGBA")
+    rgba.putalpha(mask)
+    buffer = BytesIO()
+    rgba.save(buffer, format="PNG")
+    upload = store.job.root / "masks"
+    upload.mkdir(parents=True, exist_ok=True)
+    kept = write_bytes_in_place(
+        upload / f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S')}_{target}_{index:02d}.png",
+        buffer.getvalue())
+    canvas_name = client.upload_image(
+        kept, name=f"anim_{store.job.name}_inpaint_{target}_{index:02d}.png")
+    attempt = {"model": generation["model"], "loras": generation["loras"]}
+    workflow = build_inpaint_workflow(attempt, canvas_name=canvas_name, prompt=text, seed=seed,
+                                      strength=strength, job=store.job,
+                                      workflow_dir=workflow_dir)
+    log(f"concept inpaint: {target}:{index:02d} (seed {seed}, strength {strength}) ...")
+    prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
+    # Composite back: only the erased region may change.
+    from io import BytesIO as _BytesIO
+
+    with Image.open(_BytesIO(png)) as raw:
+        raw.load()
+        drawn = raw.convert("RGB")
+    if drawn.size != size:
+        drawn = drawn.resize(size, Image.LANCZOS)
+    merged = source.copy()
+    merged.paste(drawn, (0, 0), ImageOps.invert(mask))
+    out = _BytesIO()
+    merged.save(out, format="PNG", optimize=True)
+    write_bytes_in_place(path, out.getvalue())
+    log(f"  -> {path.name}  {elapsed:.1f} s")
+    _record_edit(store, row, "inpaint", prompt=text, strength=strength, seed=seed,
+                 model=generation["model"],
+                 loras=[{"file": r["file"], "strength": r["strength"]} for r in generation["loras"]],
+                 prompt_id=prompt_id, seconds=round(elapsed, 1),
+                 workflow=f"{INPAINT_WORKFLOW}.json",
+                 workflow_sha256=comfy.workflow_sha256(workflow),
+                 mask=str(kept), comfyui=stats.get("system", {}).get("comfyui_version"))
+    store.save()
+    if target != BASE_TARGET:
+        _refresh_views_page(slug, store, work_dir)
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -1167,6 +1459,10 @@ def pick(slug: str, choice: str | int, *, parts: str | None = None,
     candidate.pop("hidden", None)
     manifest["pick"] = {"index": candidate["index"], "file": candidate["file"],
                         "source": candidate["source"], "base_job": base_job.name,
+                        # The bytes that were copied: the retouch feature reads
+                        # this back to say the accepted attempt has been edited
+                        # since, and the copy is the older picture.
+                        "sha256": sha256_bytes(png),
                         "picked": provenance["created"]}
     manifest["updated"] = _now()
     job.write_manifest(manifest)
@@ -1616,6 +1912,20 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "--instruction (\"make the helmet red\")")
     parser.add_argument("--instruction", default=None, metavar="TEXT",
                         help="with --edit: what should change")
+    parser.add_argument("--replace", default=None, metavar="REF",
+                        help="the retouch feature: write --image over the attempt REF "
+                             "(the editor's Save); transparency is flattened onto white")
+    parser.add_argument("--image", default=None, metavar="PNG",
+                        help="with --replace: the image to write, the attempt's own size")
+    parser.add_argument("--inpaint", default=None, metavar="REF",
+                        help="redraw the erased region of --mask into the attempt REF; "
+                             "everything you did not erase is pasted back untouched")
+    parser.add_argument("--mask", default=None, metavar="PNG",
+                        help="with --inpaint: the attempt as you left it in the editor - "
+                             "what you painted is the source, what you rubbed out is redrawn")
+    parser.add_argument("--in-place", dest="in_place", action="store_true",
+                        help="with --img2img / --edit: write the result over that attempt "
+                             "instead of appending a new one")
     parser.add_argument("--hide", default=None, metavar="REF",
                         help="hide the attempt REF (base:NN or <view>:NN) from the strips "
                              "and the views page; the file and the record stay")
@@ -1729,11 +2039,53 @@ def run_stage(args: argparse.Namespace) -> int:
               f"(upload, fitted to the cell)")
         print(f"  then: anim concept --unit {args.slug} --pick {row['index']:02d}")
         return 0
+    if args.replace is not None:
+        if not args.image:
+            raise SystemExit("anim concept: --replace needs --image PNG")
+        try:
+            row = replace_attempt(args.slug, args.replace, Path(args.image).read_bytes())
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            raise SystemExit(f"anim concept: {exc}") from None
+        print(f"concept: {args.image} -> {args.replace} ({row['file']}), edited by hand")
+        print(f"  its record keeps the seed and model it was generated from; sha256 redone")
+        if args.replace.partition(":")[0] == BASE_TARGET:
+            print(f"  if this is the accepted base, `--pick {row['index']:02d}` again to push "
+                  f"it through to work/{args.slug}_base/render/")
+        return 0
+    if args.inpaint is not None:
+        if not args.mask:
+            raise SystemExit("anim concept: --inpaint needs --mask PNG (the attempt with the "
+                             "area to redraw erased)")
+        client = comfy.ComfyClient(getattr(args, "comfyui_url", None))
+        try:
+            row = inpaint_attempt(args.slug, args.inpaint, Path(args.mask),
+                                  prompt=args.prompt, strength=args.strength, seed=args.seed,
+                                  model=args.model, loras=args.lora, client=client,
+                                  timeout_s=args.timeout, log=print)
+        except (ValueError, FileNotFoundError, OSError, models_lock.RegistryError) as exc:
+            raise SystemExit(f"anim concept: {exc}") from None
+        edit = row["edited"]
+        print(f"concept: {args.inpaint} inpainted in place ({row['file']}, seed {edit['seed']}, "
+              f"strength {edit['strength']}, {edit['seconds']:.1f} s)")
+        print(f"  outside the erased area not one pixel changed")
+        return 0
     if args.img2img is not None or args.edit is not None:
         if args.img2img is not None and args.edit is not None:
             raise SystemExit("anim concept: give --img2img or --edit, not both")
         op = "img2img" if args.img2img is not None else "edit"
         client = comfy.ComfyClient(getattr(args, "comfyui_url", None))
+        if args.in_place:
+            try:
+                row = rework_in_place(args.slug, args.img2img or args.edit, op=op,
+                                      instruction=args.instruction, prompt=args.prompt,
+                                      strength=args.strength, seed=args.seed, model=args.model,
+                                      loras=args.lora, lora_strength=args.lora_strength,
+                                      client=client, timeout_s=args.timeout, log=print)
+            except (ValueError, FileNotFoundError, models_lock.RegistryError) as exc:
+                raise SystemExit(f"anim concept: {exc}") from None
+            print(f"concept: {args.img2img or args.edit} {op}ed in place ({row['file']}, "
+                  f"{row['edited']['seconds']:.1f} s)")
+            return 0
         try:
             result = rework(args.slug, args.img2img or args.edit, op=op, count=args.count,
                             seed=args.seed, strength=args.strength,

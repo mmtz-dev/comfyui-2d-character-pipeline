@@ -417,6 +417,16 @@ export interface Attempt {
   created?: string;
   from?: string;
   name?: string;
+  /** What was done to it after it was generated (the retouch feature). */
+  edited?: {
+    how: "hand" | "inpaint" | "img2img" | "edit";
+    at: string;
+    prompt?: string;
+    strength?: number;
+    instruction?: string;
+    seed?: number;
+    seconds?: number;
+  } | null;
   /** Hidden from the strips (the record and, unless deleted, the file stay). */
   hidden: boolean;
   /** When the PNG was deleted, if it was; the row is its record. */
@@ -436,6 +446,9 @@ export interface ConceptView {
   candidates: Attempt[];
   pick: number | null;
   hidden_count: number;
+  /** The accepted attempt was edited after it was accepted: the copy the
+   * turnaround reads is the older picture until it is accepted again. */
+  pick_stale: boolean;
   state: "pending" | "accepted" | "rejected";
   accepted_file: string | null;
 }
@@ -458,6 +471,7 @@ export interface ConceptState {
     candidates: Attempt[];
     pick: number | null;
     hidden_count: number;
+    pick_stale: boolean;
     accepted: boolean;
     front_url: string | null;
   };
@@ -480,6 +494,7 @@ export interface ConceptRequest {
   model?: string;
   loras?: (string | LoraChoice)[];
   lora_strength?: number;
+  in_place?: boolean;
   fresh?: boolean;
   force?: boolean;
 }
@@ -550,6 +565,42 @@ export const pickConcept = (unit: string, index: number, parts?: string, avoid?:
 
 export const pickConceptView = (unit: string, view: string, index: number) =>
   sendJSON<ConceptState>("POST", `/concept/${encodeURIComponent(unit)}/views/${encodeURIComponent(view)}/pick`, { index });
+
+/** `PUT .../attempts/{target}/{index}/image`: the editor's Save (the retouch
+ * feature). The body is the PNG; transparency is flattened onto white. */
+export async function putConceptImage(unit: string, target: string, index: number, png: Blob): Promise<ConceptState> {
+  const response = await fetch(`${attemptPath(unit, target, index)}/image`, {
+    method: "PUT", headers: { "Content-Type": "image/png" }, body: png,
+  });
+  if (!response.ok) throw new ApiError(response.status, await detail(response));
+  return (await response.json()) as ConceptState;
+}
+
+/** `POST .../attempts/{target}/{index}/inpaint`: the canvas as the editor left
+ * it (erased = redraw) -> a run, or the refusal as a value. */
+export async function inpaintAttempt(
+  unit: string, target: string, index: number, canvas: Blob,
+  options: { prompt?: string; strength?: number; seed?: number; model?: string } = {},
+): Promise<{ run: RunRecord } | { refused: RunRefusal }> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+  }
+  const suffix = query.toString() ? `?${query}` : "";
+  const response = await fetch(`${attemptPath(unit, target, index)}/inpaint${suffix}`, {
+    method: "POST", headers: { "Content-Type": "image/png" }, body: canvas,
+  });
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status === 202) return { run: payload as unknown as RunRecord };
+  const error = (payload.error ?? payload.detail ?? response.statusText) as string;
+  return {
+    refused: {
+      status: response.status,
+      error: typeof error === "string" ? error : JSON.stringify(error),
+      run: payload.run as RunRecord | undefined,
+    },
+  };
+}
 
 function attemptPath(unit: string, target: string, index: number): string {
   return `/concept/${encodeURIComponent(unit)}/attempts/${encodeURIComponent(target)}/${index}`;

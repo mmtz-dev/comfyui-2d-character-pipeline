@@ -38,6 +38,8 @@ Routes (all JSON unless said otherwise):
     PUT  /concept/{unit}/upload            the owner's PNG (image/png body) as a base candidate
     POST /concept/{unit}/pick  {"index"}   accept that base candidate (= the base gate)
     POST /concept/{unit}/views/{view}/pick {"index"}  accept that view attempt for the turnaround
+    PUT  /concept/{unit}/attempts/{target}/{index}/image   the retouch feature: write this PNG over that attempt (the editor's Save)
+    POST /concept/{unit}/attempts/{target}/{index}/inpaint the canvas (RGBA, erased = redraw) -> `anim concept --inpaint` in the background -> 202 + the run
     PUT  /concept/{unit}/attempts/{target}/{index}  {"hidden": bool}: hide one attempt from the strips (the accepted one is refused)
     DELETE /concept/{unit}/attempts/{target}/{index}  delete a hidden attempt's PNG; the row stays as its record
     PUT  /concept/{unit}/defaults          {"family", "model", "loras"}: the unit's default checkpoint + LoRAs
@@ -119,6 +121,7 @@ class ConceptRequest(BaseModel):
     strength: float | None = None
     instruction: str | None = None
     count: int | None = Field(default=None, ge=1, le=4)
+    in_place: bool = False
     seed: int | None = None
     model: str | None = None
     loras: list[str | dict[str, Any]] | None = None
@@ -148,6 +151,9 @@ class ConceptRequest(BaseModel):
             if not self.ref:
                 raise HTTPException(400, f"{self.op} needs a `ref` (base:NN or <view>:NN)")
             args[self.op] = self.ref
+            if self.in_place:
+                # The retouch feature: one image, written over the attempt.
+                args["in_place"] = True
             if self.op == "img2img":
                 if self.strength is not None:
                     args["strength"] = self.strength
@@ -159,7 +165,7 @@ class ConceptRequest(BaseModel):
                 args["instruction"] = self.instruction.strip()
         else:
             raise HTTPException(400, f"op is txt2img, views, img2img or edit, not {self.op!r}")
-        if self.count is not None:
+        if self.count is not None and not self.in_place:
             args["count"] = self.count
         if self.seed is not None:
             args["seed"] = self.seed
@@ -656,6 +662,59 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
             raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
                                 str(exc)) from None
         return _concept_state(unit)
+
+    @app.put("/concept/{unit}/attempts/{target}/{index:int}/image")
+    async def replace_attempt_image(unit: str, target: str, index: int, request: Request
+                                    ) -> dict[str, Any]:
+        """The retouch feature: the editor's Save. The body is the PNG, of the
+        attempt's own size; transparency is flattened onto white. The row keeps
+        its generation record and gains an `edited` block."""
+        ref = _attempt_ref(unit, target, index)
+        data = await request.body()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(415, "the body is not a PNG")
+        try:
+            row = concept_stage.replace_attempt(unit, ref, data, work_dir=work_dir)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
+                                str(exc)) from None
+        return {**_concept_state(unit), "edited": row}
+
+    @app.post("/concept/{unit}/attempts/{target}/{index:int}/inpaint", status_code=202)
+    async def inpaint_attempt(unit: str, target: str, index: int, request: Request,
+                              response: Response, prompt: str | None = None,
+                              strength: float | None = None, seed: int | None = None,
+                              model: str | None = None) -> Any:
+        """The retouch feature's masked redraw: the body is the canvas as the
+        editor left it (RGBA - what you painted is the source, what you rubbed
+        out is the mask). It is written under the job and redrawn by `anim
+        concept --inpaint` through the run manager, so it queues behind the
+        card like every other GPU op and Cancel stops it."""
+        ref = _attempt_ref(unit, target, index)
+        data = await request.body()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(415, "the body is not a PNG")
+        try:
+            mask_path = concept_stage.stash_canvas(unit, ref, data, work_dir=work_dir)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
+                                str(exc)) from None
+        args: dict[str, Any] = {"slug": unit, "inpaint": ref, "mask": str(mask_path)}
+        if prompt and prompt.strip():
+            args["prompt"] = prompt.strip()
+        if strength is not None:
+            args["strength"] = strength
+        if seed is not None:
+            args["seed"] = seed
+        if model:
+            args["model"] = model
+        try:
+            run = manager.start("concept", args=args)
+        except RunRefused as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"error": str(exc), **exc.extra})
+        response.headers["Location"] = f"/runs/{run.id}"
+        return run.record()
 
     @app.put("/concept/{unit}/defaults")
     def put_concept_defaults(unit: str, body: DefaultsRequest) -> dict[str, Any]:

@@ -277,6 +277,34 @@ than one - `anim.comfy.chain_loras`), output prefix.
 
 ---
 
+## `inpaint_pass.json` — the retouch feature (2026-09-22)
+
+`img2img_pass.json` with one node added: the source is the attempt **as the editor left it**
+(RGBA, what the owner painted opaque and what they rubbed out transparent), and core
+`SetLatentNoiseMask` marks the erased region as the only part the sampler may denoise.
+
+| `class_type` | Inputs used | Where / what |
+|---|---|---|
+| `LoadImage` (`PATCH source image`) | `image` | **two outputs**: `IMAGE` is the canvas's colours (the CPU flattens the holes onto white before upload, so the encoder never sees black), `MASK` is `1 - alpha` — exactly the erased region. One upload carries both. |
+| `VAEEncode` → `SetLatentNoiseMask` | `samples`, `mask` | core ComfyUI (`nodes.py`, latent/inpaint); the unmasked latent is kept, the masked part is noised to `denoise`. No custom node, no inpainting checkpoint: Z-Image-Turbo is used as it is. |
+| `KSampler` (`PATCH seed`) | `denoise` = strength | `config.CONCEPT_INPAINT_STRENGTH` 0.9 — a masked region is meant to be redrawn, not nudged. |
+
+**The unmasked pixels are guaranteed on the CPU, not by the graph**: a VAE decode re-renders
+the whole frame, so `concept.inpaint_attempt` pastes the model's output back through the mask
+and everything outside it stays byte-identical to the canvas. That is the promise the feature
+makes, and it does not depend on the sampler honouring the mask perfectly.
+
+**TODO-verify on the GPU**: the turbo schedule at 8 steps with `denoise < 1` (the same open
+question as `img2img_pass.json`), and whether a hard mask edge needs feathering — if seams
+show, a `MaskBlur`-equivalent (or a Pillow blur of the mask before upload) is the one-line fix.
+
+### Patch points
+
+source image (`LoadImage`, RGBA — its alpha is the mask), positive prompt, seed + `denoise`,
+checkpoint, Pixel-Art LoRA, output prefix.
+
+---
+
 ## Deliberate design choices
 
 **Why `pose_pass` and `identity_pass` are two separate `/prompt` jobs.** Z-Image
@@ -330,6 +358,7 @@ skeleton instead of a posed character.
 | `clip_render.json` | reference image filename, control video filename, clip size (width/height/length), positive prompt, negative prompt, seed (+ steps/cfg on the same node), output prefix |
 | `concept_pass.json` | checkpoint (`unet_name`), sketch filename (scribble control; node removed when there is no sketch), control `strength`, Pixel-Art LoRA `lora_name` + `strength_model` (node removed with no LoRA, chained with several), positive prompt, cell size (square), seed, output prefix |
 | `img2img_pass.json` | checkpoint (`unet_name`), source image, Pixel-Art LoRA (as above), positive prompt, seed + `denoise`, output prefix |
+| `inpaint_pass.json` | the same, where the source image is RGBA and its alpha is the noise mask (`SetLatentNoiseMask`) |
 | `view_pass.json` | checkpoint (`model_name`), optional LoRA (bypassed at none), base image (image1, also the latent), positive prompt (the view sentence + parts phrase, or an edit instruction), seed, output prefix |
 
 The checkpoint loaders are titled `PATCH checkpoint (...)` and never `PATCH model ...`:

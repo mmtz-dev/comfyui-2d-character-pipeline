@@ -55,6 +55,31 @@ def _hidden_count(rows: list[dict[str, Any]]) -> int:
     return sum(1 for row in rows if row.get("hidden"))
 
 
+def _edited_since_accepted(rows: list[dict[str, Any]], pick: dict[str, Any] | None) -> bool:
+    """The retouch feature: the accepted attempt no longer matches the copy
+    that was taken when it was accepted, so the picture under
+    `<unit>_base/render/` is the older one. Accepting it again is what pushes
+    the edit through; nothing is re-copied behind the owner's back. The
+    comparison is the hash recorded AT PICK TIME against the attempt's
+    current one - no file is read here, and an edit in the same second as the
+    accept still counts."""
+    index = (pick or {}).get("index")
+    if index is None:
+        return False
+    row = next((r for r in rows if r.get("index") == index), None)
+    if row is None:
+        return False
+    copied = (pick or {}).get("sha256")
+    if copied and row.get("sha256"):
+        return str(copied) != str(row["sha256"])
+    # An older record with no hash of the copy: fall back to the timestamps
+    # (second resolution, so an edit in the same second as the accept is
+    # missed - which is why the hash is written now).
+    edited = row.get("edited") or {}
+    picked = (pick or {}).get("picked")
+    return bool(edited.get("at") and picked and str(edited["at"]) > str(picked))
+
+
 def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
     """Everything the Concept tab shows for one unit, or None when the unit
     is not a slug. A unit with nothing yet answers `exists: false` with empty
@@ -101,6 +126,8 @@ def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
                 for c in row.get("candidates") or []],
             "pick": None if stale_views else (row.get("pick") or {}).get("index"),
             "hidden_count": 0 if stale_views else _hidden_count(row.get("candidates") or []),
+            "pick_stale": (not stale_views) and _edited_since_accepted(
+                row.get("candidates") or [], row.get("pick")),
             "state": view_states.get(view) or ("accepted" if stored else "pending"),
             "accepted_file": stored.get("file"),
         }
@@ -123,6 +150,8 @@ def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
                            for c in manifest.get("candidates") or []],
             "pick": (manifest.get("pick") or {}).get("index"),
             "hidden_count": _hidden_count(manifest.get("candidates") or []),
+            "pick_stale": _edited_since_accepted(manifest.get("candidates") or [],
+                                                 manifest.get("pick")),
             "accepted": final is not None and (base_job.render_dir / final).exists(),
             "front_url": (f"/jobs/{base_job.name}/frames/render/{front_index}.png"
                           if front_index is not None else None),

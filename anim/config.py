@@ -840,6 +840,10 @@ CONCEPT_MODELS: dict[str, str] = {
 }
 # Classic img2img: how much of the source is redrawn (KSampler denoise).
 CONCEPT_IMG2IMG_STRENGTH = 0.55
+# The retouch feature's masked redraw (gpu/workflows/inpaint_pass.json): the
+# same slider, but a masked region is meant to be redrawn rather than nudged,
+# so it starts near the top of the band.
+CONCEPT_INPAINT_STRENGTH = 0.9
 
 
 # The part palette lock feature - what each unit is made of, and where it is
