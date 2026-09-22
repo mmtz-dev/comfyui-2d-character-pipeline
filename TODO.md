@@ -48,5 +48,5 @@ Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid
 
 ---
 
-*11 open · 16 closed. Counts and contents come straight from
+*11 open · 18 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
