@@ -143,6 +143,23 @@ export interface Waiting {
   why: string;
 }
 
+export type ViewState = "pending" | "accepted" | "rejected";
+
+/** One view of the base (the multi-view reference feature): the views step
+ * under the base gate. `url` is the file on the base job, null when the
+ * record names a view the base no longer carries. */
+export interface BoardView {
+  view: string;
+  yaw: number;
+  state: ViewState;
+  file: string | null;
+  url: string | null;
+  candidate: number | null;
+  seed: number | null;
+  provisional: boolean;
+  picked: string | null;
+}
+
 export interface BoardState {
   unit: string;
   mode: CurationMode;
@@ -150,6 +167,7 @@ export interface BoardState {
   exists: boolean;
   path: string;
   gates: Record<string, GateState>;
+  views: Record<string, BoardView>;
   actions: string[];
   directions: string[];
   cells: Record<string, BoardCell>;
@@ -180,6 +198,22 @@ export interface TurnaroundDirection {
   depth: string | null;
   hidden_face: string[] | null;
   silhouette: { width: number; height: number; pixels: number; colours: number } | null;
+  prompt?: string | null;
+  /** The reference this still handed Wan (the multi-view reference feature):
+   * which view of the base, whether it fell back to the front, and the URL
+   * of the image `clip` actually sent. */
+  reference?: TurnaroundReference | null;
+}
+
+export interface TurnaroundReference {
+  view: string | null;
+  kind: string | null;
+  file: string | null;
+  fallback: boolean;
+  warning: string | null;
+  provisional: boolean;
+  state: string | null;
+  url: string | null;
 }
 
 /** `GET /turnaround/{unit}`: what `anim turnaround` recorded, per direction. */
@@ -317,6 +351,10 @@ export async function getTurnaround(unit: string): Promise<TurnaroundState | nul
 
 export const putGate = (unit: string, gate: string, state: GateState) =>
   sendJSON<BoardState>("PUT", `/curation/${encodeURIComponent(unit)}/gates/${encodeURIComponent(gate)}`, { state });
+
+/** `PUT .../views/{view}`: the views step under the base gate. */
+export const putView = (unit: string, view: string, state: ViewState) =>
+  sendJSON<BoardState>("PUT", `/curation/${encodeURIComponent(unit)}/views/${encodeURIComponent(view)}`, { state });
 
 /** `PUT /settings` is the whole document: send back what GET gave, changed. */
 export const putSettings = (settings: Settings) => sendJSON<Settings>("PUT", "/settings", settings);

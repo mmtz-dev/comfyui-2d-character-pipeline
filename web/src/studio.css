@@ -385,6 +385,39 @@ body.studio-collapsed .studio-head {
   justify-content: center;
   color: #666;
 }
+/* the views of the base (the multi-view reference feature): the views step under the base gate */
+.board-views {
+  margin: 6px 0 2px;
+}
+.board-views-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 12px;
+}
+.board-views-title {
+  color: var(--studio-gold);
+  font-weight: 600;
+}
+.board-view img {
+  background: #fff;
+  object-fit: contain;
+}
+.board-view.accepted img { border-color: #6a9a6a; }
+.board-view.rejected img { border-color: #a04040; opacity: 0.6; }
+.board-view.provisional figcaption::after { content: " (provisional)"; color: #e0b060; }
+.board-view .studio-button { margin-top: 2px; font-size: 10px; }
+.board-tile-ref {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  justify-content: center;
+  font-size: 9px;
+  color: var(--studio-muted);
+}
+.board-tile-ref img { height: 32px; background: #fff; border: 1px solid #333; }
+.board-tile-ref.fallback { color: #e0b060; }
 .board-grid {
   margin-top: 8px;
   overflow: auto;

@@ -238,6 +238,17 @@ def find_reference(job: Job, manifest: dict[str, Any],
     return path, "sprite x8"
 
 
+def find_phrases(job: Job, manifest: dict[str, Any]) -> tuple[str | None, str | None]:
+    """The unit's (parts phrase, avoid phrase) from its base job's concept
+    block, or (None, None) - the multi-view reference feature."""
+    from anim.stages import concept as concept_stage
+
+    slug = manifest.get("slug", "")
+    if not slug:
+        return None, None
+    return concept_stage.base_phrases(slug, job.root.parent)
+
+
 def fit_reference(source: Path, cell: tuple[int, int], dest: Path) -> Path:
     """Letterbox the reference onto the clip cell's aspect, on white.
 
@@ -359,14 +370,23 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
                 filename_prefix=f"anim_pipeline/{job.name}/clip/frame")
     # The prompt names the cell's view (the turnaround feature): s0 is the
     # sentence every clip so far was rendered with; any other cell says which
-    # way the figure faces instead of "facing right".
+    # way the figure faces instead of "facing right". When the unit's base
+    # carries a parts phrase (the multi-view reference feature) the prompt
+    # also names the parts and what this view shows of the head, and the
+    # negative gets "a second figure" plus the unit's avoid phrase; a base
+    # without one renders the old prompt, word for word.
     direction_cell = str((manifest.get("motion_source") or {}).get("direction")
                          or config.DEFAULT_DIRECTION)
+    parts_phrase, avoid_phrase = find_phrases(job, manifest)
     comfy.patch(workflow, "positive prompt",
                 text=prompt or config.clip_prompt(manifest.get("action") or "",
-                                                  direction_cell))
+                                                  direction_cell, parts_phrase))
     if negative:
         comfy.patch(workflow, "negative prompt", text=negative)
+    elif parts_phrase:
+        template = workflow[comfy.find_node(workflow, "negative prompt")]["inputs"]["text"]
+        comfy.patch(workflow, "negative prompt",
+                    text=config.clip_negative(template, avoid_phrase))
     if steps is not None:
         comfy.patch(workflow, "seed", steps=int(steps))
     if cfg is not None:
@@ -415,6 +435,8 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
         "frame_map": mapping,
         "seed": seed,
         "prompt": workflow[comfy.find_node(workflow, "positive prompt")]["inputs"]["text"],
+        "negative": workflow[comfy.find_node(workflow, "negative prompt")]["inputs"]["text"],
+        "parts_phrase": parts_phrase, "avoid_phrase": avoid_phrase,
         "sampler": {k: workflow[comfy.find_node(workflow, "seed")]["inputs"][k]
                     for k in ("steps", "cfg", "sampler_name", "scheduler")},
         "seconds": run_record["seconds"],

@@ -13,6 +13,8 @@ write the same `work/<unit>_curation.json` through the same functions.
     anim curate knight --clear-frame attack/s0/3    # a cleared reject comes back into the picks
     anim curate knight --accept-gate base           # what `concept --pick` does for you
     anim curate knight --accept-gate turnaround
+    anim curate knight --accept-view back           # the views step under the base gate (#298)
+    anim curate knight --reject-view left           # the turnaround falls back to the front for it
     anim curate knight --regenerate attack/s0       # records a new seed, prints the GPU line to run
     anim curate --mode every                        # the project setting (gates | every | end)
 
@@ -47,6 +49,10 @@ def print_board(board: dict[str, Any]) -> None:
     print(f"curate: {board['unit']}  mode {board['mode']}  "
           f"gates base={board['gates']['base']} turnaround={board['gates']['turnaround']}"
           f"{'' if board['exists'] else '  (no record yet: legacy, nothing gated)'}")
+    if board.get("views"):
+        print("  views: " + ", ".join(
+            f"{v}={row['state']}{' (provisional)' if row['provisional'] else ''}"
+            f"{'' if row['file'] else ' (no file)'}" for v, row in board["views"].items()))
     if not board["cells"]:
         print("  no cells - no job of this unit is a studio action")
     for key, cell in board["cells"].items():
@@ -79,6 +85,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         choices=list(curation.GATES), metavar="GATE")
     parser.add_argument("--pending-gate", action="append", default=[],
                         choices=list(curation.GATES), metavar="GATE")
+    parser.add_argument("--accept-view", action="append", default=[],
+                        choices=list(config.CONCEPT_VIEWS), metavar="VIEW",
+                        help="accept a view of the base (the multi-view reference feature)")
+    parser.add_argument("--reject-view", action="append", default=[],
+                        choices=list(config.CONCEPT_VIEWS), metavar="VIEW",
+                        help="reject a view: the turnaround falls back past it")
+    parser.add_argument("--pending-view", action="append", default=[],
+                        choices=list(config.CONCEPT_VIEWS), metavar="VIEW")
     parser.add_argument("--regenerate", action="append", default=[], metavar="KEY",
                         help="record a new seed for the cell and print the GPU "
                              "command; nothing is started")
@@ -97,7 +111,7 @@ def run_stage(args: argparse.Namespace) -> int:
         print(f"curate: curation mode -> {args.mode} ({settings.settings_path(work_dir)})")
     edits = any([args.accept_cell, args.reject_cell, args.pending_cell, args.accept_frame,
                  args.reject_frame, args.clear_frame, args.accept_gate, args.pending_gate,
-                 args.regenerate])
+                 args.accept_view, args.reject_view, args.pending_view, args.regenerate])
     if not args.unit:
         if edits:
             raise SystemExit("anim curate: a unit is required for cell, frame and gate edits")
@@ -116,6 +130,12 @@ def run_stage(args: argparse.Namespace) -> int:
         for gate in args.accept_gate:
             curation.set_gate(unit, gate, "accepted", work_dir)
             print(f"curate: gate {gate} -> accepted")
+        for state, views in (("pending", args.pending_view), ("rejected", args.reject_view),
+                             ("accepted", args.accept_view)):
+            if views:
+                curation.set_views(unit, {v: state for v in views}, work_dir)
+                for v in views:
+                    print(f"curate: view {v} -> {state}")
         for key in args.pending_cell:
             cell = curation.set_cell_status(unit, *curation.parse_key(key), "pending", work_dir)
             print(f"curate: {key} -> pending ({cell['job']})")

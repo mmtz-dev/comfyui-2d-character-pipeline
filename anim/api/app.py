@@ -28,6 +28,7 @@ Routes (all JSON unless said otherwise):
     PUT  /curation/{unit}/cells/{action}/{dir}  {"status"} | {"frames": {n: accept|reject|null}}
     POST /curation/{unit}/cells/{action}/{dir}/regenerate   new seed + the cell's GPU stage -> 202
     PUT  /curation/{unit}/gates/{gate}  {"state"}   base | turnaround -> pending | accepted
+    PUT  /curation/{unit}/views/{view}  {"state"}   a view of the base -> pending | accepted | rejected
     GET  /export/{unit}                    the last `anim export` of a unit: files, animations, warnings
     GET  /turnaround/{unit}                the turnaround: per direction status, seconds, the stills' URLs, the identity table
     GET  /health                           {"ok": true, "work_dir": ..., "comfyui": reachable?}
@@ -383,6 +384,13 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
     @app.put("/curation/{unit}/gates/{gate}")
     def put_gate(unit: str, gate: str, body: GateRequest) -> dict[str, Any]:
         _curated(curation.set_gate, unit, gate, body.state, work_dir)
+        return _curated(curation.board, unit, work_dir)
+
+    @app.put("/curation/{unit}/views/{view}")
+    def put_view(unit: str, view: str, body: GateRequest) -> dict[str, Any]:
+        """The views step under the base gate (the multi-view reference
+        feature): accept / reject / reopen one view of the base."""
+        _curated(curation.set_views, unit, {view: body.state}, work_dir)
         return _curated(curation.board, unit, work_dir)
 
     # --- the spritesheet export feature -----------------------------------

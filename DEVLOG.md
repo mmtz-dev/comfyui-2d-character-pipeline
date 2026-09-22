@@ -4,6 +4,181 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-22 — the multi-view reference feature: the prompt names the parts, no face off-front, one reference per view
+
+**What.** [#298](http://192.168.1.158:8700/work_packages/298). The first identity gate (the run
+below the 2026-09-21 entry) failed: the closed helm drew only at s0 / s270, a bare head with hair
+or a face everywhere the head was turned, a second figure at s90. Wan had one front-view
+reference and invented every other side; the control (skeleton + mannequin depth) says "pose",
+not "knight". Two levers, built together, before the per-character LoRA the design doc names as
+the fallback:
+
+- **Lever 1 — the prompt and the control say what the reference cannot.** The base's `concept`
+  block gains a `parts_phrase` and an `avoid_phrase` — explicit strings from `concept --pick
+  --parts "…" --avoid "…"`, or `--parts` / `--avoid` alone on the base as it is; with no
+  `--parts` the phrase is the whole description (`concept.parts_phrases`). `clip` reads them off
+  the base for every clip of the unit (`clip.find_phrases`): `config.clip_prompt(action,
+  direction, parts)` becomes `CLIP_PARTS_PROMPT` — the view, the action, "with the same *parts*
+  as the reference image", what that view shows of the head (`CLIP_IDENTITY_PHRASES`; "no face
+  visible" on s45 / s90 / s135), "exactly one figure" — and the negative is Wan's own plus
+  `CLIP_NEGATIVE_EXTRA` ("a second figure, two people, an extra person") plus the avoid phrase
+  (`config.clip_negative`). A base with no parts phrase renders the old prompt word for word.
+  And `rigkit.hidden_face_points` now hides **every** face point on a turned-away head — the
+  turnaround feature kept the near ear and, from behind, both ears, and an ear is a landmark the
+  pose ControlNet builds a face around. "Front" is unchanged: a head whose forward vector has a
+  component toward the camera or lies in the near plane, so s0 / s180 / s225 / s270 / s315 are
+  byte-identical to a rig with no rule at all (`test_the_profile_and_front_cells_are_byte_identical…`
+  compares the payloads with `hidden_face_points` monkeypatched to nothing). The brief asked
+  whether the profiles should lose the eyes too; they keep them, because every published s0 job
+  was rendered with them and the byte-identity guardrail wins — it is the same one threshold
+  away as before.
+- **Lever 2 — a reference per view, from the stage that is consistent.** `anim concept --unit
+  knight --views [back,left,right | all] [--count N]` renders the accepted base from the other
+  sides through **Qwen-Image-Edit 2509** (INT4 Nunchaku, the identity pass's build —
+  `gpu/workflows/view_pass.json`: the base is `image1` and, through `VAEEncode`, the latent, so
+  a view is the base's size; prompt `config.CONCEPT_VIEWS[view]` + the parts phrase; 4-step
+  lightning, no LoRA, no ControlNet). Views are named for the side of the character the camera
+  sees, by the compass in `config.DIRECTIONS`: `right` is the right profile (yaw 0 — the s0 cell
+  faces screen right with its right side to the viewer), `left` yaw 180, `back` 90, the four
+  obliques `back_right` / `back_left` / `front_left` / `front_right`; `front` is the base and is
+  never rendered. Output `work/<unit>_concept/views/<view>_NN.png` + `views.json` (per view the
+  prompt, per candidate seed / seconds / sha256 / workflow hash; seed derived from unit + base
+  sha256 + parts phrase, +100 per view, +1 per candidate) and the page `work/_views/<unit>/`
+  (the base beside each view's candidates) copied to
+  <http://192.168.1.158:8090/sprite-studio/views/>. `--pick-view back=01 left=00 …` copies the
+  chosen candidates into the base as `render/view_<view>.png`, records them in the base's
+  `concept.views` (file, candidate, seed, sha256, `provisional`) and in the curation record's
+  new **views** step under the base gate (`curation.set_views`; `anim curate <unit>
+  --accept-view / --reject-view / --pending-view`; `PUT /curation/{unit}/views/{view}`; the
+  Board shows a "views of the base" row under the gates with a click-to-cycle button per view —
+  `board.ts` `viewTiles` / `viewsText` / `nextViewState`, the `view` event in `reduceBoard`);
+  `--provisional` records a pick as pending. A new `concept --pick` clears the views (files,
+  block, curation step): they were drawn from another base. Then `anim turnaround` hands each
+  direction the nearest view — `config.TURNAROUND_REFERENCE_BY_DIR`, best first: s0 → right, s180
+  → left, s90 → back, s270 → front, s45 / s135 → their oblique, then the back, s225 / s315 →
+  their oblique, then the front (`turnaround.reference_for`). A view the base does not carry or
+  the owner rejected falls down the list to the front with a **warning** in the log, the record
+  (`cells.<dir>.reference`, `references`, `reference_map`) and on the page; the clip record says
+  "override" for a view and "base render" for the front, so nothing lies about where the pixels
+  came from. The page shows the reference under every still and a "reference each still used"
+  table; `GET /turnaround/{unit}` lists it per direction with the URL of the image `clip` sent
+  (a new `reference` frame set: `clip/reference.png`; and a `views` set on the concept job); the
+  Board's tiles carry it.
+
+New: `gpu/workflows/view_pass.json` (+ NOTES.md), `concept.render_views` / `pick_view` /
+`set_phrases` / `base_phrases` / `build_views_page`, `clip.find_phrases`, `curation.set_views` /
+`views_of`, `turnaround.base_views` / `reference_for` / `references_for`, the `CLIP_PARTS_PROMPT`
+/ `CLIP_IDENTITY_PHRASES` / `CLIP_NEGATIVE_EXTRA` / `CONCEPT_VIEWS` / `TURNAROUND_REFERENCE_BY_DIR`
+blocks in `anim/config.py`. pytest 587 → **604 passed**, 4 skipped; vitest 41 → **45**.
+
+**The conditioning path — decided, with the alternative.** (a) the edit path: Qwen-Image-Edit
+with the base as the edit source is *reference-conditioned* — the identity is in the image the
+model is told to keep, which is exactly what the prompt-only routes lacked. It was checked live
+first: the INT4 build, the Qwen2.5-VL encoder and the Qwen VAE were all still in the container's
+`/object_info` lists (the bake-off's K route used them on 2026-09-20). (b) Z-Image + the Fun
+ControlNet Union with a rig-rendered depth of the mannequin at that yaw would hold the pose
+exactly but carry identity in the prompt alone — the failure being fixed. (a) first, and it
+worked well enough that (b) was not built; it stays the fallback if the edit path stops keeping
+the character. One rule knowingly bent: NOTES.md says keep every Qwen-Edit canvas non-square,
+and the base is the concept pass's 768²; padding it to 3:4 first would let the model pick the
+figure's scale and break the drop-in with the base (`clip.fit_reference` letterboxes both the
+same way). The 768² views came out clean; if one ever degrades in a way the aspect explains,
+the pad is the one-line change in `concept.render_views`.
+
+**The reference map for the obliques — decided, with the alternative.** The turned-away obliques
+fall to the **back**: the failures were bare heads where the reference showed a face, and the
+back view is the one that shows the back of the head. The turned-toward obliques fall to the
+**front**: the accepted base is the one reference not itself drawn from a reference. The nearest
+profile is the alternative for both, one entry away in the table. And a fact the map had to get
+right: the WP text says "s90 → right, s270 → left"; by the compass in `config.DIRECTIONS` s90 is
+the *back* and s270 the *front*, s0 the right profile and s180 the left — the map follows the
+compass, and the test `test_the_reference_map_follows_the_compass` pins it.
+
+**The real run — the views** (`anim concept --unit knight --views all --count 2`, after
+`--parts "closed great helm, kite shield, longsword, dark cloak, silver plate with gold trim"
+--avoid "bare head, uncovered face, hair"` on the accepted base, concept pick 01; seed
+4197394687111871; ComfyUI 0.35.0 on the A5000): **200.6 s** for the first image (Qwen-Edit INT4 +
+the 7B encoder paging in over the resident Wan), then **7.8–11.4 s** each, 14 images in about 6
+minutes. What they are: `back_00/01` are true back views — the closed helm from behind, the
+cloak, the shield on the character's left, the sword in the right hand; `left_00` is a profile
+facing screen left with the sword forward, `left_01` the same with a big cross-bearing shield
+toward the camera; `right_00/01` profiles facing screen right with the shield on the far side;
+`back_right_00/01` and `back_left_01` read as back views turned a little (the model does not do
+a strong three-quarter turn), `back_left_00` is a cloak with a head; `front_left` and
+`front_right` are the front with a shield added — barely oblique. **Every view has a kite shield
+the base does not**: the parts phrase names one and the edit model obeys the words over the
+image. That is the owner's call, not the pipeline's — drop "kite shield" from the phrase, or pick
+a base that carries one; it is noted below as the one inconsistency the rerun inherits. The
+picks made *for the rerun only*, all `--provisional` (curation `views` step: pending), which the
+owner's own `--pick-view` supersedes: `back=01 left=00 right=00 back_right=00 back_left=01
+front_left=00 front_right=00`. To redo: look at <http://192.168.1.158:8090/sprite-studio/views/>,
+then `anim concept --unit knight --pick-view back=NN left=NN right=NN …` (any subset), then
+`anim turnaround knight --force`.
+
+**The real run — the turnaround** (`anim turnaround knight --force`, seed 1625235789813781 as
+before — the front base is unchanged — Quaternius `Idle_Loop` frame 0 ×5, blend at 0.35, the
+part lock to the base's `parts.json`, `rembg`; VRAM 17.6 GB after every GPU stage):
+
+| dir | reference | helm? | one figure? | still (w×h) | GPU s (service) | total s | face hidden |
+|---|---|---|---|---|---|---|---|
+| s0 | right (provisional) | yes — closed helm | yes; a ground shadow the matte kept as a white block under the arm | 39×53 | 153.8 (Wan paging back in) | 183.9 | — |
+| s45 | back_right (prov.) | yes — from behind-right | yes | 43×53 | 8.8 | 16.3 | all 5 |
+| s90 | back (prov.) | yes — from behind | yes; but a second shield-like rectangle on the character's right | 30×53 | 8.9 | 16.5 | all 5 |
+| s135 | back_left (prov.) | yes | yes | 25×53 | 9.1 | 16.5 | all 5 |
+| s180 | left (prov.) | yes — visored, the slit shows | yes | 32×53 | 9.3 | 16.7 | — |
+| s225 | front_left (prov.) | yes — closed, visor slit | yes; ground shadow | 31×53 | 9.4 | 16.3 | — |
+| s270 | front (the base) | yes | yes; a dark scabbard-like shape at the left hip | 30×53 | 9.3 | 16.4 | — |
+| s315 | front_right (prov.) | yes | yes | 30×53 | 9.3 | 16.4 | — |
+
+**Helm 8/8, one figure 8/8** — against 2/8 and 7/8 on the first gate. No bare head, no hair, no
+face on a turned head, no second knight at s90. The dark plate with gold trim, the cloak and the
+sword hold in all eight; the kite shield is in seven (s45 hides it behind the body) — the shield
+the base does not have, see above. Not clean: the s0 and s225 raws have a ground shadow the
+prompt says not to draw (the s0 still carries a white block from it; `--matte chroma` is the
+existing lever), s90 has an extra shield-shaped panel, the sword is still a stick at s45, and the
+stills are dark and painterly next to the base as they were on 2026-09-21. Height 53 in every
+direction, width 25–43 (spread 18, was 12).
+
+**One thing the second lever cost and got back.** Hiding every face point took the helmet's SAM
+prompt with it: `UNIT_PARTS["knight"]["helmet"]` prompts from the nose, the eyes and the ears
+plus the crown mid-point, and `partkit._joint_points` dropped a joint under the threshold — so
+the identity table said "not found" for the helmet on s45 / s90 / s135 while the helm was plainly
+there. Fixed in `partkit._joint_points`: a joint a *rig* placed and listed as `hidden` still
+prompts SAM — it has confidence 0.0 for the ControlNet's sake, but the orthographic projection
+lands the nose inside the helm seen from behind, so it is as good a prompt as it was from the
+front; a filmed payload has no `hidden`, so its low-confidence guesses stay out as before
+(`test_a_rigs_hidden_face_point_still_prompts_but_a_filmed_low_score_does_not`). s45 / s90 / s135
+were re-run (`--force --dirs`; 8.5–8.7 s of GPU each, the stills visually identical to the first
+pass — Wan reproduces to within a few bytes): helmet found **7/8** (s45 still not: SAM's mask
+candidates did not hold the prompt, and its legs mask swallowed the cloak, 998 px), drift 99;
+the identity table:
+
+| part | s0 | s45 | s90 | s135 | s180 | s225 | s270 | s315 | spread | found | drift |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| sword | 41 | 170 | 44 | 46 | 63 | 65 | 46 | 31 | 139 | 8/8 | 0 (free) |
+| shield | 11 | not found | 111 | 66 | 16 | 234 | 61 | 49 | 223 | 7/8 | 0 (free) |
+| helmet | 46 | not found | 42 | 8 | 43 | 36 | 35 | 46 | 38 | 7/8 | 99 |
+| arms | 209 | 1 | 72 | 157 | 0 | 2 | 227 | 190 | 226 | 7/8 | 690 |
+| torso | 9 | 22 | 161 | 63 | 22 | 101 | 61 | 54 | 152 | 8/8 | 353 |
+| legs | 436 | 998 | 375 | 435 | 332 | 192 | 344 | 411 | 806 | 8/8 | 1386 |
+
+The pages: the gate at <http://192.168.1.158:8090/sprite-studio/turnaround/> (each still now
+shows the reference it used, the reference table sits under the turntable, the parts phrase is
+printed), the views at <http://192.168.1.158:8090/sprite-studio/views/>. The gate stays
+**pending**; nothing in the owner's curation was flipped (base accepted, turnaround pending, the
+seven views pending-provisional).
+
+**Left to the owner.** (1) The gate — #297 again, the same question on the same page: one
+character in eight facings? The helm is there in all eight now; whether the dark painterly stills
+and the s90 panel are "one character" is the ruling. (2) The views: `--pick-view` your own (or
+accept mine on the Board), and decide the shield — the phrase names one, the base has none. (3)
+If the gate still fails after that, the per-character LoRA is next, as the design doc says. Not
+done here: the design-wiki mirror sync (`games-design-wiki/shared/sprite-studio.md` gained the
+#298 row and the "identity off-front" decision, uncommitted in that repo beside your other
+edits; `10-sync-wiki.sh` is yours to run), and nothing in OpenProject was touched.
+
+---
+
 ## 2026-09-21 — the turnaround feature: eight idle stills, the identity gate, face points hidden on the far side
 
 **What.** [#275](http://192.168.1.158:8700/work_packages/275), the fourth feature of the sprite

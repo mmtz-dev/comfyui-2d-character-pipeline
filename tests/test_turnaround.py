@@ -10,12 +10,17 @@ What is pinned here:
      and the page name every direction.
   3. A second run skips the directions that are done; a changed base is
      refused without --force; a page-only rebuild needs no service.
-  4. The back cells hide the face points (the rule is in rigkit; here it
+  4. The back cells hide every face point (the rule is in rigkit; here it
      shows up in the job's keypoints and the record).
   5. `GET /turnaround/{unit}` serves the same data and the stills resolve.
   6. The gate: the stage waits for the base gate and never for its own; after
      the run, `anim curate --accept-gate turnaround` flips it and a cell
      outside s0 may render.
+  7. The multi-view reference feature: the prompt names the parts phrase and
+     the view per direction, each direction hands Wan the base's nearest
+     view (s0 the right profile, s90 the back ...), a missing view falls
+     back to the front with a warning, the record, the page and the API say
+     which reference every still used.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ from PIL import Image
 from anim import cli, comfy, config, curation
 from anim.api.app import create_app
 from anim.job import Job
+from anim.stages import base as base_stage
 from anim.stages import turnaround as turnaround_stage
 from fixtures import synthetic
 from fixtures.fakecomfy import FakeComfy
@@ -82,6 +88,82 @@ def test_the_clip_prompt_names_the_view():
     assert "top-down" in config.clip_prompt("walk", "t90") and "north" in config.clip_prompt("walk", "t90")
 
 
+PARTS = "closed great helm, kite shield, longsword, dark cloak"
+
+
+def test_the_parts_prompt_names_the_parts_and_the_view_per_direction():
+    """The multi-view reference feature: with a parts phrase every direction's
+    prompt carries the parts, the view phrase, what that view shows of the
+    head, and 'exactly one figure'; without one it is the old sentence."""
+    plain = config.clip_prompt("idle", "s90")
+    assert config.clip_prompt("idle", "s90", None) == plain == config.clip_prompt("idle", "s90", "  ")
+    for direction in SIDE:
+        text = config.clip_prompt("idle", direction, PARTS)
+        assert f"with the same {PARTS} as the reference image" in text, direction
+        assert config.clip_view_phrase(direction) in text
+        assert config.clip_identity_phrase(direction) in text
+        assert "exactly one figure" in text and text.endswith("no ground shadow, no floor")
+        assert "standing at rest, breathing" in text
+    assert "no face visible" in config.clip_prompt("idle", "s90", PARTS)
+    assert "no face visible" in config.clip_prompt("idle", "s45", PARTS)
+    assert "no face visible" not in config.clip_prompt("idle", "s270", PARTS)
+    assert "seen in profile" in config.clip_prompt("idle", "s0", PARTS)
+    assert "from above" in config.clip_prompt("walk", "t90", PARTS)
+    # A trailing full stop or comma on the owner's phrase does not double up.
+    assert config.clip_prompt("idle", "s0", PARTS + ".") == config.clip_prompt("idle", "s0", PARTS)
+    # The negative: the workflow's own, then "a second figure", then the unit's avoid phrase.
+    negative = config.clip_negative("色调艳丽，过曝", "bare head, uncovered face")
+    assert negative.startswith("色调艳丽，过曝, ") and config.CLIP_NEGATIVE_EXTRA in negative
+    assert negative.endswith(", bare head, uncovered face")
+    assert config.clip_negative("x", None) == f"x, {config.CLIP_NEGATIVE_EXTRA}"
+
+
+def test_the_reference_map_follows_the_compass():
+    """yaw 0 is the right profile, 180 the left, 90 the back, 270 the front;
+    an oblique wants its exact view, then back / front; front is always last."""
+    m = config.TURNAROUND_REFERENCE_BY_DIR
+    assert m["s0"][0] == "right" and m["s180"][0] == "left"
+    assert m["s90"][0] == "back" and m["s270"] == ("front",)
+    assert m["s45"] == ("back_right", "back", "front") and m["s135"] == ("back_left", "back", "front")
+    assert m["s225"] == ("front_left", "front") and m["s315"] == ("front_right", "front")
+    for d in SIDE:
+        assert config.turnaround_reference_views(d)[-1] == config.FRONT_VIEW
+        assert config.turnaround_reference_views(f"t{config.direction(d)[0]}") == m[d]
+    # Every view a direction may want is a view `concept --views` can render.
+    for views in m.values():
+        assert all(v == "front" or v in config.CONCEPT_VIEWS for v in views)
+
+
+def test_reference_for_takes_the_nearest_view_and_falls_back_with_a_warning(tmp_path):
+    front = (tmp_path / "front.png", "base render")
+    back = tmp_path / "back.png"
+    right = tmp_path / "right.png"
+    for path in (front[0], back, right):
+        Image.new("RGB", (8, 8), (255, 255, 255)).save(path)
+    views = {"back": {"path": back, "state": "accepted", "provisional": False},
+             "right": {"path": right, "state": "pending", "provisional": True},
+             "left": {"path": tmp_path / "left.png", "state": "rejected", "provisional": False}}
+    s90 = turnaround_stage.reference_for("s90", front, views)
+    assert s90["view"] == "back" and s90["fallback"] is False and s90["warning"] is None
+    assert s90["file"] == str(back) and len(s90["sha256"]) == 64 and s90["kind"] == "view back"
+    s0 = turnaround_stage.reference_for("s0", front, views)
+    assert s0["view"] == "right" and s0["provisional"] is True and s0["state"] == "pending"
+    # No back_right on the base: s45 takes the back, no warning (the back was on its list).
+    s45 = turnaround_stage.reference_for("s45", front, views)
+    assert s45["view"] == "back" and s45["fallback"] is False
+    # The left is rejected: s180 falls back to the front and says why.
+    s180 = turnaround_stage.reference_for("s180", front, views)
+    assert s180["view"] == "front" and s180["fallback"] is True and s180["file"] == str(front[0])
+    assert "left (rejected)" in s180["warning"] and "--pick-view" in s180["warning"]
+    # No front_left: s225 falls back to the front with a warning naming it.
+    s225 = turnaround_stage.reference_for("s225", front, views)
+    assert s225["fallback"] is True and "front_left (not on the base)" in s225["warning"]
+    # The front never warns.
+    s270 = turnaround_stage.reference_for("s270", front, views)
+    assert s270["view"] == "front" and s270["fallback"] is False and s270["warning"] is None
+    assert turnaround_stage.reference_for("s90", front, {})["fallback"] is True
+
+
 # ---------------------------------------------------------------------------
 # 2 + 3 + 4. The run
 # ---------------------------------------------------------------------------
@@ -103,14 +185,30 @@ def ran(tmp_path_factory):
         ramp = [(8 * i, 6 * i, 10 * i) for i in range(16)]
         palette.write_text("GIMP Palette\nName: Fallback\nColumns: 8\n" + "".join(
             f"{r:3d} {g:3d} {b:3d}\t#{r:02x}{g:02x}{b:02x}\n" for r, g, b in ramp))
-    reference = tmp_path / "base.png"
+    # The base: a front render, a parts phrase (the multi-view reference
+    # feature) and two views on it - the back (accepted) and the right
+    # profile (a provisional pick, still pending); no left, no obliques.
+    base_job = base_stage.prepare("knight", cell=(512, 768), work_dir=work_dir)
+    base_job.render_dir.mkdir(parents=True, exist_ok=True)
+    reference = base_job.render_dir / "concept_pick.png"
     Image.new("RGB", (512, 768), (250, 250, 250)).save(reference)
+    Image.new("RGB", (512, 768), (240, 240, 250)).save(base_job.render_dir / "view_back.png")
+    Image.new("RGB", (512, 768), (250, 240, 240)).save(base_job.render_dir / "view_right.png")
+    base_job.update_manifest(
+        render={"seed": 1, "passes": ["concept_pass"], "final": "concept_pick.png"},
+        concept={"job": "knight_concept", "candidate": 1, "parts_phrase": PARTS,
+                 "avoid_phrase": "bare head, uncovered face",
+                 "views": {"back": {"view": "back", "yaw": 90, "file": "view_back.png",
+                                    "candidate": 1, "seed": 5, "provisional": False},
+                           "right": {"view": "right", "yaw": 0, "file": "view_right.png",
+                                     "candidate": 0, "seed": 6, "provisional": True}}})
+    curation.set_views("knight", {"back": "accepted"}, work_dir)
     parts_file = _parts_file(tmp_path / "parts.json", palette)
     frame = synthetic.write_strip(tmp_path / "frame.png", cells=1,
                                   cell=tuple(config.TURNAROUND_CELL)).read_bytes()
     logs: list[str] = []
     common = dict(matte="chroma", parts_from=parts_file, rig_name="kaykit", glb=KNIGHT,
-                  reference=reference, work_dir=work_dir, assets_dir=tmp_path / "no-assets",
+                  work_dir=work_dir, assets_dir=tmp_path / "no-assets",
                   workflow_dir=REPO / "gpu" / "workflows", log=logs.append)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(config, "PALETTE", palette)
@@ -150,13 +248,61 @@ def test_every_direction_renders_one_still_from_the_middle_frame(ran):
         assert sil["height"] > 0 and sil["width"] > 0 and sil["pixels"] > 0
 
 
-def test_the_prompt_names_each_view(ran):
+def test_the_prompt_names_each_view_and_the_parts(ran):
     texts = [prompt[comfy.find_node(prompt, "positive prompt")]["inputs"]["text"]
              for prompt in ran["prompts"]]
     assert "side-view, facing right" in texts[0]
     assert "back view" in texts[2] and "facing right" not in texts[2]
     assert "front view, facing the viewer" in texts[6]
     assert "standing at rest" in texts[0]
+    # The multi-view reference feature: the base's parts phrase and the view
+    # sentence are in every direction's prompt, the avoid phrase in the negative.
+    for direction, text in zip(SIDE, texts):
+        assert text == config.clip_prompt("idle", direction, PARTS), direction
+        assert PARTS in text and config.clip_identity_phrase(direction) in text
+    negatives = [prompt[comfy.find_node(prompt, "negative prompt")]["inputs"]["text"]
+                 for prompt in ran["prompts"]]
+    assert all(n.endswith("a second figure, two people, an extra person, bare head, uncovered face")
+               for n in negatives)
+    assert all(n.startswith("色调艳丽") for n in negatives), "Wan's own negative stays in front"
+    record = ran["state"]["cells"]["s90"]
+    assert record["parts_phrase"] == PARTS and record["negative"] == negatives[2]
+    assert record["prompt"] == texts[2]
+
+
+def test_each_direction_hands_wan_its_nearest_view(ran):
+    """s90 the back (accepted), s0 the right (provisional), s45 / s135 the
+    back (no obliques on the base), s180 / s225 / s315 the front as a
+    FALLBACK with a warning, s270 the front by right."""
+    state = ran["state"]
+    refs = state["references"]
+    assert list(refs) == SIDE
+    used = {d: (refs[d]["view"], refs[d]["fallback"]) for d in SIDE}
+    assert used == {"s0": ("right", False), "s45": ("back", False), "s90": ("back", False),
+                    "s135": ("back", False), "s180": ("front", True), "s225": ("front", True),
+                    "s270": ("front", False), "s315": ("front", True)}
+    assert refs["s0"]["provisional"] is True and refs["s0"]["state"] == "pending"
+    assert refs["s90"]["state"] == "accepted" and refs["s90"]["kind"] == "view back"
+    assert refs["s180"]["warning"] and "left (not on the base)" in refs["s180"]["warning"]
+    assert refs["s270"]["warning"] is None and refs["s270"]["kind"] == "base render"
+    assert state["reference_map"]["s45"] == ["back_right", "back", "front"]
+    # The record per cell says the same, and the file `clip` sent IS that view.
+    for d in SIDE:
+        cell = state["cells"][d]
+        assert cell["reference"]["view"] == refs[d]["view"]
+        job = Job.open(f"knight_idle_{d}", ran["work_dir"])
+        clip_record = json.loads(job.clip_path.read_text())
+        assert clip_record["reference"]["file"] == refs[d]["file"]
+        assert clip_record["reference"]["kind"] == ("base render" if refs[d]["view"] == "front"
+                                                    else "override")
+        assert (job.clip_dir / "reference.png").exists()
+    assert refs["s90"]["file"].endswith("knight_base/render/view_back.png")
+    assert refs["s270"]["file"].endswith("knight_base/render/concept_pick.png")
+    # The warnings were logged before the first direction ran.
+    warnings = [line for line in ran["logs"] if "WARNING" in line]
+    assert len(warnings) == 3 and all("using the front" in w for w in warnings)
+    assert any("reference back" in line for line in ran["logs"] if line.startswith("turnaround: s90"))
+    assert any("reference front - fallback" in line for line in ran["logs"] if line.startswith("turnaround: s180"))
 
 
 def test_each_direction_writes_its_own_parts_json(ran):
@@ -212,6 +358,13 @@ def test_the_page_names_every_direction_and_asks_the_question(ran):
         assert sheet.size == (config.CANVAS[0] * 8, config.CANVAS[1])
     assert (page.parent / "img" / "reference.png").exists()
     assert f"seed <b>{ran['state']['seed']}</b>" in html
+    # The multi-view reference feature: the reference each still used is on
+    # the page - a thumbnail per still, the map, the fallbacks, the parts phrase.
+    for direction in SIDE:
+        assert (page.parent / "img" / f"{direction}_ref.png").exists()
+        assert f"{direction}_ref.png" in html
+    assert "fallback to the front" in html and "back_right → back → front" in html
+    assert PARTS in html and "(provisional pick)" in html
     assert "not found" in html and "spread" in html
     assert "--accept-gate turnaround" in html
     assert page == turnaround_stage.page_dir("knight", ran["work_dir"]) / "index.html"
@@ -221,9 +374,12 @@ def test_the_page_names_every_direction_and_asks_the_question(ran):
 
 def test_the_back_cells_hide_the_face_and_the_record_says_so(ran):
     state = ran["state"]
+    every = ["nose", "right_eye", "left_eye", "right_ear", "left_ear"]
     assert state["cells"]["s0"]["hidden_face"] == []
-    assert state["cells"]["s90"]["hidden_face"] == ["nose", "right_eye", "left_eye"]
-    assert state["cells"]["s45"]["hidden_face"] == ["nose", "right_eye", "left_eye", "left_ear"]
+    assert state["cells"]["s90"]["hidden_face"] == every
+    assert state["cells"]["s45"]["hidden_face"] == every
+    assert state["cells"]["s135"]["hidden_face"] == every
+    assert state["cells"]["s180"]["hidden_face"] == []
     assert state["cells"]["s270"]["hidden_face"] == []
     payload = json.loads(Job.open("knight_idle_s90", ran["work_dir"]).keypoints_path.read_text())
     nose = payload["names"].index("nose")
@@ -301,11 +457,21 @@ def test_get_turnaround_serves_the_directions_and_their_stills(ran, tmp_path):
         assert s90["still"] == "/jobs/knight_idle_s90/frames/post/0.png"
         assert s90["raw"] == "/jobs/knight_idle_s90/frames/clip/2.png"
         assert s90["control"] == "/jobs/knight_idle_s90/frames/control/2.png"
-        assert s90["hidden_face"] == ["nose", "right_eye", "left_eye"]
+        assert s90["hidden_face"] == ["nose", "right_eye", "left_eye", "right_ear", "left_ear"]
         assert s90["parts"]["torso"]["found"] is True
         for key in ("still", "raw", "control", "skeleton", "depth"):
             response = api.get(s90[key])
             assert response.status_code == 200 and response.headers["content-type"] == "image/png", key
+        # The multi-view reference feature: the reference per still, with the
+        # URL of the image `clip` sent.
+        assert s90["reference"]["view"] == "back" and s90["reference"]["fallback"] is False
+        assert s90["reference"]["url"] == "/jobs/knight_idle_s90/frames/reference/0.png"
+        assert api.get(s90["reference"]["url"]).status_code == 200
+        s180 = row["directions"]["s180"]
+        assert s180["reference"]["view"] == "front" and s180["reference"]["fallback"] is True
+        assert "left (not on the base)" in s180["reference"]["warning"]
+        assert row["references"]["s0"]["view"] == "right" and row["reference_map"]["s0"] == ["right", "front"]
+        assert PARTS in s90["prompt"]
         assert row["identity"]["directions"] == SIDE and row["question"] == turnaround_stage.QUESTION
         assert api.get("/turnaround/orc").status_code == 404
         assert api.get("/turnaround/_runs").status_code == 404

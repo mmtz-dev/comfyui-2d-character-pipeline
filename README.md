@@ -400,8 +400,9 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `PUT /curation/{unit}/cells/{action}/{dir}` `{"status": "accepted" \| "rejected" \| "pending"}` and/or `{"frames": {"3": "reject", "5": "accept", "7": null}}` | mark frames (a reject leaves that job's `picks.json` through `ReviewApp.set_picks`, a cleared reject comes back), then set the cell. An accepted cell is locked: `409` on a frame mark until it is set pending again |
 | `POST /curation/{unit}/cells/{action}/{dir}/regenerate` `[{"seed": N}]` | record a new seed for the cell and run its GPU stage (`clip` on the clip route, else `render`) through the run manager → `202` + the cell with its run. A busy card is the `409`, a pending gate the `423`; a refused request records nothing |
 | `PUT /curation/{unit}/gates/{gate}` `{"state": "accepted" \| "pending"}` | `base` or `turnaround`; answers the board |
+| `PUT /curation/{unit}/views/{view}` `{"state": "accepted" \| "rejected" \| "pending"}` | the views step under the base gate (the multi-view reference feature): one view of the base; the board's `views` row carries each view's state, file URL and `provisional` |
 | `GET /export/{unit}` | the last `anim export` of a unit under `work/_export/<unit>/`: `created`, `commit`, `frame_size`, `sheet_mode`, `sheets`, `animations` (frames, loop, fps, sheet, job), `warnings`, `files` with sizes; `404` with the `POST /jobs` line when there is none (the spritesheet export feature) |
-| `GET /turnaround/{unit}` | the last `anim turnaround` of a unit: seed, rig, per direction its status, seconds, `hidden_face`, silhouette and part numbers and the URLs of the still (`/jobs/<job>/frames/post/0.png`), the raw clip frame, the control frame (a new `control` frame set), the skeleton and the depth; the identity table; `404` with the `POST /jobs` line when there is none. The Board reads it to show the eight stills as the thing the `turnaround` gate accepts (the turnaround feature) |
+| `GET /turnaround/{unit}` | the last `anim turnaround` of a unit: seed, rig, per direction its status, seconds, `hidden_face`, silhouette and part numbers and the URLs of the still (`/jobs/<job>/frames/post/0.png`), the raw clip frame, the control frame (a new `control` frame set), the skeleton and the depth, and (the multi-view reference feature) `reference` — the view it used, `fallback`, the `warning`, and the URL of the image `clip` sent (`/jobs/<job>/frames/reference/0.png`) — plus `references` and `reference_map` for the run; the identity table; `404` with the `POST /jobs` line when there is none. The Board reads it to show the eight stills as the thing the `turnaround` gate accepts (the turnaround feature) |
 | `GET /health` | `ok`, the work dir, the active GPU run; `?probe=1` also asks ComfyUI (3 s timeout) |
 | `GET /` | the web pixel editor (`web/dist/`, see below), else a page listing the jobs and runs |
 | `GET /jobs/{job}/review` | the click-to-pick page |
@@ -490,9 +491,18 @@ docker compose run --rm anim concept --unit knight --count 4 --existing \
 # the same, steered by a sketch (any dark-on-light drawing; sent as a scribble condition)
 docker compose run --rm anim concept --unit knight --sketch scans/knight.png --prompt "…"
 
-# choose: the candidate becomes work/knight_base/render/concept_pick.png
-docker compose run --rm anim concept --unit knight --pick 03        # or --pick existing
+# choose: the candidate becomes work/knight_base/render/concept_pick.png - and say which parts
+# every clip must keep and what its negative names (the multi-view reference feature, #298)
+docker compose run --rm anim concept --unit knight --pick 03 \
+  --parts "closed great helm, kite shield, longsword, dark cloak" --avoid "bare head, uncovered face"
+docker compose run --rm anim concept --unit knight --parts "…" --avoid "…"   # the phrases alone, no new pick
 docker compose run --rm anim post knight_base --parts && docker compose run --rm anim publish knight_base
+
+# the views: the accepted base seen from the other sides, drawn FROM it by Qwen-Image-Edit
+docker compose run --rm anim concept --unit knight --views                 # back, left, right; 2 candidates each
+docker compose run --rm anim concept --unit knight --views all --count 3   # + the four obliques
+mkdir -p ~/.cache/claude/visuals/sprite-studio/views && cp -r work/_views/knight/. ~/.cache/claude/visuals/sprite-studio/views/
+docker compose run --rm anim concept --unit knight --pick-view back=01 left=00 right=01
 ```
 
 - **No skeleton.** `base` is the pose stack because a standing sprite has to match the rig;
@@ -516,6 +526,36 @@ docker compose run --rm anim post knight_base --parts && docker compose run --rm
   untouched; an earlier base render's files stay on disk and the note says what was replaced;
   picking again changes the pick. The manual test page:
   <http://192.168.1.158:8090/sprite-studio/character-concept/>.
+- **The parts phrase** (the multi-view reference feature, [#298](http://192.168.1.158:8700/work_packages/298)).
+  A front-view reference cannot say what the back of a closed helm looks like, and Wan drew bare
+  heads on the turned cells of the first identity gate. `--pick … --parts "…" --avoid "…"` (or
+  `--parts` / `--avoid` alone) stores a `parts_phrase` and an `avoid_phrase` in the base's
+  `concept` block — explicit strings, no parsing; with no `--parts` the phrase is the whole
+  description. `clip` reads them off the base for **every** clip of the unit: the prompt becomes
+  `config.CLIP_PARTS_PROMPT` (the view, the action, "with the same *parts* as the reference
+  image", what that view shows of the head — `config.CLIP_IDENTITY_PHRASES`, "no face visible"
+  on the turned-away cells — "exactly one figure"), and the negative is Wan's own plus "a second
+  figure, two people, an extra person" plus the avoid phrase. A base without a parts phrase
+  renders the old prompt word for word.
+- **The views.** `--views [back,left,right | all]` renders the accepted base from the other sides
+  through the identity edit path already in the container — Qwen-Image-Edit 2509 INT4,
+  `gpu/workflows/view_pass.json`: the base is `image1` and the latent (so a view is the base's
+  size), the prompt is `config.CONCEPT_VIEWS[view]` ("seen from directly behind, turned all the
+  way round: the back of the head …") plus the parts phrase. Views are named for the **side of
+  the character** the camera sees, the compass in `config.DIRECTIONS`: `right` is the right
+  profile (yaw 0, facing screen right — the s0 cell), `left` yaw 180, `back` yaw 90, the obliques
+  `back_right` / `back_left` / `front_left` / `front_right`; `front` is the base itself. N
+  candidates per view (`--count`, default 2; seed + 100 per view + 1 per candidate) land in
+  `work/<unit>_concept/views/<view>_NN.png` with `views.json`, and the page
+  (`work/_views/<unit>/`, copied to <http://192.168.1.158:8090/sprite-studio/views/>) shows the
+  base beside each view's candidates. `--pick-view back=01 left=00 …` copies the chosen ones into
+  the base as `render/view_<view>.png`, records them in the base's `concept.views` and accepts
+  them in the curation record's **views** step (`anim curate knight --accept-view back` /
+  `--reject-view`, or the Board's row under the gates); `--provisional` records a pick made for a
+  rerun as pending. A new `--pick` clears the views — they were drawn from another base. The
+  alternative conditioning — Z-Image + the Fun ControlNet with a rig-rendered depth of the
+  mannequin at that yaw — holds the pose but carries identity in the prompt only, the very
+  failure this fixes; it is the fallback if the edit path stops keeping the character.
 
 ### The curation board — the curation board feature
 
@@ -530,6 +570,7 @@ canonical name wins, then the newest.
 http://192.168.1.158:8720/   → Board        (from the Mac)
 docker compose run --rm anim curate knight                              # the same board, printed
 docker compose run --rm anim curate knight --reject-frame attack/s0/5 --accept-cell attack/s0
+docker compose run --rm anim curate knight --accept-view back --reject-view left   # the views step (#298)
 ```
 
 - **Per frame:** click cycles accept → reject → clear. A rejected frame **leaves the job's
@@ -638,22 +679,53 @@ docker compose run --rm anim curate knight --accept-gate turnaround   # the ruli
   frames per slot, so 5 (n = 1) is the shortest clip that still gives the video model a temporal
   window; a 1-frame video is legal but leaves it nothing to denoise against. `clip` renders it
   with the base as the reference, skeleton over full-body depth at gain 0.35 (`config.TURNAROUND_*`),
-  and the prompt now names the view — `config.clip_prompt(action, direction)`; s0's sentence is
-  unchanged, s90 says "back view, seen from directly behind". The still is the **middle**
+  and the prompt names the view — `config.clip_prompt(action, direction, parts)`; without a parts
+  phrase s0's sentence is unchanged and s90 says "back view, seen from directly behind"; with one
+  (the multi-view reference feature) every direction also names the parts. The still is the **middle**
   generated frame (`pick` hand-set to 2): the first frame of a Wan clip is the one the VAE
   encodes alone and leans on the reference most, the last is where padding would sit. Then
   `post --input clip --parts` locks every part to the base's palettes and writes the colours each
   part shows after the lock as `work/<unit>_idle_<dir>/post/parts.json` — the file
   `post --parts-from` reads, so a back-view clip later locks to what the back-view still showed.
-- **The face is hidden on the far side.** A rig has no detector, so every joint carried
-  confidence 1.0 in every cell — nose and eyes included on the back view. `rigkit.hidden_face_points`
-  now drops the nose and both eyes (confidence 0.0, the frame's `hidden` list) once the *posed
+- **No face off-front.** A rig has no detector, so every joint carried confidence 1.0 in every
+  cell — nose and eyes included on the back view. `rigkit.hidden_face_points` drops **every face
+  point** (nose, both eyes, both ears; confidence 0.0, the frame's `hidden` list) once the *posed
   head* has turned past the profile away from the camera by more than half a direction step
-  (`FACE_HIDE_TURN`, sin 22.5°, so a breathing head at s0 never flickers), and the ear on the far
-  side with them; from straight behind both ears stay. s0 / s180 and every front cell are
-  byte-for-byte what they were; s45 / s90 / s135 lose the face. The stricter alternative — a
-  normal per point against the camera — would also drop the far eye and ear at the exact
-  profile every published job was rendered with; it is one threshold away.
+  (`FACE_HIDE_TURN`, sin 22.5°, so a breathing head at s0 never flickers). "Front" is a head whose
+  forward vector has a component toward the camera or lies in the near plane: s0 / s180 and s225 /
+  s270 / s315 are byte-for-byte what they were (a test compares them to a rig with no rule at
+  all); s45 / s90 / s135 lose the whole face. The turnaround feature (2026-09-21) kept the near
+  ear on a turned-away head and both ears from behind; the first identity gate drew faces on
+  exactly those cells, and an ear is a landmark the pose ControlNet builds a face around, so the
+  multi-view reference feature hides them too. The stricter alternative — a normal per point
+  against the camera — would also drop the far eye and ear at the exact profile every published
+  job was rendered with; it is one threshold away.
+- **One reference per view — the two levers of the multi-view reference feature ([#298](http://192.168.1.158:8700/work_packages/298)).**
+  The first identity gate (2026-09-22) failed on the turned heads: Wan had one front view and
+  invented every other side. Lever 1 is the prompt above (the parts phrase and the view sentence
+  in every clip, the face points gone off-front). Lever 2: each direction hands `clip` the base's
+  view that already shows that side — `config.TURNAROUND_REFERENCE_BY_DIR`, best first:
+
+  | cell | wants | then |
+  |---|---|---|
+  | s0 | `right` (the right profile) | front |
+  | s45 / s135 | `back_right` / `back_left` | back, front |
+  | s90 | `back` | front |
+  | s180 | `left` | front |
+  | s225 / s315 | `front_left` / `front_right` | front |
+  | s270 | front (the base itself) | — |
+
+  The turned-away obliques fall to the **back** (the failures were bare heads where the reference
+  showed a face; the back view is the one that shows the back of the head), the turned-toward
+  ones to the **front** (the accepted base, the one reference not itself drawn from a reference);
+  the nearest profile is the alternative, one entry away. A view the base does not carry, or one
+  rejected on the Board, falls down the list to the front with a **warning** in the log, the
+  record and the page. `work/<unit>_turnaround.json` records `references` (per direction: the
+  view, its file and sha256, fallback, provisional, the warning) and `reference_map`; each still
+  on the page shows the reference it used as a thumbnail with the view's name, and the
+  "reference each still used" table sits under the turntable; `GET /turnaround/{unit}` lists it
+  per direction with the URL of the image `clip` sent (`/jobs/<job>/frames/reference/0.png`), and
+  the Board's tiles carry it. `--reference FILE` stays the owner's override for every cell.
 - **The page** (`work/_turnaround/<unit>/index.html`, copied to
   <http://192.168.1.158:8090/sprite-studio/turnaround/>): the eight stills ×4 in compass order with
   the raw clip frame and the skeleton + depth control under each, the part table per direction
@@ -916,8 +988,8 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 559 passed, 4 skipped (2026-09-21)
-cd web && npm test                                  # 39 passed - the editor panel's pure parts
+docker compose run --rm anim-pipeline pytest        # 604 passed, 4 skipped (2026-09-22)
+cd web && npm test                                  # 45 passed - the editor panel's pure parts
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake
@@ -963,6 +1035,7 @@ documented; they are the starting point for a later full-cycle animation tier.
 | `gpu/workflows/pose_pass.json` | Stage 1: Z-Image-Turbo (int8) + Z-Image Fun ControlNet Union 2.1 (full 2602 8-step; lite was ignoring the pose). Skeleton strip → posed strip, drawn at 2 px. No upstream counterpart; upstream had no pose-only stage. |
 | `gpu/workflows/identity_pass.json` | Stage 2: the reworked W1. Re-skins the posed strip onto the unit's reference sprite. Two images in (reference, pose pass). **Off since the anchor gate** — it flattens poses; `post` takes the pose pass. |
 | `gpu/workflows/base_sprite.json` | Generates a unit's standing sprite from a canned skeleton when no reference sprite exists yet. |
+| `gpu/workflows/view_pass.json` | The multi-view reference feature: Qwen-Image-Edit 2509 (the identity pass's INT4 build) asked for the accepted base from another side — one image in, one out; `anim concept --views`. |
 | `gpu/workflows/clip_render.json` | The clip render feature: Wan 2.2 Fun-Control 5B, reference image + control video → one PNG per frame (`SaveImage` on the decoded batch instead of the template's `SaveVideo`). Translated from the official `video_wan2_2_5B_fun_control` template. |
 | `gpu/workflows/NOTES.md` | Which node names and input keys were verified against source, and what is still `TODO-verify`. |
 | `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish export base concept bakeoff turnaround palette curate run`. |

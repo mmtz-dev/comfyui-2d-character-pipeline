@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 # ---------------------------------------------------------------------------
 # The GPU image service feature
@@ -527,6 +527,45 @@ CLIP_ACTION_PHRASES: dict[str, str] = {
 }
 
 
+# The multi-view reference feature (#298): when the unit's base carries a
+# parts phrase (`anim concept --pick ... --parts`, or `--parts` alone), the
+# prompt also NAMES the parts that must survive the turn - the reference
+# shows a front view and cannot say what the back of a closed helm looks
+# like - and says, per view, what that side of the head and body shows. The
+# negative gets the one thing no sprite may have (a second figure) and the
+# unit's own `--avoid` phrase ("bare head, uncovered face" for a helmeted
+# knight; a bare-headed unit says nothing). Without a parts phrase the
+# prompt is the sentence above, word for word, so every job rendered before
+# this feature reproduces.
+CLIP_PARTS_PROMPT = (
+    "a single {view} pixel art character sprite, full body in frame, {phrase}, "
+    "the same character and outfit as the reference image in every frame, "
+    "with the same {parts} as the reference image, {identity}, exactly one figure, "
+    "plain flat white background, no ground shadow, no floor")
+# What each side facing shows of the head and body - generic geometry; the
+# unit's parts phrase says what is on the head.
+CLIP_IDENTITY_PHRASES: dict[str, str] = {
+    "s0": "seen in profile: the side of the head and body, the head covered exactly as in the reference",
+    "s45": "seen from behind at an angle: the back and one side of the head and body, "
+           "the head covered exactly as in the reference, no face visible",
+    "s90": "seen from directly behind: the back of the head and the back of the body, "
+           "what hangs from the shoulders, the head covered exactly as in the reference, no face visible",
+    "s135": "seen from behind at an angle: the back and one side of the head and body, "
+            "the head covered exactly as in the reference, no face visible",
+    "s180": "seen in profile: the side of the head and body, the head covered exactly as in the reference",
+    "s225": "seen from the front at an angle: the front and one side of the head and body, "
+            "the head covered exactly as in the reference",
+    "s270": "seen from the front: the front of the head and body, the head covered exactly as in the reference",
+    "s315": "seen from the front at an angle: the front and one side of the head and body, "
+            "the head covered exactly as in the reference",
+}
+CLIP_TOP_IDENTITY = ("seen from above: the top of the head and the shoulders, the head "
+                     "covered exactly as in the reference")
+# Appended to the workflow's own negative (Wan's standard one) whenever the
+# parts prompt is used; `--avoid` adds the unit's phrase after it.
+CLIP_NEGATIVE_EXTRA = "a second figure, two people, an extra person"
+
+
 def clip_view_phrase(direction_cell: str = DEFAULT_DIRECTION) -> str:
     """The camera phrase for one cell of the direction table."""
     yaw, elevation = direction(direction_cell)
@@ -535,11 +574,37 @@ def clip_view_phrase(direction_cell: str = DEFAULT_DIRECTION) -> str:
     return CLIP_VIEW_PHRASES[f"s{yaw}"]
 
 
-def clip_prompt(action: str, direction_cell: str = DEFAULT_DIRECTION) -> str:
+def clip_identity_phrase(direction_cell: str = DEFAULT_DIRECTION) -> str:
+    """What this cell shows of the head and body (the parts prompt only)."""
+    yaw, elevation = direction(direction_cell)
+    if elevation == "top":
+        return CLIP_TOP_IDENTITY
+    return CLIP_IDENTITY_PHRASES[f"s{yaw}"]
+
+
+def clip_prompt(action: str, direction_cell: str = DEFAULT_DIRECTION,
+                parts: str | None = None) -> str:
+    """The clip's positive prompt. With no `parts` it is the sentence every
+    clip before the multi-view reference feature was rendered with; with the
+    unit's parts phrase it names them and the view (CLIP_PARTS_PROMPT)."""
     action = action.strip().lower()
     phrase = CLIP_ACTION_PHRASES.get(action) or (f"performing a {action}" if action
                                                else "standing at rest")
-    return CLIP_PROMPT.format(view=clip_view_phrase(direction_cell), phrase=phrase)
+    parts = (parts or "").strip().rstrip(",.")
+    if not parts:
+        return CLIP_PROMPT.format(view=clip_view_phrase(direction_cell), phrase=phrase)
+    return CLIP_PARTS_PROMPT.format(view=clip_view_phrase(direction_cell), phrase=phrase,
+                                    parts=parts, identity=clip_identity_phrase(direction_cell))
+
+
+def clip_negative(template: str, avoid: str | None = None) -> str:
+    """The workflow's negative with the feature's extras after it."""
+    extras = [CLIP_NEGATIVE_EXTRA]
+    avoid = (avoid or "").strip().rstrip(",.")
+    if avoid:
+        extras.append(avoid)
+    return ", ".join([template.strip().rstrip(",")] + extras) if template.strip() \
+        else ", ".join(extras)
 
 
 # ---------------------------------------------------------------------------
@@ -566,6 +631,35 @@ TURNAROUND_CELL = CLIP_CELL
 # A direction that has not answered in this long is recorded as failed and
 # the run goes on to the next (the brief's budget: ~1 min of GPU, 5 at most).
 TURNAROUND_TIMEOUT_S = float(os.environ.get("ANIM_TURNAROUND_TIMEOUT", "300"))
+# The multi-view reference feature (#298): which of the base's views each
+# direction hands Wan as `ref_image`, best first. "front" is the base itself
+# (the concept pick, a front view). By the compass above: yaw 0 shows the
+# character's RIGHT profile, 180 the left, 90 the back, 270 the front; the
+# obliques take the exact oblique view when the base has one, else the
+# nearest of back / front - the turned-away cells go to the back (the
+# 2026-09-22 failures were bare heads where the reference showed a face,
+# and the back view is the one that shows the back of the head), the
+# turned-toward cells to the front (the accepted base, the one reference
+# that is not itself generated from a reference). The alternative for an
+# oblique - the nearest profile - is one entry away. A view that is not on
+# the base falls back down this list and finally to the front, with a
+# warning in the record and on the page. Top cells use their yaw's row.
+TURNAROUND_REFERENCE_BY_DIR: dict[str, tuple[str, ...]] = {
+    "s0": ("right", "front"),
+    "s45": ("back_right", "back", "front"),
+    "s90": ("back", "front"),
+    "s135": ("back_left", "back", "front"),
+    "s180": ("left", "front"),
+    "s225": ("front_left", "front"),
+    "s270": ("front",),
+    "s315": ("front_right", "front"),
+}
+
+
+def turnaround_reference_views(direction_cell: str) -> tuple[str, ...]:
+    """The views to try for one cell, best first; the last is always "front"."""
+    yaw, _elevation = direction(direction_cell)
+    return TURNAROUND_REFERENCE_BY_DIR[f"s{yaw}"]
 
 
 # ---------------------------------------------------------------------------
@@ -612,6 +706,65 @@ def concept_prompt(description: str, trigger: str | None = None) -> str:
     trigger = CONCEPT_LORA["trigger"] if trigger is None else trigger
     return CONCEPT_PROMPT.format(trigger=trigger, description=description.strip()) \
         .replace("  ", " ").strip()
+
+
+# The multi-view reference feature (#298): `anim concept --views` renders the
+# accepted base from other sides so the turnaround can hand Wan a reference
+# that already shows that side. The views are named for the SIDE OF THE
+# CHARACTER the camera sees, which is what the compass in DIRECTIONS calls
+# them: "right" is the right profile (yaw 0, facing screen right), "left" the
+# left profile (yaw 180), "back" yaw 90, and the obliques by the two sides
+# they show. "front" is the base itself and is never rendered.
+CONCEPT_VIEWS: dict[str, dict[str, Any]] = {
+    "back": {"yaw": 90, "sentence": "from directly behind, turned all the way round: "
+                                    "the back of the head, the back of the body, whatever "
+                                    "hangs from the shoulders; no face visible"},
+    "left": {"yaw": 180, "sentence": "from the character's left side, in full profile, "
+                                     "facing screen left"},
+    "right": {"yaw": 0, "sentence": "from the character's right side, in full profile, "
+                                    "facing screen right"},
+    "back_right": {"yaw": 45, "sentence": "from behind and to the character's right, a "
+                                          "three-quarter back view; no face visible"},
+    "back_left": {"yaw": 135, "sentence": "from behind and to the character's left, a "
+                                          "three-quarter back view; no face visible"},
+    "front_left": {"yaw": 225, "sentence": "from the front and to the character's left, "
+                                           "a three-quarter front view"},
+    "front_right": {"yaw": 315, "sentence": "from the front and to the character's right, "
+                                            "a three-quarter front view"},
+}
+CONCEPT_CORE_VIEWS: tuple[str, ...] = ("back", "left", "right")
+CONCEPT_VIEW_COUNT = 2
+FRONT_VIEW = "front"
+# The edit prompt for Qwen-Image-Edit (gpu/workflows/view_pass.json): image1
+# is the base; the output is the same character, same size, from the view.
+CONCEPT_VIEW_PROMPT = (
+    "Show the same pixel art character from image1 seen {sentence}. The same character: "
+    "the same {parts}, the same colours, the same outline weight, the same proportions, "
+    "the same size, standing at rest with the feet at the bottom edge, one figure only, "
+    "plain flat white background, no ground shadow, no floor.")
+
+
+def concept_view_names(spec: str | Sequence[str] | None) -> list[str]:
+    """`--views back,left,right` | `all` | None (the core three) -> names in
+    table order; an unknown name is refused."""
+    if spec is None or (isinstance(spec, str) and spec.strip() == ""):
+        wanted = list(CONCEPT_CORE_VIEWS)
+    elif isinstance(spec, str):
+        wanted = [v.strip().lower() for v in spec.split(",") if v.strip()]
+    else:
+        wanted = [str(v).strip().lower() for v in spec if str(v).strip()]
+    if "all" in wanted:
+        return list(CONCEPT_VIEWS)
+    unknown = [v for v in wanted if v not in CONCEPT_VIEWS]
+    if unknown:
+        raise ValueError(f"unknown view(s) {unknown}; one of {list(CONCEPT_VIEWS)} or 'all'")
+    return [v for v in CONCEPT_VIEWS if v in wanted]
+
+
+def concept_view_prompt(view: str, parts: str | None) -> str:
+    sentence = CONCEPT_VIEWS[view]["sentence"]
+    parts = (parts or "").strip().rstrip(",.") or "outfit"
+    return CONCEPT_VIEW_PROMPT.format(sentence=sentence, parts=parts)
 
 
 # The part palette lock feature - what each unit is made of, and where it is

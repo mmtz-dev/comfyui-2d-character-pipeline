@@ -8,10 +8,14 @@ import {
   cycleMark,
   gatesText,
   gridOf,
+  nextViewState,
   reduceBoard,
+  referenceText,
   tally,
   turnaroundText,
   turnaroundTiles,
+  viewTiles,
+  viewsText,
   waitingOn,
   waitingText,
 } from "./board";
@@ -37,6 +41,7 @@ const cell = (key: string, job: string, extra: Partial<BoardCell> = {}): BoardCe
 const board: BoardState = {
   unit: "knight", mode: "gates", origin: null, exists: false, path: "/work/knight_curation.json",
   gates: { base: "accepted", turnaround: "accepted" },
+  views: {},
   actions: ["attack", "idle", "walk", "run", "jump"],
   directions: ["s0", "s45"],
   cells: {
@@ -151,8 +156,13 @@ describe("the turnaround under the gates", () => {
     direction: name, job: `knight_idle_${name}`, status, error: status === "failed" ? "ComfyError: timed out" : null,
     seconds, gpu_seconds: seconds - 5,
     still: status === "done" ? `/jobs/knight_idle_${name}/frames/post/0.png` : null,
-    raw: null, control: null, skeleton: null, depth: null, hidden_face: name === "s90" ? ["nose", "right_eye", "left_eye"] : [],
+    raw: null, control: null, skeleton: null, depth: null, hidden_face: name === "s90" ? ["nose", "right_eye", "left_eye", "right_ear", "left_ear"] : [],
     silhouette: status === "done" ? { width: 30, height: 53, pixels: 900, colours: 12 } : null,
+    reference: status === "done"
+      ? { view: name === "s0" ? "right" : name === "s45" ? "front" : "front", kind: "view", file: "/work/knight_base/render/view_right.png",
+          fallback: name === "s45", warning: name === "s45" ? "s45: no view for it" : null, provisional: name === "s0", state: null,
+          url: `/jobs/knight_idle_${name}/frames/reference/0.png` }
+      : null,
   });
   const state: TurnaroundState = {
     unit: "knight", elevation: "side", seed: 42, question: "One character in 8 facings?", updated: "2026-09-21T20:00:00+00:00",
@@ -167,10 +177,19 @@ describe("the turnaround under the gates", () => {
   it("lists every planned direction in compass order, rendered or not", () => {
     const tiles = turnaroundTiles(state);
     expect(tiles.map((t) => t.direction)).toEqual(state.plan);
-    expect(tiles[0]).toEqual({ direction: "s0", job: "knight_idle_s0", status: "done", still: "/jobs/knight_idle_s0/frames/post/0.png", error: null });
+    expect(tiles[0]).toEqual({ direction: "s0", job: "knight_idle_s0", status: "done", still: "/jobs/knight_idle_s0/frames/post/0.png", error: null,
+      reference: "right (provisional)", referenceUrl: "/jobs/knight_idle_s0/frames/reference/0.png" });
     expect(tiles[2]!.status).toBe("failed");
     expect(tiles[2]!.error).toContain("timed out");
-    expect(tiles[3]).toEqual({ direction: "s135", job: "", status: "not run", still: null, error: null });
+    expect(tiles[2]!.reference).toBeNull();
+    expect(tiles[3]).toEqual({ direction: "s135", job: "", status: "not run", still: null, error: null, reference: null, referenceUrl: null });
+  });
+  it("names the reference each still used, fallbacks included", () => {
+    const tiles = turnaroundTiles(state);
+    expect(tiles[1]!.reference).toBe("front (fallback)");
+    expect(tiles[6]!.reference).toBe("front");
+    expect(referenceText(null)).toBeNull();
+    expect(referenceText({ view: "back", fallback: true, provisional: true })).toBe("back (fallback, provisional)");
   });
   it("says how far the turnaround got, in numbers", () => {
     expect(turnaroundText(null)).toContain("no turnaround yet");
@@ -181,5 +200,37 @@ describe("the turnaround under the gates", () => {
     expect(text).toContain("silhouette spread 2 px tall, 5 px wide");
     expect(text).toContain("failed: s90");
     expect(text).not.toMatch(/verdict|one character/i);
+  });
+});
+
+describe("the views of the base under the base gate", () => {
+  const view = (name: string, state: "pending" | "accepted" | "rejected", provisional = false, file: string | null = `view_${name}.png`) => ({
+    view: name, yaw: { back: 90, left: 180, right: 0 }[name] ?? 45, state, file, candidate: 1, seed: 7, provisional,
+    url: file ? `/jobs/knight_base/frames/render/1.png` : null, picked: "2026-09-22T10:00:00+00:00",
+  });
+  const withViews: BoardState = { ...board, views: { right: view("right", "pending", true), back: view("back", "accepted"), left: view("left", "rejected", false, null) } };
+  it("lists the views the board knows in the table's order, with the next state on click", () => {
+    const tiles = viewTiles(withViews);
+    expect(tiles.map((t) => t.view)).toEqual(["back", "left", "right"]);
+    expect(tiles[0]).toEqual({ view: "back", yaw: 90, state: "accepted", url: "/jobs/knight_base/frames/render/1.png", provisional: false, next: "rejected" });
+    expect(tiles[1]!.url).toBeNull();
+    expect(tiles[2]).toMatchObject({ view: "right", state: "pending", provisional: true, next: "accepted" });
+    expect(viewTiles(board)).toEqual([]);
+    expect(nextViewState("rejected")).toBe("pending");
+  });
+  it("says how many views are accepted, provisional and rejected", () => {
+    expect(viewsText(board)).toContain("no views of the base yet");
+    const text = viewsText(withViews);
+    expect(text).toContain("1 / 3 views accepted");
+    expect(text).toContain("1 provisional");
+    expect(text).toContain("rejected: left");
+  });
+  it("folds a view click in without waiting for the GET", () => {
+    const next = reduceBoard(withViews, { type: "view", view: "right", state: "accepted" });
+    expect(next.views.right!.state).toBe("accepted");
+    expect(next.views.right!.provisional).toBe(true);
+    expect(next.exists).toBe(true);
+    expect(withViews.views.right!.state).toBe("pending");
+    expect(reduceBoard(withViews, { type: "view", view: "front_left", state: "accepted" })).toBe(withViews);
   });
 });

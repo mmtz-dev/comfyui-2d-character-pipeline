@@ -1,0 +1,187 @@
+{
+  "1": {
+    "class_type": "NunchakuQwenImageDiTLoader",
+    "inputs": {
+      "model_name": "svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors",
+      "cpu_offload": "disable",
+      "num_blocks_on_gpu": 1,
+      "use_pin_memory": "disable"
+    },
+    "_meta": {
+      "title": "Qwen-Image-Edit-2509 INT4 r128 (Nunchaku)"
+    }
+  },
+  "2": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 3
+    },
+    "_meta": {
+      "title": "ModelSamplingAuraFlow shift=3"
+    }
+  },
+  "3": {
+    "class_type": "CFGNorm",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "strength": 1.0,
+      "pre_cfg": false
+    },
+    "_meta": {
+      "title": "CFGNorm"
+    }
+  },
+  "4": {
+    "class_type": "CLIPLoader",
+    "inputs": {
+      "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      "type": "qwen_image",
+      "device": "default"
+    },
+    "_meta": {
+      "title": "Qwen2.5-VL-7B text encoder"
+    }
+  },
+  "5": {
+    "class_type": "VAELoader",
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "_meta": {
+      "title": "Qwen-Image VAE"
+    }
+  },
+  "6": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "view_base.png"
+    },
+    "_meta": {
+      "title": "PATCH base image (image1 - the accepted base render)"
+    }
+  },
+  "7": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": [
+        "4",
+        0
+      ],
+      "prompt": "Show the same pixel art character from image1 seen from directly behind, turned all the way round: the back of the head, the back of the body, whatever hangs from the shoulders; no face visible. The same character: the same outfit, the same colours, the same outline weight, the same proportions, the same size, standing at rest with the feet at the bottom edge, one figure only, plain flat white background, no ground shadow, no floor.",
+      "vae": [
+        "5",
+        0
+      ],
+      "image1": [
+        "6",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "PATCH positive prompt (the view)"
+    }
+  },
+  "8": {
+    "class_type": "TextEncodeQwenImageEditPlus",
+    "inputs": {
+      "clip": [
+        "4",
+        0
+      ],
+      "prompt": "",
+      "vae": [
+        "5",
+        0
+      ],
+      "image1": [
+        "6",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Negative prompt (empty)"
+    }
+  },
+  "9": {
+    "class_type": "VAEEncode",
+    "inputs": {
+      "pixels": [
+        "6",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Encode the base to a latent (its size is the view's size)"
+    }
+  },
+  "10": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "seed": 20260922,
+      "steps": 4,
+      "cfg": 1.0,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "positive": [
+        "7",
+        0
+      ],
+      "negative": [
+        "8",
+        0
+      ],
+      "latent_image": [
+        "9",
+        0
+      ],
+      "denoise": 1.0
+    },
+    "_meta": {
+      "title": "PATCH seed - KSampler 4-step lightning"
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "5",
+        0
+      ]
+    },
+    "_meta": {
+      "title": "Decode"
+    }
+  },
+  "12": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "11",
+        0
+      ],
+      "filename_prefix": "anim_pipeline/concept/view_pass"
+    },
+    "_meta": {
+      "title": "PATCH output prefix"
+    }
+  }
+}

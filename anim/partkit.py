@@ -120,11 +120,21 @@ class Segmenter(Protocol):
 # ---------------------------------------------------------------------------
 def _joint_points(entry: dict[str, Any], names: Sequence[str],
                   kpt_thr: float) -> dict[str, Point]:
+    """The joints a prompt may sit on: every detected one, plus the ones a
+    RIG placed and then marked `hidden` (rigkit, THE FACE ON THE FAR SIDE).
+    A hidden face point has confidence 0.0 so the pose ControlNet draws no
+    face on the back of a head, but the rig still put it where the head is
+    - the orthographic projection lands the nose inside the helm seen from
+    behind - so for SAM it is as good a prompt as it was from the front. A
+    filmed payload has no `hidden`, so its low-confidence guesses stay out
+    as before (the multi-view reference feature, 2026-09-22: hiding every
+    face point off-front had cost the helmet its prompt on s45 / s90 / s135)."""
     kp = entry.get("keypoints") or []
     sc = entry.get("scores") or []
+    hidden = set(entry.get("hidden") or ())
     out: dict[str, Point] = {}
     for i, name in enumerate(names):
-        if i < len(kp) and i < len(sc) and sc[i] >= kpt_thr:
+        if i < len(kp) and i < len(sc) and (sc[i] >= kpt_thr or name in hidden):
             out[name] = (float(kp[i][0]), float(kp[i][1]))
     return out
 

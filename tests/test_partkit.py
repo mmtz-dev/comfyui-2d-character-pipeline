@@ -68,6 +68,21 @@ def test_prompts_land_where_the_skeleton_was_drawn():
     assert by["torso"].points == [(200.0, 120.0), (208.0, 210.0)]
 
 
+def test_a_rigs_hidden_face_point_still_prompts_but_a_filmed_low_score_does_not():
+    """The multi-view reference feature: a rig hides the face off-front
+    (score 0.0, listed in `hidden`) for the ControlNet's sake, but the point
+    is placed on the head and stays a prompt for SAM; a filmed payload's
+    low-confidence nose (no `hidden`) is a guess and stays out as before."""
+    entry = frame_entry()
+    entry["scores"][NAMES.index("nose")] = 0.0
+    filmed = {p.part: p for p in partkit.prompts_for(TABLE, entry, NAMES, (200, 300), (400, 600))}
+    assert filmed["head"].points == [], "no nose, no crown"
+    rig = dict(entry, hidden=["nose"])
+    rigged = {p.part: p for p in partkit.prompts_for(TABLE, rig, NAMES, (200, 300), (400, 600))}
+    assert rigged["head"].points == [(200.0, 40.0), (200.0, 0.0)]
+    assert (200.0, 40.0) in rigged["torso"].negatives, "and it is the other parts' negative"
+
+
 def test_a_prop_prompt_is_its_polygon_centroid_and_no_box_by_default():
     prompts = partkit.prompts_for(TABLE, frame_entry(), NAMES, (200, 300),
                                   (200, 300))

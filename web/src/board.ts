@@ -2,7 +2,7 @@
 // reducer the view folds edits into, and the header lines. No DOM, no
 // fetch - the tests run it in Node; board-view.ts draws it.
 
-import type { BoardCell, BoardState, CurationMode, FrameMark, GateState, JobRow, TurnaroundState, Waiting } from "./api";
+import type { BoardCell, BoardState, BoardView, CurationMode, FrameMark, GateState, JobRow, TurnaroundState, ViewState, Waiting } from "./api";
 
 /** The board's rows: the studio's five actions, and the pipeline verb of each
  * (attack <-> strike; the rest are the same word) - config.STUDIO_ACTIONS. */
@@ -103,6 +103,7 @@ export type BoardEvent =
   | { type: "cell"; cell: BoardCell }
   | { type: "mark"; key: string; index: number; mark: FrameMark | null }
   | { type: "gates"; gates: Record<string, GateState> }
+  | { type: "view"; view: string; state: ViewState }
   | { type: "mode"; mode: CurationMode }
   | { type: "board"; board: BoardState };
 
@@ -120,6 +121,11 @@ export function reduceBoard(board: BoardState, event: BoardEvent): BoardState {
       return withCell(board, event.cell);
     case "gates":
       return recount({ ...board, exists: true, gates: { ...board.gates, ...event.gates } });
+    case "view": {
+      const current = board.views?.[event.view];
+      if (!current) return board;
+      return { ...board, exists: true, views: { ...board.views, [event.view]: { ...current, state: event.state } } };
+    }
     case "mode":
       return recount({ ...board, mode: event.mode });
     case "mark": {
@@ -193,6 +199,49 @@ export function gatesText(gates: Record<string, GateState>, mode: CurationMode):
   return `base ${gates.base ?? "pending"} · turnaround ${gates.turnaround ?? "pending"}`;
 }
 
+/** The seven views `concept --views` can render, in the table's order
+ * (config.CONCEPT_VIEWS); "front" is the base itself. */
+export const VIEWS: readonly string[] = ["back", "left", "right", "back_right", "back_left", "front_left", "front_right"];
+
+/** One tile per view of the base the board knows (the multi-view reference
+ * feature): the views step under the base gate, in the table's order. */
+export interface ViewTile {
+  view: string;
+  yaw: number;
+  state: ViewState;
+  url: string | null;
+  provisional: boolean;
+  /** Click cycles: pending -> accepted -> rejected -> pending. */
+  next: ViewState;
+}
+
+export function nextViewState(state: ViewState): ViewState {
+  if (state === "pending") return "accepted";
+  if (state === "accepted") return "rejected";
+  return "pending";
+}
+
+export function viewTiles(board: Pick<BoardState, "views">): ViewTile[] {
+  const views = board.views ?? {};
+  return VIEWS.filter((name) => views[name]).map((name) => {
+    const row = views[name] as BoardView;
+    return { view: name, yaw: row.yaw, state: row.state, url: row.url, provisional: row.provisional, next: nextViewState(row.state) };
+  });
+}
+
+/** The one line over the views row. */
+export function viewsText(board: Pick<BoardState, "views">): string {
+  const tiles = viewTiles(board);
+  if (!tiles.length) return "no views of the base yet - anim concept --unit <unit> --views renders back, left, right";
+  const accepted = tiles.filter((t) => t.state === "accepted").length;
+  const provisional = tiles.filter((t) => t.provisional).length;
+  const parts = [`${accepted} / ${tiles.length} views accepted`];
+  if (provisional) parts.push(`${provisional} provisional (picked for a rerun - your --pick-view supersedes it)`);
+  const rejected = tiles.filter((t) => t.state === "rejected").map((t) => t.view);
+  if (rejected.length) parts.push(`rejected: ${rejected.join(", ")} (the turnaround falls back past them)`);
+  return parts.join(" · ");
+}
+
 /** One entry per planned direction of the turnaround, in compass order (the
  * plan's order, s0 first), whether or not it rendered - the thing the
  * `turnaround` gate accepts (the turnaround feature). */
@@ -202,6 +251,15 @@ export interface TurnaroundTile {
   status: string;
   still: string | null;
   error: string | null;
+  /** The reference the still used: "back", "front (fallback)" ...; null before it ran. */
+  reference: string | null;
+  referenceUrl: string | null;
+}
+
+export function referenceText(ref: { view: string | null; fallback: boolean; provisional: boolean } | null | undefined): string | null {
+  if (!ref || !ref.view) return null;
+  const notes = [ref.fallback ? "fallback" : null, ref.provisional ? "provisional" : null].filter(Boolean);
+  return notes.length ? `${ref.view} (${notes.join(", ")})` : ref.view;
 }
 
 export function turnaroundTiles(state: Pick<TurnaroundState, "plan" | "directions">): TurnaroundTile[] {
@@ -213,6 +271,8 @@ export function turnaroundTiles(state: Pick<TurnaroundState, "plan" | "direction
       status: row?.status ?? "not run",
       still: row?.still ?? null,
       error: row?.error ?? null,
+      reference: referenceText(row?.reference),
+      referenceUrl: row?.reference?.url ?? null,
     };
   });
 }

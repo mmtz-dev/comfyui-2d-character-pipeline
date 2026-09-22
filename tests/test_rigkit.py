@@ -10,6 +10,7 @@ real rig.
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
@@ -920,11 +921,12 @@ def test_the_two_bone_head_hides_its_face_as_it_turns_away(synthetic):
     frame = rigkit.reference_frame(synthetic, TWO_BONE_MAP)
     proj = rigkit.Projection.for_rig(frame, CELL)
     clip = synthetic.clip("Turn")
+    every = list(FACE)
     assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 0.0), frame, proj.near) == []
     assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 0.5), frame, proj.near) \
-        == ["nose", "right_eye", "left_eye", "left_ear"], "45 away: the face and the far ear"
+        == every, "45 away: every face point, the ears included (the multi-view reference feature)"
     assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 1.0), frame, proj.near) \
-        == ["nose", "right_eye", "left_eye"], "straight away: both ears stay"
+        == every, "straight away: no face point at all"
     # Half a direction step is the threshold: 20 degrees is still the profile.
     assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 20 / 90), frame,
                                      proj.near) == []
@@ -932,9 +934,8 @@ def test_the_two_bone_head_hides_its_face_as_it_turns_away(synthetic):
                                      proj.near) != []
     kp = rigkit.clip_keypoints(synthetic, "Turn", fps=2, cell=CELL, frame=frame)
     assert "hidden" not in kp["frames"][0] and all(s == 1.0 for s in kp["frames"][0]["scores"])
-    assert kp["frames"][1]["hidden"] == ["nose", "right_eye", "left_eye", "left_ear"]
-    assert _scores(kp | {"frames": kp["frames"][1:]}) == {
-        "nose": 0.0, "right_eye": 0.0, "left_eye": 0.0, "right_ear": 1.0, "left_ear": 0.0}
+    assert kp["frames"][1]["hidden"] == every
+    assert _scores(kp | {"frames": kp["frames"][1:]}) == {j: 0.0 for j in FACE}
     assert len(kp["frames"][1]["keypoints"]) == 18, "the points are still there, only unseen"
 
 
@@ -947,15 +948,30 @@ def test_the_profile_and_the_front_cells_keep_every_face_point(knight, name):
         assert all(s == 1.0 for s in entry["scores"])
 
 
+@pytest.mark.parametrize("name", ["s0", "s180", "s225", "s270", "s315"])
+def test_the_profile_and_front_cells_are_byte_identical_to_a_rig_with_no_face_rule(
+        knight, name, monkeypatch):
+    """The multi-view reference feature tightened the rule for the turned-away
+    cells only: the payload `rig` writes for s0 (every published job's cell),
+    s180 and the front cells is the same JSON, byte for byte, as a rig that
+    hides nothing - so an existing s0 job re-rigged today reproduces."""
+    yaw, elevation = config.direction(name)
+    kp = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL, yaw=yaw, elevation=elevation)
+    monkeypatch.setattr(rigkit, "hidden_face_points", lambda *a, **k: [])
+    bare = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL, yaw=yaw, elevation=elevation)
+    assert json.dumps(kp, sort_keys=True) == json.dumps(bare, sort_keys=True)
+
+
 @pytest.mark.parametrize("name, expect", [
-    ("s45", ["nose", "right_eye", "left_eye", "left_ear"]),
-    ("s90", ["nose", "right_eye", "left_eye"]),
-    ("s135", ["nose", "right_eye", "left_eye", "right_ear"]),
+    ("s45", list(FACE)),
+    ("s90", list(FACE)),
+    ("s135", list(FACE)),
 ])
-def test_the_back_cells_hide_the_face_and_the_far_ear(knight, name, expect):
-    """The viewer stands on the character's right at s0; turning away keeps
-    the right ear near at s45 and the left ear near at s135. From behind
-    both ears show and the face is gone."""
+def test_the_back_cells_hide_every_face_point(knight, name, expect):
+    """Turned away past the profile - s45, s90, s135 - no face point is
+    drawn: nose, both eyes AND both ears (the turnaround feature kept the
+    near ear and, from behind, both; the multi-view reference feature hides
+    them too, an ear being a landmark the pose ControlNet builds a face on)."""
     yaw, elevation = config.direction(name)
     kp = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL, yaw=yaw, elevation=elevation)
     for entry in kp["frames"]:

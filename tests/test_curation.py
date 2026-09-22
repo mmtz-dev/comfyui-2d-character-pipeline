@@ -364,6 +364,34 @@ def test_put_gate_and_the_settings_mode(api, unit, work_dir):
     assert api.get("/curation/knight").json()["mode"] == "every"
 
 
+def test_put_view_is_the_views_step_under_the_base_gate(api, unit, work_dir):
+    """The multi-view reference feature: `PUT /curation/{unit}/views/{view}`
+    accepts / rejects / reopens one view of the base and the board carries
+    the row (state, file URL when the base has the view, provisional)."""
+    from anim.stages import base as base_stage
+
+    base_job = base_stage.prepare("knight", work_dir=work_dir)
+    base_job.render_dir.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (8, 8), (255, 255, 255)).save(base_job.render_dir / "view_back.png")
+    base_job.update_manifest(concept={"views": {"back": {"view": "back", "yaw": 90,
+                                                         "file": "view_back.png", "candidate": 1,
+                                                         "seed": 7, "provisional": True}}})
+    board = api.get("/curation/knight").json()
+    assert board["views"] == {"back": {**board["views"]["back"], "state": "pending",
+                                       "provisional": True, "candidate": 1, "seed": 7,
+                                       "url": "/jobs/knight_base/frames/render/0.png"}}
+    assert api.get(board["views"]["back"]["url"]).status_code == 200
+    board = api.put("/curation/knight/views/back", json={"state": "accepted"}).json()
+    assert board["views"]["back"]["state"] == "accepted"
+    assert json.loads((work_dir / "knight_curation.json").read_text())["views"] == {"back": "accepted"}
+    board = api.put("/curation/knight/views/left", json={"state": "rejected"}).json()
+    assert board["views"]["left"] == {**board["views"]["left"], "state": "rejected", "file": None,
+                                      "url": None, "provisional": False}
+    assert api.put("/curation/knight/views/top", json={"state": "accepted"}).status_code == 404
+    assert api.put("/curation/knight/views/back", json={"state": "maybe"}).status_code == 400
+    assert board["gates"]["base"] == "accepted", "the views step moves no gate"
+
+
 # ---------------------------------------------------------------------------
 # The CLI
 # ---------------------------------------------------------------------------
@@ -382,6 +410,13 @@ def test_anim_curate_types_the_same_file(unit, work_dir, monkeypatch, capsys):
     assert record["cells"]["attack/s0"]["frames"] == {str(picks[0]): "reject"}
     assert record["cells"]["idle/s0"]["status"] == "accepted"
     assert json.loads(job.picks_path.read_text())["picks"] == picks[1:]
+
+    assert cli.main(["curate", "knight", "--accept-view", "back", "--reject-view", "left"]) == 0
+    out = capsys.readouterr().out
+    assert "view back -> accepted" in out and "view left -> rejected" in out
+    assert "views: back=accepted (no file), left=rejected (no file)" in out
+    assert json.loads((work_dir / "knight_curation.json").read_text())["views"] \
+        == {"back": "accepted", "left": "rejected"}
 
     assert cli.main(["curate", "knight", "--regenerate", "attack/s0", "--seed", "42"]) == 0
     out = capsys.readouterr().out

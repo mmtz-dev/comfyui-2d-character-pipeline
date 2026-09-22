@@ -1,6 +1,6 @@
 # Workflow notes — verification status
 
-Five API-format ComfyUI workflows (the flat `{node_id: {class_type, inputs, _meta}}`
+Six API-format ComfyUI workflows (the flat `{node_id: {class_type, inputs, _meta}}`
 dict that `POST /prompt` accepts). They are **not** UI workflows; drag one into the
 editor and you get an ad-hoc auto-arranged graph.
 
@@ -213,6 +213,39 @@ positive prompt, cell size, seed, output prefix — see the table below.
 
 ---
 
+## `view_pass.json` — the multi-view reference feature (2026-09-22)
+
+Qwen-Image-Edit 2509 (the INT4 Nunchaku build `identity_pass.json` loads) asked for the
+accepted base **from another side**: `anim concept --views` sends the base as `image1` and a
+per-view sentence (`config.CONCEPT_VIEWS`, "seen from directly behind, turned all the way
+round …") with the unit's parts phrase, and the turnaround hands each direction the view that
+already shows that side. One image in, one out; no LoRA node (the Qwen pixel LoRA is not on
+disk and `identity_pass.json` bypasses it at 0.0 anyway), no ControlNet.
+
+### CONFIRMED — the same nodes as `identity_pass.json`, read from `/object_info` on 0.35.0
+
+| `class_type` | Inputs used | Where / what |
+|---|---|---|
+| `NunchakuQwenImageDiTLoader`, `ModelSamplingAuraFlow` (shift 3), `CFGNorm`, `CLIPLoader` (`qwen_image`), `VAELoader` | as in `identity_pass.json` | unchanged. |
+| `TextEncodeQwenImageEditPlus` | `clip`, `prompt`, `vae`, `image1` | `image2` / `image3` are optional in the schema and left out — one image, so the encoder emits one `reference_latents`. |
+| `VAEEncode` | `pixels` = the base | the latent's SIZE is the output's size: a 768² base gives a 768² view, the same scale `clip.fit_reference` letterboxes the base to, so a view is a drop-in for the base. `denoise: 1.0`, so its content is not. |
+| `KSampler` | `steps 4`, `cfg 1.0`, euler / simple | the lightning build's settings. |
+
+### Verified on the GPU — 2026-09-22
+
+See DEVLOG 2026-09-22 for the seconds and what the views look like. **The square rule is
+knowingly bent here**: the base is 768² (the concept pass's cell), so the view is too; the
+alternative is padding the base to a 3:4 canvas first, which would have the model draw the
+figure at a scale of its own choosing and break the drop-in. If the views degrade in a way
+the aspect explains, that pad is the one-line change in `concept.render_views`.
+
+### Patch points
+
+base image (`LoadImage`, image1), positive prompt (`TextEncodeQwenImageEditPlus.prompt`),
+seed, output prefix.
+
+---
+
 ## Deliberate design choices
 
 **Why `pose_pass` and `identity_pass` are two separate `/prompt` jobs.** Z-Image
@@ -265,6 +298,7 @@ skeleton instead of a posed character.
 | `base_sprite.json` | standing skeleton filename, control `strength`, unit-description prompt, cell size, seed, output prefix |
 | `clip_render.json` | reference image filename, control video filename, clip size (width/height/length), positive prompt, negative prompt, seed (+ steps/cfg on the same node), output prefix |
 | `concept_pass.json` | sketch filename (scribble control; node removed when there is no sketch), control `strength`, Pixel-Art LoRA `lora_name` + `strength_model` (node removed at strength 0), positive prompt, cell size (square), seed, output prefix |
+| `view_pass.json` | base image (image1, also the latent), positive prompt (the view sentence + parts phrase), seed, output prefix |
 
 `LoadImage` filenames resolve against the container's `/basedir/input/`, so the CPU
 pipeline must copy its strips there before enqueuing.

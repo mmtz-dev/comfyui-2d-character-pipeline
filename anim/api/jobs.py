@@ -59,6 +59,11 @@ FRAME_STAGES: dict[str, Callable[[Job], list[Path]]] = {
     "render": lambda job: _pngs(job.render_dir),
     "post": lambda job: post_frames(job),
     "candidates": lambda job: _pngs(job.candidates_dir),
+    # The multi-view reference feature: the concept job's views of the base,
+    # and the one reference image `anim clip` actually sent (fitted to the
+    # cell) - the turnaround page and the Board show it under each still.
+    "views": lambda job: _pngs(job.root / "views"),
+    "reference": lambda job: [p for p in [job.clip_dir / "reference.png"] if p.exists()],
 }
 
 _POST_FRAME = re.compile(r"^(?P<stem>.+)_(?P<n>\d+)\.png$")

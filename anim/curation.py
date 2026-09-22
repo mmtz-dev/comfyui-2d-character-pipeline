@@ -14,6 +14,7 @@ THE RECORD (`anim.curation/1`):
     {
       "schema": "anim.curation/1", "unit": "knight", "origin": "concept --pick",
       "gates": {"base": "accepted", "turnaround": "pending"},
+      "views": {"back": "accepted", "left": "pending"},
       "cells": {
         "attack/s0": {"job": "knight_strike", "status": "accepted",
                       "frames": {"3": "reject"}, "seed": 12345,
@@ -73,6 +74,9 @@ from anim.util import read_json, write_json_in_place
 CURATION_SCHEMA = "anim.curation/1"
 GATES: tuple[str, ...] = ("base", "turnaround")
 GATE_STATES: tuple[str, ...] = ("pending", "accepted")
+# The multi-view reference feature: the views of the base (`concept
+# --views`) are a step under the base gate, one state per view.
+VIEW_STATES: tuple[str, ...] = ("pending", "accepted", "rejected")
 CELL_STATES: tuple[str, ...] = ("pending", "accepted", "rejected")
 FRAME_MARKS: tuple[str, ...] = ("accept", "reject")
 MODES = settings.CURATION_MODES
@@ -118,6 +122,7 @@ def new_record(unit: str, *, gates: dict[str, str] | None = None,
         "schema": CURATION_SCHEMA, "unit": unit, "origin": origin,
         "created": _now(),
         "gates": {gate: (gates or {}).get(gate, "pending") for gate in GATES},
+        "views": {},
         "cells": {},
     }
 
@@ -132,6 +137,7 @@ def read(unit: str, work_dir: Path | None = None) -> dict[str, Any] | None:
         raise CurationError(409, f"{path} is not an {CURATION_SCHEMA} record")
     record.setdefault("gates", {})
     record.setdefault("cells", {})
+    record.setdefault("views", {})
     for gate in GATES:
         record["gates"].setdefault(gate, "pending")
     return record
@@ -394,6 +400,7 @@ def board(unit: str, work_dir: Path | None = None, *, mode: str | None = None
         "exists": curation_path(unit, work).exists(),
         "path": str(curation_path(unit, work)),
         "gates": dict(record["gates"]),
+        "views": views_of(unit, record, work),
         "actions": list(config.STUDIO_ACTIONS),
         "directions": directions,
         "cells": ordered,
@@ -421,16 +428,69 @@ def set_gate(unit: str, gate: str, state: str, work_dir: Path | None = None,
 
 def accept_base_from_concept(unit: str, work_dir: Path | None = None) -> dict[str, Any]:
     """`concept --pick`: the base is chosen, so the base gate opens - and the
-    turnaround, which is drawn FROM the base, has to be looked at again."""
+    turnaround, which is drawn FROM the base, has to be looked at again, and
+    the views of the old base are gone (the multi-view reference feature)."""
     record = read(unit, work_dir)
     if record is None:
         record = new_record(unit, origin="concept --pick")
     record["gates"]["base"] = "accepted"
     record["gates"]["turnaround"] = "pending"
+    record["views"] = {}
     record.setdefault("gate_log", []).append(
         {"gate": "base", "state": "accepted", "at": _now(), "by": "concept --pick"})
     write(unit, record, work_dir)
     return record
+
+
+def set_views(unit: str, states: dict[str, str], work_dir: Path | None = None
+              ) -> dict[str, str]:
+    """The views step under the base gate: `{view: state}` merged over what
+    is there. `concept --pick-view` writes accepted (pending when
+    provisional); `anim curate --accept-view back` / `--reject-view` / the
+    Board write the rest. Returns every view's state."""
+    for view, state in states.items():
+        if view not in config.CONCEPT_VIEWS:
+            raise CurationError(404, f"no view {view!r}; one of {list(config.CONCEPT_VIEWS)}")
+        if state not in VIEW_STATES:
+            raise CurationError(400, f"a view is one of {list(VIEW_STATES)}, not {state!r}")
+    record = load(unit, work_dir)
+    record.setdefault("views", {})
+    for view, state in states.items():
+        record["views"][view] = state
+    record.setdefault("gate_log", []).extend(
+        {"view": view, "state": state, "at": _now()} for view, state in states.items())
+    write(unit, record, work_dir)
+    return dict(record["views"])
+
+
+def views_of(unit: str, record: dict[str, Any], work_dir: Path | None = None
+             ) -> dict[str, dict[str, Any]]:
+    """The views row the board shows: every view the base carries
+    (`concept.views` in work/<unit>_base/job.json) with its curation state,
+    file URL and whether the pick was provisional; a view the record names
+    but the base no longer has is shown without a file. Pure over the files."""
+    work = _work(work_dir)
+    base_job = Job.open(f"{unit}_base", work)
+    stored: dict[str, Any] = {}
+    if base_job.manifest_path.exists():
+        stored = dict((jobs_api._manifest(base_job).get("concept") or {}).get("views") or {})
+    render_files = [p.name for p in jobs_api.FRAME_STAGES["render"](base_job)]
+    out: dict[str, dict[str, Any]] = {}
+    for view in config.CONCEPT_VIEWS:
+        entry = stored.get(view)
+        state = (record.get("views") or {}).get(view)
+        if entry is None and state is None:
+            continue
+        file = (entry or {}).get("file")
+        url = (f"/jobs/{base_job.name}/frames/render/{render_files.index(file)}.png"
+               if file and file in render_files else None)
+        out[view] = {"view": view, "yaw": config.CONCEPT_VIEWS[view]["yaw"],
+                     "state": state or "pending", "file": file, "url": url,
+                     "candidate": (entry or {}).get("candidate"),
+                     "seed": (entry or {}).get("seed"),
+                     "provisional": bool((entry or {}).get("provisional")),
+                     "picked": (entry or {}).get("picked")}
+    return out
 
 
 def _cell_and_job(unit: str, key: str, work_dir: Path | None

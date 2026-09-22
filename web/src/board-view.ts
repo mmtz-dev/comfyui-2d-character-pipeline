@@ -18,6 +18,7 @@ import {
   putCell,
   putGate,
   putSettings,
+  putView,
   regenerateCell,
   type BoardCell,
   type BoardState,
@@ -26,7 +27,8 @@ import {
   type StripFrame,
   type TurnaroundState,
 } from "./api";
-import { MODES, MODE_HELP, cycleMark, gatesText, gridOf, reduceBoard, tally, turnaroundText, turnaroundTiles, waitingText } from "./board";
+import type { ViewTile } from "./board";
+import { MODES, MODE_HELP, cycleMark, gatesText, gridOf, reduceBoard, tally, turnaroundText, turnaroundTiles, viewTiles, viewsText, waitingText } from "./board";
 
 const SCALE = 2;
 
@@ -72,6 +74,7 @@ export class BoardView {
   private readonly modeSelect = el("select", { class: "studio-select small", title: "curation mode - a project setting (PUT /settings)" },
     ...MODES.map((mode) => el("option", { value: mode, title: MODE_HELP[mode] }, mode)));
   private readonly gatesLine = el("div", { class: "board-gates" });
+  private readonly viewsBox = el("div", { class: "board-views" });
   private readonly turnaroundBox = el("div", { class: "board-turnaround" });
   private readonly waitingLine = el("div", { class: "studio-status" });
   private readonly statusLine = el("div", { class: "studio-status" });
@@ -87,6 +90,7 @@ export class BoardView {
         el("button", { type: "button", class: "studio-button", title: "GET /curation again", onclick: () => void this.refreshUnits() }, "↻"),
         this.modeSelect),
       this.gatesLine,
+      this.viewsBox,
       this.turnaroundBox,
       this.waitingLine,
       this.statusLine,
@@ -183,6 +187,20 @@ export class BoardView {
     }
   }
 
+  /** The views step under the base gate: click cycles pending -> accepted -> rejected. */
+  private async setView(tile: ViewTile): Promise<void> {
+    const board = this.board;
+    if (!board) return;
+    this.apply(reduceBoard(board, { type: "view", view: tile.view, state: tile.next }));
+    try {
+      this.apply(await putView(board.unit, tile.view, tile.next));
+      this.say(`view ${tile.view}: ${tile.next}${tile.next === "rejected" ? " - the turnaround falls back past it" : ""}`, "ok");
+    } catch (error) {
+      this.say(`could not set the ${tile.view} view - ${errorText(error)}`, "bad");
+      await this.load();
+    }
+  }
+
   private async mark(cell: BoardCell, frame: StripFrame): Promise<void> {
     const board = this.board;
     if (!board || cell.status === "accepted") return;
@@ -254,6 +272,7 @@ export class BoardView {
     const board = this.board;
     if (!board) {
       this.gatesLine.replaceChildren();
+      this.viewsBox.replaceChildren();
       this.waitingLine.textContent = "";
       this.grid.replaceChildren(el("p", { class: "studio-help" }, "Pick a unit: every job of it that is a studio action (attack, idle, walk, run, jump) is a cell."));
       this.tallyLine.textContent = "";
@@ -277,6 +296,7 @@ export class BoardView {
     if (!board.exists) {
       this.gatesLine.append(el("span", { class: "board-legacy", title: `${board.path} is written on the first edit` }, "legacy - no record, nothing gated"));
     }
+    this.renderViews(board);
     this.renderTurnaround(board);
     const waiting = waitingText(board.waiting);
     this.waitingLine.textContent = waiting;
@@ -300,6 +320,38 @@ export class BoardView {
     this.tallyLine.textContent = `${t.cells} cells: ${t.accepted} accepted, ${t.rejected} rejected, ${t.pending} pending · ${t.marked} frame marks · ${board.path}`;
   }
 
+  /** The views of the base under the base gate (the multi-view reference
+   * feature): one tile per view with accept / reject per view. */
+  private renderViews(board: BoardState): void {
+    const tiles = viewTiles(board);
+    const text = viewsText(board);
+    const head = el("div", { class: "board-views-head" },
+      el("span", { class: "board-views-title" }, "views of the base"),
+      el("span", { class: "studio-help", title: "anim concept --unit <unit> --views [all] then --pick-view back=NN ...; the turnaround hands each direction its nearest accepted view" }, text));
+    if (!tiles.length) {
+      this.viewsBox.replaceChildren(head);
+      return;
+    }
+    const ring = el("div", { class: "board-ring" });
+    for (const tile of tiles) {
+      const label = `${tile.view}: ${tile.state}${tile.provisional ? " (provisional)" : ""}`;
+      ring.append(el("figure", { class: `board-tile board-view ${tile.state}${tile.provisional ? " provisional" : ""}`, title: `${label} · yaw ${tile.yaw} · click: ${tile.next}` },
+        tile.url
+          ? el("img", { src: `${tile.url}?t=${board.views[tile.view]?.picked ?? ""}`, alt: `${tile.view} view`, width: String(64 * SCALE), height: String(64 * SCALE), loading: "lazy" })
+          : el("div", { class: "board-tile-miss" }, "no file"),
+        el("figcaption", {}, tile.view),
+        el("button", {
+          type: "button",
+          class: `studio-button board-gate ${tile.state}`,
+          title: `set the ${tile.view} view ${tile.next}`,
+          disabled: board.mode === "end",
+          onclick: () => void this.setView(tile),
+        }, tile.state === "accepted" ? "accepted" : tile.state === "rejected" ? "rejected" : "accept"),
+      ));
+    }
+    this.viewsBox.replaceChildren(head, ring);
+  }
+
   /** The eight idle stills the `turnaround` gate is about, in compass order,
    * with the question and the accept button - the turnaround feature. */
   private renderTurnaround(board: BoardState): void {
@@ -313,11 +365,16 @@ export class BoardView {
     const ring = el("div", { class: "board-ring" });
     for (const tile of turnaroundTiles(state)) {
       const row = state.directions[tile.direction];
-      ring.append(el("figure", { class: `board-tile ${tile.status}`, title: `${tile.job}${row?.silhouette ? ` · ${row.silhouette.width}×${row.silhouette.height} px` : ""}${row?.hidden_face?.length ? ` · face hidden: ${row.hidden_face.join(", ")}` : ""}${tile.error ? ` · ${tile.error}` : ""}` },
+      ring.append(el("figure", { class: `board-tile ${tile.status}`, title: `${tile.job}${row?.silhouette ? ` · ${row.silhouette.width}×${row.silhouette.height} px` : ""}${row?.hidden_face?.length ? ` · face hidden: ${row.hidden_face.join(", ")}` : ""}${tile.reference ? ` · reference: ${tile.reference}` : ""}${tile.error ? ` · ${tile.error}` : ""}` },
         tile.still
           ? el("img", { src: `${tile.still}?t=${state.updated}`, alt: `${tile.direction} still`, width: String(64 * SCALE), height: String(64 * SCALE), loading: "lazy" })
           : el("div", { class: "board-tile-miss" }, tile.status),
         el("figcaption", {}, tile.direction),
+        tile.reference
+          ? el("div", { class: `board-tile-ref${tile.reference.includes("fallback") ? " fallback" : ""}`, title: row?.reference?.warning ?? row?.reference?.file ?? "" },
+              tile.referenceUrl ? el("img", { src: `${tile.referenceUrl}?t=${state.updated}`, alt: `${tile.direction} reference`, height: "32", loading: "lazy" }) : null,
+              `ref: ${tile.reference}`)
+          : null,
       ));
     }
     this.turnaroundBox.replaceChildren(

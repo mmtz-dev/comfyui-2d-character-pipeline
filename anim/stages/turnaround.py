@@ -56,6 +56,21 @@ page. A direction that fails - a timed-out job, a matte with nothing in it -
 is recorded with its error and the run goes on; one bad direction must not
 cost the other seven.
 
+ONE REFERENCE PER VIEW (the multi-view reference feature, #298). The first
+identity gate (2026-09-22) failed on the turned heads: Wan had one front
+view and invented every other side. Now each direction hands `clip` the
+base's view that already shows that side - `config.TURNAROUND_REFERENCE_BY_DIR`:
+s0 the right profile, s180 the left, s90 the back, s270 the front (the base
+itself), the obliques their exact view when `concept --pick-view` put one
+on the base, else the nearest of back / front. A view the base does not
+carry, or one the owner rejected on the Board, falls back down that list to
+the front with a WARNING in the log, the record and on the page; the record
+(`cells.<dir>.reference`, `references`) and `GET /turnaround/{unit}` say
+which reference every still used, and the page shows it under the still.
+The prompt lever rides along inside `clip`: with a parts phrase on the base
+the prompt names the parts and what this view shows of the head, and every
+turned-away cell hides all of its face points (rigkit).
+
 RERUN AFTER A NEW BASE. `concept --pick` reopens the turnaround gate; the
 one line is `anim turnaround <unit> --force`. The state file records the
 base render's sha256, and a run without `--force` against a changed base
@@ -80,7 +95,7 @@ from typing import Any, Callable, Sequence
 import numpy as np
 from PIL import Image
 
-from anim import comfy, config, imaging, partkit
+from anim import comfy, config, curation, imaging, partkit
 from anim.job import Job
 from anim.stages import bakeoff as bakeoff_stage
 from anim.stages import clip as clip_stage
@@ -180,6 +195,62 @@ def base_reference(unit: str, override: Path | None, work_dir: Path | None,
     """The identity image `clip` would use for this unit, and how it found it."""
     probe = Job.open(job_name(unit, config.DEFAULT_DIRECTION), work_dir)
     return clip_stage.find_reference(probe, {"slug": unit}, override, assets_dir)
+
+
+def base_views(unit: str, work_dir: Path | None = None) -> dict[str, dict[str, Any]]:
+    """The views the base carries (`concept.views` of work/<unit>_base) that
+    still have their file, with the curation state of each."""
+    base_job = Job.open(f"{unit}_base", work_dir)
+    if not base_job.manifest_path.exists():
+        return {}
+    stored = (base_job.read_manifest().get("concept") or {}).get("views") or {}
+    record = curation.read(unit, work_dir) or {}
+    states = record.get("views") or {}
+    out: dict[str, dict[str, Any]] = {}
+    for view, entry in stored.items():
+        path = base_job.render_dir / str((entry or {}).get("file") or "")
+        if not (entry or {}).get("file") or not path.exists():
+            continue
+        out[view] = {**entry, "path": path, "state": states.get(view, "pending")}
+    return out
+
+
+def reference_for(direction: str, front: tuple[Path, str], views: dict[str, dict[str, Any]]
+                  ) -> dict[str, Any]:
+    """Which image this direction hands Wan: the first view down
+    `config.TURNAROUND_REFERENCE_BY_DIR` that the base carries and the owner
+    has not rejected, else the front (`front` = (path, kind) from
+    `base_reference`) with a warning naming what was wanted. Pure."""
+    wanted = config.turnaround_reference_views(direction)
+    for view in wanted:
+        if view == config.FRONT_VIEW:
+            break
+        entry = views.get(view)
+        if entry is None or entry.get("state") == "rejected":
+            continue
+        path = Path(entry["path"])
+        return {"view": view, "kind": f"view {view}", "file": str(path),
+                "sha256": sha256_file(path), "wanted": list(wanted),
+                "state": entry.get("state"), "provisional": bool(entry.get("provisional")),
+                "fallback": False, "warning": None}
+    path, kind = front
+    missing = [v for v in wanted if v != config.FRONT_VIEW]
+    warning = None
+    if missing:
+        why = ", ".join(
+            f"{v} ({'rejected' if (views.get(v) or {}).get('state') == 'rejected' else 'not on the base'})"
+            for v in missing)
+        warning = (f"{direction}: no view for it - wanted {why}; using the front "
+                   f"(`anim concept --views` then `--pick-view` to add one)")
+    return {"view": config.FRONT_VIEW, "kind": kind, "file": str(path),
+            "sha256": sha256_file(path) if path.exists() else None, "wanted": list(wanted),
+            "state": None, "provisional": False, "fallback": bool(missing), "warning": warning}
+
+
+def references_for(unit: str, cells: Sequence[str], front: tuple[Path, str],
+                   work_dir: Path | None = None) -> dict[str, dict[str, Any]]:
+    views = base_views(unit, work_dir)
+    return {d: reference_for(d, front, views) for d in cells}
 
 
 def still_file(job: Job) -> Path | None:
@@ -333,7 +404,7 @@ def _hand_set_picks(job: Job, picks: list[int], *, verb: str) -> None:
 
 def run_direction(cell: Cell, *, unit: str, glb: Path, clip_name: str, seed: int,
                   matte: str, parts_from: Path | None, client: comfy.ComfyClient,
-                  segmenter: partkit.Segmenter | None, reference: Path | None,
+                  segmenter: partkit.Segmenter | None, reference: dict[str, Any],
                   work_dir: Path | None, assets_dir: Path | None,
                   workflow_dir: Path | None, lock_path: Path | None,
                   timeout_s: float) -> dict[str, Any]:
@@ -346,8 +417,13 @@ def run_direction(cell: Cell, *, unit: str, glb: Path, clip_name: str, seed: int
     timings["rig"] = round(time.monotonic() - t0, 1)
 
     t0 = time.monotonic()
+    # A view goes to `clip` as its reference override; the front is left to
+    # `clip.find_reference`, so the clip record says "base render" for it
+    # unless the owner passed --reference for the whole run.
+    override = (Path(reference["file"]) if reference.get("override")
+                or reference["view"] != config.FRONT_VIEW else None)
     record = clip_stage.clip(job.name, seed=seed, control=config.TURNAROUND_CONTROL,
-                             depth_gain=config.TURNAROUND_DEPTH_GAIN, reference=reference,
+                             depth_gain=config.TURNAROUND_DEPTH_GAIN, reference=override,
                              client=client, workflow_dir=workflow_dir, lock_path=lock_path,
                              work_dir=work_dir, assets_dir=assets_dir, timeout_s=timeout_s)
     timings["gpu"] = round(time.monotonic() - t0, 1)
@@ -373,6 +449,8 @@ def run_direction(cell: Cell, *, unit: str, glb: Path, clip_name: str, seed: int
             "vram_used_gb": vram, "seed": seed, "still_frame": config.TURNAROUND_STILL_INDEX,
             "clip_frames": int(record["frames"]), "control": record["control"],
             "depth_gain": record["depth_gain"], "prompt": record.get("prompt"),
+            "negative": record.get("negative"), "parts_phrase": record.get("parts_phrase"),
+            "reference": {k: v for k, v in reference.items() if k != "path"},
             "hidden_face": list((read_json(job.keypoints_path)["frames"][0].get("hidden") or [])),
             "post_error": post_error, "locked_to": locked_to,
             "metrics": direction_metrics(job, report, parts)}
@@ -424,6 +502,7 @@ def turnaround(unit: str, *, dirs: Sequence[str] | None = None,
     path = state_path(unit, work_dir)
     state = read_json(path) if path.exists() else {}
     records: dict[str, Any] = dict(state.get("cells") or {})
+    references: dict[str, dict[str, Any]] = dict(state.get("references") or {})
     if page_only and state:
         seed = int(state.get("seed", seed or 0))
         matte = str(state.get("matte", matte))
@@ -433,6 +512,18 @@ def turnaround(unit: str, *, dirs: Sequence[str] | None = None,
         ref_path, ref_kind = base_reference(unit, reference, work_dir, assets_dir)
         reference_row = {"file": str(ref_path), "kind": ref_kind,
                          "sha256": sha256_file(ref_path) if ref_path.exists() else None}
+        # The multi-view reference feature: one reference per direction. An
+        # explicit --reference is the front for every cell, views included -
+        # it is the owner's override.
+        planned_refs = references_for(unit, [c.name for c in planned], (ref_path, ref_kind),
+                                      work_dir) if reference is None else {
+            c.name: {"view": config.FRONT_VIEW, "kind": ref_kind, "file": str(ref_path),
+                     "sha256": reference_row["sha256"], "wanted": [config.FRONT_VIEW],
+                     "state": None, "provisional": False, "fallback": False,
+                     "warning": None, "override": True} for c in planned}
+        for name, row in planned_refs.items():
+            if row.get("warning"):
+                log(f"turnaround: WARNING {row['warning']}")
         if seed is None:
             seed = int(state["seed"]) if state.get("seed") and not force \
                 else derive_seed(unit, clip_name, reference_row["sha256"] or "")
@@ -453,14 +544,18 @@ def turnaround(unit: str, *, dirs: Sequence[str] | None = None,
                 log(f"turnaround: {cell.name} done -> skipped (--force redoes it)")
                 records.setdefault(cell.name, {**asdict(cell), "status": "done"})
                 continue
+            ref = planned_refs[cell.name]
             log(f"turnaround: {cell.name} (yaw {cell.yaw}, {cell.elevation}; {clip_name} "
-                f"frame 0 x{config.TURNAROUND_CLIP_FRAMES}) ...")
+                f"frame 0 x{config.TURNAROUND_CLIP_FRAMES}; reference {ref['view']}"
+                f"{' - fallback' if ref['fallback'] else ''}) ...")
             record = run_cell(cell, unit=unit, glb=glb, clip_name=clip_name, seed=seed,
                               matte=matte, parts_from=parts_from, client=client,
-                              segmenter=segmenter, reference=reference, work_dir=work_dir,
+                              segmenter=segmenter, reference=ref, work_dir=work_dir,
                               assets_dir=assets_dir, workflow_dir=workflow_dir,
                               lock_path=lock_path, timeout_s=timeout_s)
+            record.setdefault("reference", {k: v for k, v in ref.items() if k != "path"})
             records[cell.name] = record
+            references[cell.name] = record["reference"]
             if record["status"] == "done":
                 m = record["metrics"]
                 sil = m.get("silhouette") or {}
@@ -472,10 +567,11 @@ def turnaround(unit: str, *, dirs: Sequence[str] | None = None,
             else:
                 log(f"  {cell.name}: FAILED after {record['seconds']} s - {record['error']}")
             write_json_in_place(path, _state(unit, elevation, rig_name, glb, clip_name, seed,
-                                             matte, parts_from, reference_row, order, records))
+                                             matte, parts_from, reference_row, order, records,
+                                             references))
 
     state = _state(unit, elevation, rig_name, glb, clip_name, seed, matte, parts_from,
-                   reference_row, order, records)
+                   reference_row, order, records, references)
     write_json_in_place(path, state)
     page = build_page(state, page_dir(unit, work_dir), work_dir=work_dir)
     state["page"] = str(page)
@@ -485,7 +581,9 @@ def turnaround(unit: str, *, dirs: Sequence[str] | None = None,
 def _state(unit: str, elevation: str, rig_name: str, glb: Path, clip_name: str,
            seed: int | None, matte: str, parts_from: Path | None,
            reference: dict[str, Any], order: Sequence[str],
-           records: dict[str, Any]) -> dict[str, Any]:
+           records: dict[str, Any], references: dict[str, Any] | None = None
+           ) -> dict[str, Any]:
+    references = references or {}
     return {
         "schema": TURNAROUND_SCHEMA, "unit": unit, "action": config.TURNAROUND_ACTION,
         "elevation": elevation, "rig": {"name": rig_name, "glb": str(glb), "clip": clip_name},
@@ -493,6 +591,9 @@ def _state(unit: str, elevation: str, rig_name: str, glb: Path, clip_name: str,
         "control": config.TURNAROUND_CONTROL, "depth_gain": config.TURNAROUND_DEPTH_GAIN,
         "cell": list(config.TURNAROUND_CELL), "seed": seed, "matte": matte,
         "parts_from": str(parts_from) if parts_from else None, "reference": reference,
+        # The multi-view reference feature: the reference each direction used.
+        "references": {d: references[d] for d in order if d in references},
+        "reference_map": {d: list(config.turnaround_reference_views(d)) for d in order},
         "question": QUESTION, "updated": _now(), "plan": list(order),
         "cells": {d: records[d] for d in order if d in records},
         "identity": identity_table(records, order),
@@ -530,10 +631,25 @@ def listing(unit: str, work_dir: Path | None = None) -> dict[str, Any] | None:
             "parts": (record.get("metrics") or {}).get("parts"),
             "silhouette": (record.get("metrics") or {}).get("silhouette"),
             "hidden_face": record.get("hidden_face"),
+            "prompt": record.get("prompt"),
+            "reference": _reference_row(record.get("reference") or
+                                        (state.get("references") or {}).get(direction), job),
         }
     done_count = sum(1 for r in rows.values() if r["status"] == "done")
     return {**state, "path": str(path), "page": str(page_dir(unit, work_dir) / "index.html"),
             "directions": rows, "done": done_count, "of": len(rows)}
+
+
+def _reference_row(ref: dict[str, Any] | None, job: Job) -> dict[str, Any] | None:
+    """The reference a direction used, with the URL of the image `clip`
+    actually sent (fitted to the cell), for the API and the Board."""
+    if not ref:
+        return None
+    sent = job.clip_dir / "reference.png"
+    return {"view": ref.get("view"), "kind": ref.get("kind"), "file": ref.get("file"),
+            "fallback": bool(ref.get("fallback")), "warning": ref.get("warning"),
+            "provisional": bool(ref.get("provisional")), "state": ref.get("state"),
+            "url": f"/jobs/{job.name}/frames/reference/0.png" if sent.exists() else None}
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +679,11 @@ code { color: #cdd; }
 .dir .miss { border: 1px dashed #444; color: #666; font-size: 11px; padding: 40px 0;
              text-align: center; }
 .dir .secs { color: #8b96a5; font-size: 11px; margin-top: 6px; }
+.dir .refrow { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 11px;
+               color: #8b96a5; }
+.dir .refrow img { width: 40px; height: 60px; object-fit: contain; background: #fff;
+                   border: 1px solid #333; }
+.dir .refrow.fallback { color: #e0b060; }
 .dir table { font-size: 11px; margin: 6px 0 0; width: 100%; }
 .side { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
 .side figure { margin: 0; }
@@ -634,6 +755,7 @@ def collect_images(state: dict[str, Any], img_dir: Path, *, work_dir: Path | Non
                            img_dir / f"{direction}_raw.png")
         row["control"] = _copy(job.clip_dir / "control" / f"{still_index + 1:04d}.png",
                                img_dir / f"{direction}_control.png")
+        row["reference"] = _copy(job.clip_dir / "reference.png", img_dir / f"{direction}_ref.png")
         manifest = job.read_manifest() if job.manifest_path.exists() else {}
         stem = f"{manifest.get('slug', unit)}_{manifest.get('action', config.TURNAROUND_ACTION)}"
         row["parts"] = _copy(job.post_dir / "parts" / f"{stem}_0_hd.png",
@@ -679,11 +801,22 @@ def _dir_html(direction: str, record: dict[str, Any], images: dict[str, Any]) ->
     still = (f'<img class="px" src="img/{images["still"]}" alt="{direction} still">'
              if images.get("still") else '<div class="miss">no still</div>')
     hidden = record.get("hidden_face") or []
+    ref = record.get("reference") or {}
+    ref_img = (f'<img src="img/{images["reference"]}" alt="{direction} reference">'
+               if images.get("reference") else "")
+    ref_text = (f'reference: <b>{ref.get("view", "?")}</b>'
+                + (' <span class="warn">fallback</span>' if ref.get("fallback") else "")
+                + (' (provisional)' if ref.get("provisional") else "")
+                + (f' — {ref.get("state")}' if ref.get("state") else ""))
+    ref_row = (f'<div class="refrow{" fallback" if ref.get("fallback") else ""}" '
+               f'title="{ref.get("warning") or ref.get("file") or ""}">{ref_img}<span>{ref_text}</span></div>'
+               if ref else "")
     return f"""
 <div class="dir" id="{direction}">
   <div class="name">{direction}</div>
   <div class="facing">yaw {record.get('yaw')} — {facing}</div>
   {still}
+  {ref_row}
   <div class="hd"><div>{raw}<span>raw frame {record.get('still_frame')}</span></div>
                   <div>{control}<span>control (skeleton + depth)</span></div></div>
   <div class="secs">{sil.get('width')}×{sil.get('height')} px, {sil.get('pixels')} opaque, {sil.get('colours')} colours
@@ -693,6 +826,33 @@ def _dir_html(direction: str, record: dict[str, Any], images: dict[str, Any]) ->
     {'· <span class="warn">' + record['post_error'] + '</span>' if record.get('post_error') else ''}</div>
   <table><tr><th>part</th><th>px</th><th>colours</th><th>drift</th><th></th></tr>{rows}</table>
 </div>"""
+
+
+def _references_html(state: dict[str, Any]) -> str:
+    """Per direction: the view wanted, the view used, fallback or not; and
+    the prompt lever - the parts phrase the clips named, if any."""
+    refs = state.get("references") or {}
+    rows = []
+    for d in state.get("plan") or []:
+        r = refs.get(d) or (state.get("cells", {}).get(d) or {}).get("reference") or {}
+        wanted = " → ".join((state.get("reference_map") or {}).get(d) or
+                            config.turnaround_reference_views(d))
+        if not r:
+            rows.append(f"<tr><td><b>{d}</b></td><td>{wanted}</td><td>—</td><td></td></tr>")
+            continue
+        used = (f'<b>{r.get("view")}</b>' + (' <span class="warn">fallback to the front</span>'
+                                             if r.get("fallback") else "")
+                + (' <span class="warn">(provisional pick)</span>' if r.get("provisional") else ""))
+        note = r.get("warning") or f'{r.get("kind")} · sha256 {str(r.get("sha256") or "")[:12]}'
+        rows.append(f"<tr><td><b>{d}</b></td><td>{wanted}</td><td>{used}</td><td>{note}</td></tr>")
+    cells = state.get("cells") or {}
+    phrase = next((c.get("parts_phrase") for c in cells.values() if c.get("parts_phrase")), None)
+    faces = ", ".join(f"{d}: {'all' if len(c.get('hidden_face') or []) == 5 else ', '.join(c.get('hidden_face') or []) or 'drawn'}"
+                      for d, c in cells.items() if c.get("status") == "done")
+    return (f'<table><tr><th>direction</th><th>wanted (best first)</th><th>used</th><th></th></tr>'
+            f'{"".join(rows)}</table>'
+            f'<p class="note"><b>parts phrase</b> in every prompt: <i>{phrase or "none - the base carries no parts phrase; the old prompt, word for word"}</i>. '
+            f'<b>face points</b> hidden: {faces or "—"}.</p>')
 
 
 def _identity_html(identity: dict[str, Any]) -> str:
@@ -757,6 +917,8 @@ part lock <code>--parts-from {state.get('parts_from') or 'the base'}</code> ·
 <a href="http://192.168.1.158:8700/work_packages/275" style="color:#7aa2d6">#275</a>.
 The ruling is the owner's: accept with <code>anim curate {state['unit']} --accept-gate turnaround</code> or the Board; a new base means <code>anim turnaround {state['unit']} --force</code>.</p>
 <div class="side">{reference}{turntable}</div>
+<h2>The reference each still used — the multi-view reference feature (#298)</h2>
+{_references_html(state)}
 <div class="toggle"><label><input type="checkbox" id="parts"> show the part masks (SAM 2.1 overlays) on the raw frames</label></div>
 <h2>The eight facings, compass order (yaw counter-clockwise seen from above)</h2>
 <div class="ring">{cells}</div>
@@ -836,8 +998,10 @@ def run_stage(args: argparse.Namespace) -> int:
         r = state["cells"].get(d) or {}
         if r.get("status") == "done":
             t = r.get("timings") or {}
+            ref = r.get("reference") or {}
             print(f"  {d:<5} {r['seconds']:6.1f} s  (rig {t.get('rig')} + gpu {t.get('gpu')} "
-                  f"+ post {t.get('post')}; service {r.get('gpu_seconds')} s)")
+                  f"+ post {t.get('post')}; service {r.get('gpu_seconds')} s)"
+                  f"  reference {ref.get('view', '?')}{' (fallback)' if ref.get('fallback') else ''}")
         elif r:
             print(f"  {d:<5} {r.get('status')}: {r.get('error', '')}")
     print(f"  page   -> {state['page']}")

@@ -414,6 +414,218 @@ def test_pick_refuses_a_candidate_that_does_not_exist(work_dir, workflow_dir):
         concept_stage.pick("knight", "best", work_dir=work_dir)
 
 
+# ---------------------------------------------------------------------------
+# The multi-view reference feature: the parts phrase, the views, the view pick
+# ---------------------------------------------------------------------------
+PARTS = "closed great helm, kite shield, longsword, dark cloak"
+
+
+def test_pick_stores_the_parts_phrase_and_the_avoid_phrase(work_dir, workflow_dir):
+    _concept_job(work_dir, workflow_dir)
+    # No --parts: the whole description, explicit in the block.
+    concept_stage.pick("knight", "01", work_dir=work_dir)
+    block = Job.open("knight_base", work_dir).read_manifest()["concept"]
+    assert block["parts_phrase"] == "a knight" and block["avoid_phrase"] == ""
+    assert block["views"] == {}
+    assert concept_stage.base_phrases("knight", work_dir) == ("a knight", None)
+    # --parts / --avoid with the pick; a trailing stop and doubled spaces are cleaned.
+    result = concept_stage.pick("knight", "01", parts=PARTS + ".", avoid="bare  head, uncovered face,",
+                                work_dir=work_dir)
+    assert result["parts_phrase"] == PARTS and result["avoid_phrase"] == "bare head, uncovered face"
+    block = Job.open("knight_base", work_dir).read_manifest()["concept"]
+    assert block["parts_phrase"] == PARTS and block["avoid_phrase"] == "bare head, uncovered face"
+    provenance = json.loads(Job.open("knight_base", work_dir).provenance_path.read_text())
+    assert provenance["concept"]["parts_phrase"] == PARTS
+    assert concept_stage.base_phrases("knight", work_dir) == (PARTS, "bare head, uncovered face")
+    # --parts alone: the phrase changes, nothing else moves.
+    from anim import curation
+
+    before = json.loads((work_dir / "knight_curation.json").read_text())
+    block = concept_stage.set_phrases("knight", parts="great helm, cloak", work_dir=work_dir)
+    assert block["parts_phrase"] == "great helm, cloak" and block["avoid_phrase"] == "bare head, uncovered face"
+    assert json.loads((work_dir / "knight_curation.json").read_text())["gates"] == before["gates"]
+    assert curation.read("knight", work_dir)["views"] == {}
+    assert concept_stage.base_phrases("orc", work_dir) == (None, None)
+    with pytest.raises(FileNotFoundError, match="no base job"):
+        concept_stage.set_phrases("orc", parts="tusks", work_dir=work_dir)
+
+
+def test_the_clip_prompt_reads_the_phrases_off_the_base(work_dir, workflow_dir):
+    """`anim clip` composes the parts prompt and the negative from the base's
+    block (the turnaround's clips inherit it); a base without one is the old
+    prompt, and the record says which."""
+    _concept_job(work_dir, workflow_dir)
+    concept_stage.pick("knight", "01", parts=PARTS, avoid="bare head", work_dir=work_dir)
+    job = Job.open("knight_strike", work_dir)
+    assert clip_stage.find_phrases(job, {"slug": "knight"}) == (PARTS, "bare head")
+    assert clip_stage.find_phrases(job, {"slug": "orc"}) == (None, None)
+    assert clip_stage.find_phrases(job, {}) == (None, None)
+
+
+def _views_ready(work_dir, workflow_dir):
+    _concept_job(work_dir, workflow_dir)
+    concept_stage.pick("knight", "01", parts=PARTS, work_dir=work_dir)
+
+
+def test_views_render_the_base_from_each_side_through_the_edit_path(work_dir, workflow_dir):
+    _views_ready(work_dir, workflow_dir)
+    png = canned_png(config.CONCEPT_CELL)
+    logs: list[str] = []
+    with FakeComfy(png=png) as fake:
+        record = concept_stage.render_views(
+            "knight", views="all", count=2, seed=500, client=comfy.ComfyClient(fake.url),
+            workflow_dir=workflow_dir, work_dir=work_dir, log=logs.append)
+    assert list(record["views"]) == list(config.CONCEPT_VIEWS) and len(fake.prompts) == 14
+    assert fake.uploads == ["anim_knight_concept_view_base.png"], "the base once, under the job's name"
+    # The graph is the edit path: Qwen-Image-Edit with the base as image1 and
+    # its latent; no ControlNet, no Z-Image, no LoRA.
+    classes = _graph_classes(fake.prompts[0])
+    assert "NunchakuQwenImageDiTLoader" in classes and "TextEncodeQwenImageEditPlus" in classes
+    assert "VAEEncode" in classes and "ZImageFunControlnet" not in classes
+    assert "LoraLoaderModelOnly" not in classes and "UNETLoader" not in classes
+    graph = fake.prompts[0]
+    load = graph[comfy.find_node(graph, "base image")]
+    assert load["inputs"]["image"] == "anim_knight_concept_view_base.png"
+    positive = graph[comfy.find_node(graph, "positive prompt")]["inputs"]
+    assert positive["prompt"] == config.concept_view_prompt("back", PARTS)
+    assert "from directly behind" in positive["prompt"] and PARTS in positive["prompt"]
+    assert positive["image1"] == [comfy.find_node(graph, "base image"), 0]
+    assert graph[comfy.find_node(graph, "seed")]["inputs"]["seed"] == 500
+    seeds = [g[comfy.find_node(g, "seed")]["inputs"]["seed"] for g in fake.prompts]
+    assert seeds[:4] == [500, 501, 600, 601], "view offset x100, candidate +1"
+    assert graph[comfy.find_node(graph, "output prefix")]["inputs"]["filename_prefix"] \
+        == "anim_pipeline/knight_concept/views/view_pass"
+    # The layout: views/<view>_NN.png and views.json.
+    out = concept_stage.views_dir("knight", work_dir)
+    assert sorted(p.name for p in out.glob("*.png")) == sorted(
+        f"{v}_{i:02d}.png" for v in config.CONCEPT_VIEWS for i in range(2))
+    assert (out / "back_01.png").read_bytes() == png
+    saved = json.loads((out / "views.json").read_text())
+    assert saved["schema"] == "anim.concept-views/1" and saved["slug"] == "knight"
+    assert saved["seed"] == 500 and saved["count"] == 2 and saved["parts_phrase"] == PARTS
+    assert saved["base"]["job"] == "knight_base" and len(saved["base_sha256"]) == 64
+    assert saved["workflow"] == "view_pass.json" and len(saved["workflow_sha256"]) == 64
+    back = saved["views"]["back"]
+    assert back["yaw"] == 90 and back["pick"] is None and back["prompt"] == positive["prompt"]
+    assert [c["index"] for c in back["candidates"]] == [0, 1]
+    assert back["candidates"][1]["seed"] == 501 and back["candidates"][1]["file"] == "back_01.png"
+    assert len(back["candidates"][0]["sha256"]) == 64 and back["candidates"][0]["seconds"] is not None
+    files = {m["file"] for m in saved["models"]}
+    assert "svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors" in files
+    assert "qwen_2.5_vl_7b_fp8_scaled.safetensors" in files and "qwen_image_vae.safetensors" in files
+    assert saved["comfyui"]["version"] == "0.35.0-fake"
+    # The page: the base beside each view's candidates.
+    page = Path(record["page"])
+    html = page.read_text(encoding="utf-8")
+    assert page == concept_stage.views_page_dir("knight", work_dir) / "index.html"
+    assert (page.parent / "img" / "base.png").exists() and (page.parent / "img" / "front_right_01.png").exists()
+    for view in config.CONCEPT_VIEWS:
+        assert f'id="{view}"' in html and f'id="{view}_00"' in html
+    assert "--pick-view" in html and PARTS in html
+    assert sum(1 for line in logs if "concept views:" in line) == 14
+    # The default is the core three, and a bad name is refused before the GPU.
+    assert config.concept_view_names(None) == ["back", "left", "right"]
+    assert config.concept_view_names("right,back") == ["back", "right"]
+    with pytest.raises(ValueError, match="unknown view"):
+        config.concept_view_names("top")
+
+
+def test_views_of_a_second_run_keep_the_others_and_redo_the_asked(work_dir, workflow_dir):
+    _views_ready(work_dir, workflow_dir)
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.render_views("knight", views="back,left", count=1, seed=1,
+                                   client=comfy.ComfyClient(fake.url),
+                                   workflow_dir=workflow_dir, work_dir=work_dir, log=lambda _: None)
+        concept_stage.pick_view("knight", {"back": 0}, work_dir=work_dir)
+        concept_stage.render_views("knight", views="left", count=2, seed=9,
+                                   client=comfy.ComfyClient(fake.url),
+                                   workflow_dir=workflow_dir, work_dir=work_dir, log=lambda _: None)
+    saved = json.loads(concept_stage.views_path("knight", work_dir).read_text())
+    assert list(saved["views"]) == ["back", "left"]
+    assert saved["views"]["back"]["pick"] == {**saved["views"]["back"]["pick"], "index": 0}, "the back's pick survives"
+    assert [c["seed"] for c in saved["views"]["left"]["candidates"]] == [9, 10]
+    assert sorted(p.name for p in concept_stage.views_dir("knight", work_dir).glob("*.png")) \
+        == ["back_00.png", "left_00.png", "left_01.png"]
+
+
+def test_pick_view_writes_into_the_base_and_the_curation_record(work_dir, workflow_dir):
+    from anim import curation
+
+    _views_ready(work_dir, workflow_dir)
+    pngs = {}
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.render_views("knight", views="all", count=2, seed=1,
+                                   client=comfy.ComfyClient(fake.url), workflow_dir=workflow_dir,
+                                   work_dir=work_dir, log=lambda _: None)
+    out = concept_stage.views_dir("knight", work_dir)
+    # Make each candidate distinct so the copy can be checked byte for byte.
+    for i, path in enumerate(sorted(out.glob("*.png"))):
+        img = Image.new("RGB", (16, 16), (i, i, i))
+        img.save(path)
+        pngs[path.name] = path.read_bytes()
+    assert concept_stage.parse_view_picks(["back=01", "left=0", "right=02"]) == {"back": 1, "left": 0, "right": 2}
+    with pytest.raises(ValueError, match="--pick-view takes"):
+        concept_stage.parse_view_picks(["top=1"])
+    with pytest.raises(ValueError, match="--pick-view takes"):
+        concept_stage.parse_view_picks(["back"])
+    result = concept_stage.pick_view("knight", {"back": 1, "right": 0}, work_dir=work_dir)
+    base_job = Job.open("knight_base", work_dir)
+    assert result["base_job"] == "knight_base" and set(result["views"]) == {"back", "right"}
+    assert 'id="back_01"' in Path(result["page"]).read_text(encoding="utf-8")
+    assert '<figure class="picked" id="back_01">' in Path(result["page"]).read_text(encoding="utf-8")
+    assert (base_job.render_dir / "view_back.png").read_bytes() == pngs["back_01.png"]
+    assert (base_job.render_dir / "view_right.png").read_bytes() == pngs["right_00.png"]
+    block = base_job.read_manifest()["concept"]
+    assert list(block["views"]) == ["back", "right"], "table order"
+    back = block["views"]["back"]
+    assert back["file"] == "view_back.png" and back["candidate"] == 1 and back["source"] == "back_01.png"
+    assert back["seed"] == 2 and back["yaw"] == 90 and back["provisional"] is False
+    assert len(back["sha256"]) == 64 and back["picked"]
+    assert json.loads(base_job.provenance_path.read_text())["concept"]["views"]["right"]["candidate"] == 0
+    saved = json.loads(concept_stage.views_path("knight", work_dir).read_text())
+    assert saved["views"]["back"]["pick"]["index"] == 1 and saved["views"]["left"]["pick"] is None
+    # The curation record: the views step under the base gate, accepted by the pick.
+    assert result["curation"] == {"back": "accepted", "right": "accepted"}
+    record = curation.read("knight", work_dir)
+    assert record["views"] == {"back": "accepted", "right": "accepted"}
+    assert record["gates"] == {"base": "accepted", "turnaround": "pending"}
+    # A provisional pick (made for a rerun) lands pending and says so.
+    result = concept_stage.pick_view("knight", {"left": 1}, provisional=True, work_dir=work_dir)
+    assert result["views"]["left"]["provisional"] is True and result["curation"]["left"] == "pending"
+    assert base_job.read_manifest()["concept"]["views"]["left"]["provisional"] is True
+    # The board shows the row with the file's URL and the state.
+    board = curation.board("knight", work_dir)
+    assert set(board["views"]) == {"back", "right", "left"}
+    assert board["views"]["back"]["state"] == "accepted" and board["views"]["back"]["provisional"] is False
+    assert board["views"]["left"]["state"] == "pending" and board["views"]["left"]["provisional"] is True
+    assert board["views"]["back"]["url"].startswith("/jobs/knight_base/frames/render/")
+    # Refusals: a candidate that is not there, a view that was not rendered.
+    with pytest.raises(ValueError, match="no candidate 07"):
+        concept_stage.pick_view("knight", {"back": 7}, work_dir=work_dir)
+    with pytest.raises(FileNotFoundError, match="no views yet"):
+        concept_stage.pick_view("orc", {"back": 0}, work_dir=work_dir)
+    # A new --pick clears the views: the files, the block, the curation step.
+    Image.new("RGB", (32, 32), (9, 9, 9)).save(Job.open("knight_concept", work_dir).candidates_dir / "00.png")
+    concept_stage.pick("knight", "00", work_dir=work_dir)
+    assert not list(base_job.render_dir.glob("view_*.png"))
+    assert base_job.read_manifest()["concept"]["views"] == {}
+    assert curation.read("knight", work_dir)["views"] == {}
+    with pytest.raises(ValueError, match="earlier base"):
+        concept_stage.pick_view("knight", {"back": 1}, work_dir=work_dir)
+
+
+def test_views_need_a_base_and_say_so(work_dir, workflow_dir):
+    with FakeComfy() as fake:
+        with pytest.raises(FileNotFoundError, match="no base job"):
+            concept_stage.render_views("knight", client=comfy.ComfyClient(fake.url),
+                                       workflow_dir=workflow_dir, work_dir=work_dir)
+    _views_ready(work_dir, workflow_dir)
+    with FakeComfy() as fake:
+        with pytest.raises(ValueError, match="--count"):
+            concept_stage.render_views("knight", count=0, client=comfy.ComfyClient(fake.url),
+                                       workflow_dir=workflow_dir, work_dir=work_dir)
+
+
 def test_the_cli_knows_the_stage():
     from anim.cli import build_parser
 
@@ -425,3 +637,13 @@ def test_the_cli_knows_the_stage():
     args = build_parser().parse_args(["concept", "--unit", "knight", "--prompt", "x",
                                       "--existing", "art.png", "--count", "6"])
     assert args.existing == "art.png" and args.count == 6
+    args = build_parser().parse_args(["concept", "--unit", "knight", "--views"])
+    assert args.views == "" and args.pick_view is None
+    args = build_parser().parse_args(["concept", "--unit", "knight", "--views", "all", "--count", "2"])
+    assert args.views == "all" and args.count == 2
+    args = build_parser().parse_args(["concept", "--unit", "knight", "--pick-view", "back=01",
+                                      "left=00", "--provisional"])
+    assert args.pick_view == ["back=01", "left=00"] and args.provisional is True
+    args = build_parser().parse_args(["concept", "--unit", "knight", "--pick", "01",
+                                      "--parts", "helm, cloak", "--avoid", "bare head"])
+    assert args.parts == "helm, cloak" and args.avoid == "bare head"

@@ -195,8 +195,9 @@ the same picture (the reflection of a profile IS the other profile), so the
 two are never combined - a direction says which way the figure faces, and
 `mirror` on top of one would say it twice.
 
-THE FACE ON THE FAR SIDE - the turnaround feature
--------------------------------------------------
+THE FACE ON THE FAR SIDE - the turnaround feature, tightened by the
+multi-view reference feature
+----------------------------------------------------------------------
 A rig has no detector, so every joint carried confidence 1.0 in every cell -
 nose and eyes included on the back view, which told the pose ControlNet
 there was a face on the back of the head (DEVLOG 2026-09-20, left open for
@@ -204,19 +205,23 @@ the turnaround). Now `clip_keypoints` asks `hidden_face_points` per frame:
 once the HEAD has turned past the profile away from the camera - the head's
 forward vector against the view's near axis, `fwd . near < -FACE_HIDE_TURN`,
 half a direction step (sin 22.5 deg) so a breathing head at the profile does
-not flicker - the nose and both eyes get confidence 0.0, and so does the ear
-on the far side (`lateral . near` past the same threshold). Confidence 0.0
-is how a filmed back view reads too: rtmlib reports what it cannot see below
-the threshold, and every consumer (the renderer, the picker, the part
-prompts) already treats such a joint as absent. The profile (s0, s180) and
-every front-facing cell draw exactly what they always did, byte for byte;
-s45 / s90 / s135 lose the face, and at s90 both ears stay - seen from behind,
-they are there. The alternative - a normal per point (nose forward, eyes a
-blend, ears lateral) against the near axis - is more honest geometry, but
-it hides the far eye and far ear at the exact profile, which every s0 job
-was rendered with and the ControlNet was trained on (DWPose keeps both on a
-profile shot); it is one threshold away in `hidden_face_points` if the gate
-wants it.
+not flicker - every face point (nose, both eyes, both ears) gets confidence
+0.0. Confidence 0.0 is how a filmed back view reads too: rtmlib reports what
+it cannot see below the threshold, and every consumer (the renderer, the
+picker, the part prompts) already treats such a joint as absent. The
+profile (s0, s180) and every front-facing cell (s225, s270, s315) draw
+exactly what they always did, byte for byte - a head whose forward vector
+has a component toward the camera, or lies in the near plane, is "front"
+for this rule; s45 / s90 / s135 lose the whole face. The turnaround feature
+(2026-09-21) kept the near ear on a turned-away head and both ears from
+straight behind; the first identity gate (2026-09-22) drew bare heads and
+faces on those cells, and an ear is a face landmark the pose ControlNet
+builds a face around, so the multi-view reference feature hides them too.
+The alternative - a normal per point (nose forward, eyes a blend, ears
+lateral) against the near axis - is more honest geometry, but it hides the
+far eye and far ear at the exact profile, which every s0 job was rendered
+with and the ControlNet was trained on (DWPose keeps both on a profile
+shot); it is one threshold away in `hidden_face_points` if the gate wants it.
 """
 
 from __future__ import annotations
@@ -1154,8 +1159,9 @@ def openpose_points(rig: Rig, world: np.ndarray, frame: RigFrame) -> np.ndarray:
 # before its face is hidden: sin(22.5 deg), half a direction step, so the
 # profile cells never flicker and the oblique-back cells always hide it.
 FACE_HIDE_TURN = math.sin(math.radians(22.5))
-# Which way each ear points, in units of the character's LEFT.
-_EAR_SIDE: dict[str, float] = {"left_ear": 1.0, "right_ear": -1.0}
+
+
+FACE_POINTS: tuple[str, ...] = ("nose", "right_eye", "left_eye", "right_ear", "left_ear")
 
 
 def hidden_face_points(rig: Rig, world: np.ndarray, frame: RigFrame,
@@ -1164,18 +1170,20 @@ def hidden_face_points(rig: Rig, world: np.ndarray, frame: RigFrame,
     OPENPOSE18 order (module docstring, THE FACE ON THE FAR SIDE).
 
     `near` is the view's unit vector toward the viewer (`Projection.near`).
-    Empty until the head faces away by more than `turn`; then the nose and
-    both eyes, plus whichever ear is on the far side by the same margin.
+    Empty while the head faces the camera or stands in profile (its forward
+    vector within `turn` of the near plane or toward the viewer); once it
+    has turned away by more than `turn`, EVERY face point - nose, both eyes
+    and both ears (the multi-view reference feature, 2026-09-22: the
+    turnaround feature hid the nose, the eyes and the far ear only, and the
+    near ear left on a turned-away head was still a face landmark for the
+    pose ControlNet to draw a face around; a head seen from behind gets no
+    face points at all now).
     """
-    _head, fwd, _up, lateral = head_axes(rig, world, frame)
+    _head, fwd, _up, _lateral = head_axes(rig, world, frame)
     near = np.asarray(near, dtype=float)
     if float(fwd @ near) >= -turn:
         return []
-    hidden = {"nose", "right_eye", "left_eye"}
-    for ear, side in _EAR_SIDE.items():
-        if side * float(lateral @ near) < -turn:
-            hidden.add(ear)
-    return [j for j in OPENPOSE18 if j in hidden]
+    return [j for j in OPENPOSE18 if j in FACE_POINTS]
 
 
 WORLD_UP = np.array([0.0, 1.0, 0.0])
