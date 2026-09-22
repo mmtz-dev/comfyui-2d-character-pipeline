@@ -32,6 +32,7 @@ stage order:
     pick -> post --input clip -> publish (the clip render feature)
   base is the standing-sprite variant of the same chain
   bakeoff runs one action through both in-between routes on both rigs -> one page
+  turnaround renders one idle still per direction from the base -> the identity gate page
   palette installs the project palette (Lospec slug or file) and unit sub-palettes
   curate accepts / rejects / regenerates a unit's cells and gates (the curation board)
   run chains extract..strip, then render..publish if the GPU is up
@@ -49,7 +50,7 @@ where things live (override with the env vars in anim/config.py):
   assets     game-02's published PNGs and sidecars
 
 the GPU:
-  only `render`, `clip`, `base`, `concept` and `bakeoff` touch it, over HTTP at $COMFYUI_URL
+  only `render`, `clip`, `base`, `concept`, `bakeoff` and `turnaround` touch it, over HTTP at $COMFYUI_URL
   (default http://host.docker.internal:8188 - ComfyUI runs on the OTHER Docker
   engine, so localhost would not reach it from inside this container)
 """

@@ -357,8 +357,14 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
     comfy.patch(workflow, "seed", seed=seed)
     comfy.patch(workflow, "output prefix",
                 filename_prefix=f"anim_pipeline/{job.name}/clip/frame")
+    # The prompt names the cell's view (the turnaround feature): s0 is the
+    # sentence every clip so far was rendered with; any other cell says which
+    # way the figure faces instead of "facing right".
+    direction_cell = str((manifest.get("motion_source") or {}).get("direction")
+                         or config.DEFAULT_DIRECTION)
     comfy.patch(workflow, "positive prompt",
-                text=prompt or config.clip_prompt(manifest.get("action") or ""))
+                text=prompt or config.clip_prompt(manifest.get("action") or "",
+                                                  direction_cell))
     if negative:
         comfy.patch(workflow, "negative prompt", text=negative)
     if steps is not None:
@@ -444,7 +450,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "the props as a hint and lets the reference own the "
                              "body)")
     parser.add_argument("--prompt", default=None,
-                        help="positive prompt (default: config.clip_prompt(action))")
+                        help="positive prompt (default: config.clip_prompt(action, "
+                             "direction) - the view phrase follows the job's cell)")
     parser.add_argument("--negative", default=None,
                         help="negative prompt (default: Wan's standard negative)")
     parser.add_argument("--steps", type=int, default=None, help="sampler steps (workflow default 20)")

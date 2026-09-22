@@ -4,6 +4,132 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-21 — the turnaround feature: eight idle stills, the identity gate, face points hidden on the far side
+
+**What.** [#275](http://192.168.1.158:8700/work_packages/275), the fourth feature of the sprite
+studio epic. `anim turnaround <unit> [--dirs s0,s45,…] [--elevation side|top] [--seed N]
+[--force] [--page-only]` renders, from the accepted base, one standing still per direction —
+the eight side facings for v1 — each as an ordinary `rig --yaw Y → clip → pick → post --input
+clip --parts` job named `<unit>_idle_<dir>` (s0 included, so the Board's idle row, the matrix and
+the export find them), writes **that direction's** `post/parts.json`, records seconds per stage,
+VRAM, seed and metrics per direction in `work/<unit>_turnaround.json`, and builds the gate page
+(`work/_turnaround/<unit>/index.html`, copied to
+<http://192.168.1.158:8090/sprite-studio/turnaround/>): the eight stills ×4 in compass order, the
+raw clip frame and the skeleton + depth control under each, the part table per direction, a
+turntable, the reference, and the **identity table** — numbers, no verdict. New:
+`anim/stages/turnaround.py`, `tests/test_turnaround.py` (16 cases), `GET /turnaround/{unit}`, a
+`control` frame set on `GET /jobs/{job}/frames`, `rigkit.hidden_face_points`,
+`config.clip_prompt(action, direction)` + the `TURNAROUND_*` block, and the Board shows the eight
+stills under the gates with the question and the accept button (`board.ts`: `turnaroundTiles`,
+`turnaroundText`; two vitest cases). The stage is base-gated and never waits for the turnaround
+gate — it makes the stills that gate is about. pytest: 559 → **587 passed**, 4 skipped; vitest:
+39 → **41 passed**. Two `test_parts_post.py` cases were pinned to a throwaway `assets_dir`: they
+had been reading the owner's *real* published `knight.json` sidecar (republished today at 09:53
+with the concept pick's palettes) and failing on the palette outside the fixture's — a
+test-isolation bug that surfaced on the mount, not a code change.
+
+**The route, as built — three decisions with their alternatives.**
+
+- *Five frames, not one.* Wan's latent takes 4 frames per slot, so the shortest clip is 4n+1: n=0
+  is a 1-frame video, legal but with nothing for the video model's temporal attention to denoise
+  against; n=1 (5 frames, `TURNAROUND_CLIP_FRAMES`) costs the same second and gives it a window.
+  `rig` samples frame 0 of the UAL's `Idle_Loop` five times at t=0 (`times=[0.0]*5`), so the
+  control video is one held pose and `clip` pads nothing — no change to `clip`. `Idle_Loop` over
+  `Sword_Idle` because it is the neutral stand the concept pick shows (the sheets are in
+  `work/_exp/ta_sheets/`); `Sword_Idle` is a combat crouch with the blade raised.
+- *The middle frame is the still, not the closest to the rig.* The five control frames are one
+  pose, so "closest to the rig pose" would mean running DWPose on five near-identical generated
+  frames per direction to pick among them — a model load for no information. The middle frame
+  (`TURNAROUND_STILL_INDEX = 2`) is the one farthest from both temporal edges: the first frame of
+  a Wan clip is encoded by the VAE on its own and leans hardest on the reference, the last is
+  where padding would sit. `pick` is run for real (so `picks.json` has every field the Board, the
+  export and `post` read) and then hand-set to `[2]`, the way the review page hand-sets one.
+- *Lock to the base, then record what each direction shows.* `post --parts` on an action job
+  locks every part to the base's palettes; the direction's `parts.json` is the colours each part
+  shows *after* that lock (a locked part: members of the base's palette; a part the base has no
+  palette for — the sword and shield, which SAM did not find on the front-view concept pick —
+  keeps its snapped colours and the file says `locked: false`). So a back-view clip in the matrix
+  can `--parts-from work/knight_idle_s90/post/parts.json` and lock the cloak to what the back
+  view showed rather than to a front view that never saw it. The alternative — extract per
+  direction with no lock — would let every facing drift its own way and leave nothing for the
+  gate to measure.
+
+**The face on the far side — decided, with the alternative.** The camera direction feature left
+the OpenPose face points at confidence 1.0 in every cell, nose included on the back view.
+`rigkit.hidden_face_points` now reads the *posed* head's forward vector against the view's near
+axis: once the head has turned past the profile away from the camera by more than half a
+direction step (`FACE_HIDE_TURN = sin 22.5°`, so a breathing head at s0 never flickers between
+frames), the nose and both eyes get confidence 0.0 (listed in the frame's `hidden`), and the ear
+on the far side by the same margin goes with them; from straight behind both ears stay. 0.0 is
+what a filmed back view reads as too, so the renderer, the picker and the part prompts already
+treat the point as absent — no second code path. s0 / s180 and every front cell are byte-for-byte
+what they were (tested on the Knight for eight cells); s45 / s90 / s135 lose the face. The
+alternative is a normal per point (nose forward, eyes a forward/lateral blend, ears lateral)
+against the near axis: more honest geometry, but it also hides the far eye and the far ear at the
+*exact* profile, which is what every published s0 job was rendered with and what DWPose keeps on
+a profile shot; it is one threshold away in the same function if the gate wants it.
+
+**The real run — the knight, eight side facings, seed 1625235789813781** (derived from the unit,
+`Idle_Loop` and the base render's sha256, so a new pick is a new seed), reference
+`work/knight_base/render/concept_pick.png` (the owner's concept pick 01 — `concept --pick` had
+already run today at 09:45), part lock to the base's own `parts.json` (helmet / arms / torso /
+legs; sword and shield have no palette there), matte `rembg`, ComfyUI 0.35.0 on the A5000:
+
+| dir | still (w×h px) | rig s | GPU s (service) | post s | total s | face hidden |
+|---|---|---|---|---|---|---|
+| s0 | 35×53 | 4.3 | 153.9 (Wan paging in from cold) | 26.4 (SAM + rembg loading) | 185.2 | — |
+| s45 | 39×53 | 4.2 | 9.0 | 2.2 | 16.7 | nose, eyes, left ear |
+| s90 | 38×53 | 4.4 | 8.7 | 2.4 | 17.0 | nose, eyes |
+| s135 | 32×53 | 4.2 | 8.9 | 2.7 | 17.1 | nose, eyes, right ear |
+| s180 | 35×53 | 4.3 | 9.0 | 2.1 | 16.7 | — |
+| s225 | 30×53 | 4.1 | 9.1 | 2.3 | 16.6 | — |
+| s270 | 32×53 | 4.2 | 9.2 | 2.1 | 16.6 | — |
+| s315 | 27×53 | 4.4 | 9.2 | 2.0 | 16.7 | — |
+
+VRAM after every GPU stage: 17.6 GB (Wan resident). Warm, a facing is **~17 s wall, ~9 s of
+GPU** — well inside the minute; nothing came near the 300 s budget. The identity table:
+
+| part | s0 | s45 | s90 | s135 | s180 | s225 | s270 | s315 | spread | found | drift |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| sword | 60 | 35 | 73 | 37 | 34 | 44 | 61 | 17 | 56 | 8/8 | 0 (free) |
+| shield | 99 | not found | 15 | 55 | 2 | 44 | 15 | 1 | 98 | 7/8 | 0 (free) |
+| helmet | 74 | 81 | 62 | not found | 45 | 72 | 33 | 42 | 48 | 7/8 | 290 |
+| arms | 50 | 121 | 93 | 47 | 169 | 123 | 119 | 84 | 122 | 8/8 | 522 |
+| torso | 0 | 35 | 175 | 187 | 25 | 15 | 39 | 109 | 187 | 8/8 | 364 |
+| legs | 363 | 119 | 479 | 325 | 442 | 210 | 487 | 237 | 368 | 8/8 | 1043 |
+
+Silhouette: height 53 in every direction (the scale ladder holds), width 27–39 (spread 12),
+opaque pixels 721–1019, colours 37–59.
+
+**What I saw, per direction, honestly.** The scale, the dark plate with gold trim, the cloak
+and a sword in the right hand hold in all eight; the **helmet does not**. s0 and s270 are the
+knight: closed great helm, dark armour, the blade forward. s45, s135, s180, s225 and s315 have a
+**bare human head** — black hair from behind at s45 / s135, a face with glasses at s180, an
+orange-haired man at s225, a bald face at s315 — on the knight's body; the helmet row still
+says "found" there because SAM's helmet prompt sits on the head and locks whatever is on it to
+the helmet's greys (drift 290 px is that lock at work). s90 is the knight from behind with the
+helm, **plus a second, white-shirted figure half behind it** — the one still that is not one
+figure. So the risk named in `sprite-studio.md` §5 is real and it is not the back view alone:
+the reference's helmet survives the front and the profile the reference was rendered from, and
+is dropped whenever the head is turned, and where the face points are drawn the model paints a
+face on it. Two readings for the owner: the depth channel's bare-headed Quaternius mannequin
+(no helmet mesh) outweighs the reference at gain 0.35 on the turned heads — the KayKit chibi's
+big helmet in the bake-off had the opposite problem; and the 768×768 concept pick letterboxed
+into the 512×768 cell arrives at two thirds of its size. The sword reads as a plain stick
+(orange at s0, red at s45) rather than a blade — the prop outline is followed, the reference's
+sword is not. The gate stays **pending**: the page is at
+<http://192.168.1.158:8090/sprite-studio/turnaround/>, the Board shows the same eight stills
+under the gates, and `anim curate knight --accept-gate turnaround` (or the button) is the
+owner's call. Levers that exist today without new weights, none pulled: `--depth-gain` lower
+or `--control pose` for the turned heads; a helmet outline as a prop on the rig's head bone
+(the skeleton props feature has the machinery); a per-direction `--seed` re-roll from the Board;
+and the design doc's named fallback, a per-character LoRA.
+
+**Left to the owner.** The gate. And, after any `concept --pick`, the one line:
+`anim turnaround knight --force`.
+
+---
+
 ## 2026-09-21 — the spritesheet export feature: sheets + atlas + SpriteFrames, publish becomes the game-02 adapter
 
 **What.** [#283](http://192.168.1.158:8700/work_packages/283), the export decision from

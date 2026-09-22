@@ -162,6 +162,41 @@ export interface CurationUnit {
   record: boolean;
 }
 
+// --- the turnaround feature -------------------------------------------------
+export type TurnaroundStatus = "done" | "failed" | "running" | "not run";
+
+export interface TurnaroundDirection {
+  direction: string;
+  job: string;
+  status: TurnaroundStatus;
+  error: string | null;
+  seconds: number | null;
+  gpu_seconds: number | null;
+  /** `/jobs/{job}/frames/post/0.png` once the direction is done. */
+  still: string | null;
+  raw: string | null;
+  control: string | null;
+  skeleton: string | null;
+  depth: string | null;
+  hidden_face: string[] | null;
+  silhouette: { width: number; height: number; pixels: number; colours: number } | null;
+}
+
+/** `GET /turnaround/{unit}`: what `anim turnaround` recorded, per direction. */
+export interface TurnaroundState {
+  unit: string;
+  elevation: string;
+  seed: number | null;
+  question: string;
+  updated: string;
+  plan: string[];
+  directions: Record<string, TurnaroundDirection>;
+  done: number;
+  of: number;
+  page: string;
+  identity: { directions: string[]; done: string[]; height: { spread: number } | null; width: { spread: number } | null } & Record<string, unknown>;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string, public body: unknown = null) {
     super(message);
@@ -269,6 +304,16 @@ export const putCell = (
   direction: string,
   body: { status?: CellStatus; frames?: Record<string, FrameMark | null> },
 ) => sendJSON<BoardCell>("PUT", cellPath(unit, action, direction), body);
+
+/** The unit's turnaround, or null when none has run yet (the API's 404). */
+export async function getTurnaround(unit: string): Promise<TurnaroundState | null> {
+  try {
+    return await getJSON<TurnaroundState>(`/turnaround/${encodeURIComponent(unit)}`);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) return null;
+    throw error;
+  }
+}
 
 export const putGate = (unit: string, gate: string, state: GateState) =>
   sendJSON<BoardState>("PUT", `/curation/${encodeURIComponent(unit)}/gates/${encodeURIComponent(gate)}`, { state });

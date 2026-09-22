@@ -4,12 +4,16 @@
 // x2 nearest-neighbour with a mark per frame and accept / reject / regenerate
 // for the cell. Every write goes to the API and the whole board is fetched
 // again afterwards; board.ts folds the click in first so the page answers at
-// once. Plain DOM like panel.ts, for the same reason.
+// once. Plain DOM like panel.ts, for the same reason. Under the gates sits
+// the turnaround (the turnaround feature): the eight idle stills in compass
+// order and the one question, so accepting the `turnaround` gate is done
+// looking at the thing it is about.
 
 import {
   ApiError,
   getBoard,
   getSettings,
+  getTurnaround,
   listCuration,
   putCell,
   putGate,
@@ -20,8 +24,9 @@ import {
   type CurationMode,
   type RunRecord,
   type StripFrame,
+  type TurnaroundState,
 } from "./api";
-import { MODES, MODE_HELP, cycleMark, gatesText, gridOf, reduceBoard, tally, waitingText } from "./board";
+import { MODES, MODE_HELP, cycleMark, gatesText, gridOf, reduceBoard, tally, turnaroundText, turnaroundTiles, waitingText } from "./board";
 
 const SCALE = 2;
 
@@ -59,6 +64,7 @@ export interface BoardHost {
 
 export class BoardView {
   private board: BoardState | null = null;
+  private turnaround: TurnaroundState | null = null;
   private units: string[] = [];
 
   readonly root = el("div", { class: "board" });
@@ -66,6 +72,7 @@ export class BoardView {
   private readonly modeSelect = el("select", { class: "studio-select small", title: "curation mode - a project setting (PUT /settings)" },
     ...MODES.map((mode) => el("option", { value: mode, title: MODE_HELP[mode] }, mode)));
   private readonly gatesLine = el("div", { class: "board-gates" });
+  private readonly turnaroundBox = el("div", { class: "board-turnaround" });
   private readonly waitingLine = el("div", { class: "studio-status" });
   private readonly statusLine = el("div", { class: "studio-status" });
   private readonly grid = el("div", { class: "board-grid" });
@@ -80,6 +87,7 @@ export class BoardView {
         el("button", { type: "button", class: "studio-button", title: "GET /curation again", onclick: () => void this.refreshUnits() }, "↻"),
         this.modeSelect),
       this.gatesLine,
+      this.turnaroundBox,
       this.waitingLine,
       this.statusLine,
       this.grid,
@@ -124,11 +132,14 @@ export class BoardView {
     const unit = this.unitSelect.value;
     if (!unit) {
       this.board = null;
+      this.turnaround = null;
       this.render();
       return;
     }
     try {
-      this.apply(await getBoard(unit));
+      const [board, turnaround] = await Promise.all([getBoard(unit), getTurnaround(unit)]);
+      this.turnaround = turnaround;
+      this.apply(board);
     } catch (error) {
       this.say(`could not read the board - ${errorText(error)}`, "bad");
     }
@@ -266,6 +277,7 @@ export class BoardView {
     if (!board.exists) {
       this.gatesLine.append(el("span", { class: "board-legacy", title: `${board.path} is written on the first edit` }, "legacy - no record, nothing gated"));
     }
+    this.renderTurnaround(board);
     const waiting = waitingText(board.waiting);
     this.waitingLine.textContent = waiting;
     this.waitingLine.className = `studio-status ${board.waiting.length ? "warn" : "ok"}`;
@@ -286,6 +298,41 @@ export class BoardView {
     this.grid.replaceChildren(table);
     const t = tally(board);
     this.tallyLine.textContent = `${t.cells} cells: ${t.accepted} accepted, ${t.rejected} rejected, ${t.pending} pending · ${t.marked} frame marks · ${board.path}`;
+  }
+
+  /** The eight idle stills the `turnaround` gate is about, in compass order,
+   * with the question and the accept button - the turnaround feature. */
+  private renderTurnaround(board: BoardState): void {
+    const state = this.turnaround;
+    const text = turnaroundText(state);
+    if (!state) {
+      this.turnaroundBox.replaceChildren(el("div", { class: "studio-help", title: "anim turnaround <unit>, or POST /jobs {stage: turnaround}" }, `turnaround: ${text}`));
+      return;
+    }
+    const gate = board.gates.turnaround ?? "pending";
+    const ring = el("div", { class: "board-ring" });
+    for (const tile of turnaroundTiles(state)) {
+      const row = state.directions[tile.direction];
+      ring.append(el("figure", { class: `board-tile ${tile.status}`, title: `${tile.job}${row?.silhouette ? ` · ${row.silhouette.width}×${row.silhouette.height} px` : ""}${row?.hidden_face?.length ? ` · face hidden: ${row.hidden_face.join(", ")}` : ""}${tile.error ? ` · ${tile.error}` : ""}` },
+        tile.still
+          ? el("img", { src: `${tile.still}?t=${state.updated}`, alt: `${tile.direction} still`, width: String(64 * SCALE), height: String(64 * SCALE), loading: "lazy" })
+          : el("div", { class: "board-tile-miss" }, tile.status),
+        el("figcaption", {}, tile.direction),
+      ));
+    }
+    this.turnaroundBox.replaceChildren(
+      el("div", { class: "board-turnaround-head" },
+        el("span", { class: "board-turnaround-q" }, state.question),
+        el("span", { class: "studio-help" }, text),
+        el("button", {
+          type: "button",
+          class: `studio-button board-gate ${gate}`,
+          title: gate === "accepted" ? "the turnaround is accepted - click to reopen it" : "accept the eight stills as one character: opens every direction outside s0",
+          disabled: board.mode === "end",
+          onclick: () => void this.toggleGate("turnaround"),
+        }, gate === "accepted" ? "turnaround accepted - reopen" : "accept the turnaround")),
+      ring,
+    );
   }
 
   private emptyCell(verb: string, direction: string): HTMLElement {

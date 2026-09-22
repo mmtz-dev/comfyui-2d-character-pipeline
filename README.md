@@ -119,6 +119,7 @@ docker compose run --rm anim export knight              # sheets + atlas + Sprit
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
 | `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>` and `--existing [png]` | `work/<slug>_concept/candidates/NN.png` + `job.json`; `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
 | `bakeoff --unit <slug> --action attack` | the two rigs' attack clips | `work/bakeoff_<slug>_attack/{bakeoff.json,page/,report.md}` + one job per cell `work/bakeoff_<slug>_attack_<cell>/` | **a GPU stage — the frame route bake-off feature.** One action through both candidate routes for the in-between frames on both candidate rigs — four cells `V-kaykit`, `V-quaternius`, `K-kaykit`, `K-quaternius` — as ordinary `rig → clip → pick → post --parts` (V) and `rig → pick → strip → render → post --parts` (K) jobs called as a library, one seed, then one page with an animated 12 fps preview per row and one metric table. Resumable per cell (`--cells`, `--force`, `--page-only`); seconds per stage and VRAM per cell in `bakeoff.json`. The owner rules on the page; the stage picks nothing. See "The frame route bake-off" below. |
+| `turnaround <unit>` | the accepted base + the rig's idle clip | `work/<unit>_idle_<dir>/` per direction (`post/<unit>_idle_0.png`, `post/parts.json`), `work/<unit>_turnaround.json`, `work/_turnaround/<unit>/index.html` | **a GPU stage — the turnaround feature.** One idle still per direction from the accepted base — the eight side facings `s0 … s315` for v1 (`--elevation top` is accepted for #285) — each an ordinary `rig --yaw Y → clip → pick → post --input clip --parts` job called as a library: frame 0 of the Quaternius `Idle_Loop` held for 5 frames (Wan's shortest 4n+1 clip with a temporal window), skeleton over depth at gain 0.35, the middle frame is the still, every part locked to the base and the colours it shows written as **that direction's** `parts.json`. Resumable per direction (`--dirs`, `--force`, `--page-only`), one seed, seconds and VRAM per direction in the record, a failed direction recorded and skipped. The page asks the one question — *one character in 8 facings?* — with the identity numbers and no verdict; accepting it is the curation `turnaround` gate. `anim turnaround <unit> --force` after `concept --pick`. See "The turnaround" below. |
 | `palette --lospec <slug>` \| `--file <path>` | a Lospec slug (`https://lospec.com/palette-list/<slug>.json`) or a `.hex` / `.gpl` / one-row `.png` | `palette.gpl` + `.hex` + `.png` + `.json` beside `ANIM_PALETTE` | **the palette feature.** Installs the project palette — the `-remap` source of truth `post` reads. `--unit <slug> --colours '#…,#…'` or `--from-sprite <png>` writes the unit's sub-palette to `palette_units/<slug>.json`; `--list` prints what is installed; `--into <path>` targets another `.gpl`. Same input, same bytes. See "The project palette" below. |
 | `curate <unit>` | `work/<unit>_curation.json` + the unit's jobs | the same file | **the curation board feature**, from the shell. `--accept-cell attack/s0`, `--reject-cell`, `--pending-cell` (reopen a locked cell), `--accept-frame attack/s0/3`, `--reject-frame` (also drops the frame from that job's `picks.json`, byte for byte as the review page does), `--clear-frame`, `--accept-gate base\|turnaround`, `--pending-gate`, `--regenerate attack/s0 [--seed N]` (records the seed and prints the `anim clip … --seed N` line; never the GPU), `--mode gates\|every\|end` (the project setting). With no flags, prints the board and what is waiting on you; with no unit, the units. See "The curation board" below. |
 | `run <clip>` | a filmed clip | all of the above | stops politely before `render` when the GPU is off. |
@@ -381,7 +382,7 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 |---|---|
 | `GET /jobs` | every directory under `work/` with a `job.json`: name, unit, action, direction cell, stages done (derived from the files, not a status field), updated, newest first |
 | `GET /jobs/{job}` | `job.json` as written, plus the stage list, the current picks and how many PNGs each set has |
-| `GET /jobs/{job}/frames` | every PNG set — `frames`, `pose`, `depth`, `clip`, `strip`, `render`, `post`, `candidates` — each entry with its URL |
+| `GET /jobs/{job}/frames` | every PNG set — `frames`, `pose`, `depth`, `clip`, `control` (what `clip` sent as the control video), `strip`, `render`, `post`, `candidates` — each entry with its URL |
 | `GET /jobs/{job}/frames/{set}/{n}.png` | the PNG; `n` is the index in that listing (0-based, the same numbers `picks.json` uses), never a filename from the URL. The `post` set is the `<stem>_<n>.png` frames in the order of `n` — `palette.png` and the `_hd` / `_labels` diagnostics of `post --parts` are not frames — so post frame `k` is pick `k` |
 | `PUT /jobs/{job}/frames/{set}/{n}.png` | the editor's save: the body is the PNG (`Content-Type: image/png`), overwriting that frame **in place** (`write_bytes_in_place`, the inode rule). Same size as the file it replaces or `409`; not a PNG `415`; no such frame `404` — it never creates one. Alpha is rounded to the contract before writing (`>= 128` opaque, else the pixel becomes `(0,0,0,0)`, `imaging.binarise_alpha`); the reply says how many pixels needed it |
 | `GET /jobs/{job}/picks` | the review state (`ReviewApp.state()`) |
@@ -400,6 +401,7 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `POST /curation/{unit}/cells/{action}/{dir}/regenerate` `[{"seed": N}]` | record a new seed for the cell and run its GPU stage (`clip` on the clip route, else `render`) through the run manager → `202` + the cell with its run. A busy card is the `409`, a pending gate the `423`; a refused request records nothing |
 | `PUT /curation/{unit}/gates/{gate}` `{"state": "accepted" \| "pending"}` | `base` or `turnaround`; answers the board |
 | `GET /export/{unit}` | the last `anim export` of a unit under `work/_export/<unit>/`: `created`, `commit`, `frame_size`, `sheet_mode`, `sheets`, `animations` (frames, loop, fps, sheet, job), `warnings`, `files` with sizes; `404` with the `POST /jobs` line when there is none (the spritesheet export feature) |
+| `GET /turnaround/{unit}` | the last `anim turnaround` of a unit: seed, rig, per direction its status, seconds, `hidden_face`, silhouette and part numbers and the URLs of the still (`/jobs/<job>/frames/post/0.png`), the raw clip frame, the control frame (a new `control` frame set), the skeleton and the depth; the identity table; `404` with the `POST /jobs` line when there is none. The Board reads it to show the eight stills as the thing the `turnaround` gate accepts (the turnaround feature) |
 | `GET /health` | `ok`, the work dir, the active GPU run; `?probe=1` also asks ComfyUI (3 s timeout) |
 | `GET /` | the web pixel editor (`web/dist/`, see below), else a page listing the jobs and runs |
 | `GET /jobs/{job}/review` | the click-to-pick page |
@@ -551,17 +553,19 @@ the board, `PUT /settings`, or `anim curate --mode …` (sprite-studio.md §2 "C
 
 | Mode | What waits for what |
 |---|---|
-| `gates` (default) | `clip`, `render`, `bakeoff` and `run` for a unit wait until its **base** gate is accepted; a cell outside `s0` (and the action matrix, when it lands) also waits for the **turnaround** gate. Review the cells in a batch |
+| `gates` (default) | `clip`, `render`, `bakeoff`, `turnaround` and `run` for a unit wait until its **base** gate is accepted; a cell outside `s0` (and the action matrix, when it lands) also waits for the **turnaround** gate — `turnaround` itself never does, it makes the stills that gate is about. Review the cells in a batch |
 | `every` | the same gates, and a cell's GPU stage waits until **every earlier cell** that has a job is accepted — direction-major: every action of `s0`, then `s45`, … so the side view game-02 ships is finished before a second direction starts. The alternative, action-major (idle in every direction first), matches how a turnaround is drawn but would leave `s0` half-done while the top-down pitch is a later milestone |
 | `end` | nothing blocks; the board is a batch review at the end |
 
 CPU stages (`rig`, `pick`, `strip`, `post`) never wait: they make the frames there are to
 judge. A blocked `POST /jobs` is **`423 Locked`** with the reason (the panel shows it); the
-CLI prints the same sentence and exits 2, and `--force` on `clip`, `render`, `bakeoff` or
-`run` runs anyway. **`anim concept --pick` accepts the base gate** (choosing the base *is* the
-gate) and sets the turnaround back to pending, since the turnaround is drawn from the base;
-the turnaround feature will accept its own gate, and until then `anim curate <unit>
---accept-gate turnaround` or the board's button does.
+CLI prints the same sentence and exits 2, and `--force` on `clip`, `render`, `bakeoff`,
+`turnaround` or `run` runs anyway. **`anim concept --pick` accepts the base gate** (choosing
+the base *is* the gate) and sets the turnaround back to pending, since the turnaround is
+drawn from the base; `anim turnaround <unit> --force` re-renders the eight stills from the
+new pick, and the Board shows them under the gates (the turnaround feature) so the
+`turnaround` gate is accepted looking at the thing it is about — `anim curate <unit>
+--accept-gate turnaround` is the same write from the shell.
 
 **Legacy units are not gated.** A unit with no `work/<unit>_curation.json` — the knight and
 every job that predates the board — answers "gates accepted" and nothing blocks, so `anim
@@ -610,6 +614,62 @@ mkdir -p ~/.cache/claude/visuals/sprite-studio/bake-off && \
   `report.md` is the same table in markdown plus the four questions the owner has to answer; the
   committed copy is `docs/bake-off-2026-09-20.md`. Page:
   <http://192.168.1.158:8090/sprite-studio/bake-off/>.
+
+### The turnaround — the turnaround feature
+
+The identity gate ([#275](http://192.168.1.158:8700/work_packages/275)): before the action
+matrix spends eighty clips, the unit has to read as **one character in eight facings**. From
+the accepted base, one standing still per direction, each with its own part palettes, on one
+page with the numbers and no verdict:
+
+```bash
+docker compose run --rm anim turnaround knight                    # the eight side facings
+docker compose run --rm anim turnaround knight --dirs s90,s270    # a subset
+docker compose run --rm anim turnaround knight --force            # every facing again (after `concept --pick`)
+docker compose run --rm anim turnaround knight --page-only        # rebuild the page; no GPU
+mkdir -p ~/.cache/claude/visuals/sprite-studio/turnaround && \
+  cp -r work/_turnaround/knight/. ~/.cache/claude/visuals/sprite-studio/turnaround/
+docker compose run --rm anim curate knight --accept-gate turnaround   # the ruling (or the Board)
+```
+
+- **One direction is route V, as the bake-off ruled it.** `rig` samples frame 0 of the Quaternius
+  UAL's `Idle_Loop` (the neutral stand — the pose the concept pick shows; `Sword_Idle` is a combat
+  crouch) at that yaw into the 512×768 clip cell, **held for 5 frames**: Wan's latent takes 4
+  frames per slot, so 5 (n = 1) is the shortest clip that still gives the video model a temporal
+  window; a 1-frame video is legal but leaves it nothing to denoise against. `clip` renders it
+  with the base as the reference, skeleton over full-body depth at gain 0.35 (`config.TURNAROUND_*`),
+  and the prompt now names the view — `config.clip_prompt(action, direction)`; s0's sentence is
+  unchanged, s90 says "back view, seen from directly behind". The still is the **middle**
+  generated frame (`pick` hand-set to 2): the first frame of a Wan clip is the one the VAE
+  encodes alone and leans on the reference most, the last is where padding would sit. Then
+  `post --input clip --parts` locks every part to the base's palettes and writes the colours each
+  part shows after the lock as `work/<unit>_idle_<dir>/post/parts.json` — the file
+  `post --parts-from` reads, so a back-view clip later locks to what the back-view still showed.
+- **The face is hidden on the far side.** A rig has no detector, so every joint carried
+  confidence 1.0 in every cell — nose and eyes included on the back view. `rigkit.hidden_face_points`
+  now drops the nose and both eyes (confidence 0.0, the frame's `hidden` list) once the *posed
+  head* has turned past the profile away from the camera by more than half a direction step
+  (`FACE_HIDE_TURN`, sin 22.5°, so a breathing head at s0 never flickers), and the ear on the far
+  side with them; from straight behind both ears stay. s0 / s180 and every front cell are
+  byte-for-byte what they were; s45 / s90 / s135 lose the face. The stricter alternative — a
+  normal per point against the camera — would also drop the far eye and ear at the exact
+  profile every published job was rendered with; it is one threshold away.
+- **The page** (`work/_turnaround/<unit>/index.html`, copied to
+  <http://192.168.1.158:8090/sprite-studio/turnaround/>): the eight stills ×4 in compass order with
+  the raw clip frame and the skeleton + depth control under each, the part table per direction
+  (pixels, colours, drift, *not found*), seconds and VRAM, the reference, a 4 fps turntable of the
+  eight, and **the identity table** — per part the pixel count in every direction, its spread,
+  the found count and the drift the lock moved; per direction the silhouette's height and width.
+  The question is on the page; the answer is the owner's.
+- **Resumable, recorded, gated.** `work/<unit>_turnaround.json` holds the plan, the seed (one for
+  all eight — derived from the unit, the clip and the base render's sha256, so a new base is a new
+  seed), and per direction its status, seconds per stage, VRAM, prompt, hidden face points and
+  metrics. A direction with its still, report and parts.json is skipped; a failed one (a job past
+  `--timeout`, 300 s by default) is recorded and the run goes on. The stage waits for the **base**
+  gate and never for the turnaround gate — it is the stage that makes the stills that gate is
+  about. Jobs are `<unit>_idle_<dir>` for every direction, s0 included, so the Board's idle row,
+  the matrix and the export find them. **Top-down**: `--elevation top` plans `t0 … t315` through
+  the same code and is not run for v1 (the top-down pitch feature, #285).
 
 ## Rig input mode — the rig motion input feature
 
@@ -728,8 +788,9 @@ What `anim rig` writes is byte-for-byte the layout `extract` + `pose` leave behi
   `elevation`, next to `mirror` and the rig's true `forward`. `--mirror` is the s0 profile
   reflected and predates the table; `--yaw 180` is the same picture, so the two are refused
   together. Only a rig can be turned: `anim base` without `--rig` refuses a direction. The
-  OpenPose face points are drawn in every cell, nose included on the back view — whether the
-  pose ControlNet wants them hidden there is a turnaround-gate question, not decided here.
+  OpenPose face points are hidden once the head faces away from the camera (the turnaround
+  feature, "The turnaround" above): s45 / s90 / s135 draw no nose or eyes and no far ear; the
+  profile and the front cells draw what they always did.
 
 **The manual test for the camera direction feature (#288) is one command.**
 `docker compose run --rm anim-pipeline python -m anim.tools.direction_sheet knight Idle`
@@ -805,6 +866,7 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | `ANIM_TIMING` | `/assets_src/timing.json` | the project's phase-template overrides (the keyframe phase feature); absent means the defaults |
 | `ANIM_LOOP_TOL` | `0.12` | a loop's last pick must land within this of its first, in torso lengths |
 | `ANIM_LOOP_PIXEL_TOL` | `0.08` | the same check as a mean pixel difference (0–1) when a pose is missing |
+| `ANIM_TURNAROUND_TIMEOUT` | `300` | seconds one direction's GPU job may take before the turnaround records it as failed and moves on |
 | `ANIM_API_PORT` | `8720` | the pipeline API's LAN port; keep in step with the published port in `compose.yml` |
 | `ANIM_API_BIND` | `0.0.0.0` | the Mac has to reach it |
 | `ANIM_API_CPU_SLOTS` | `2` | CPU stages the API runs at once; GPU stages are always one at a time |
@@ -903,7 +965,8 @@ documented; they are the starting point for a later full-cycle animation tier.
 | `gpu/workflows/base_sprite.json` | Generates a unit's standing sprite from a canned skeleton when no reference sprite exists yet. |
 | `gpu/workflows/clip_render.json` | The clip render feature: Wan 2.2 Fun-Control 5B, reference image + control video → one PNG per frame (`SaveImage` on the decoded batch instead of the template's `SaveVideo`). Translated from the official `video_wan2_2_5B_fun_control` template. |
 | `gpu/workflows/NOTES.md` | Which node names and input keys were verified against source, and what is still `TODO-verify`. |
-| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish export base concept bakeoff palette run`. |
+| `anim/` + `Dockerfile` + `compose.yml` | The CPU pipeline on Docker Desktop: `anim extract pose rig pick review strip render post publish export base concept bakeoff turnaround palette curate run`. |
+| `anim/stages/turnaround.py` | **The turnaround feature** — one idle still per direction from the accepted base, each with its own `parts.json`, one seed, resumable; the identity gate page with the numbers and no verdict. |
 | `anim/stages/export.py` | **The spritesheet export feature** — a unit's accepted frames packed into sheets + `atlas.json` + a Godot `SpriteFrames` `.tres` (read back and checked before the stage returns); `publish` is its game-02 adapter. |
 | `anim/palettekit.py` + `anim/stages/palette.py` | **The palette feature** — the project palette from a Lospec slug or a `.hex` / `.gpl` file, the per-unit sub-palettes in `palette_units/`, and the one snap in `post`. |
 | `anim/api/` | **The pipeline API feature** — FastAPI over `work/` on `:8720` (`anim-api` in `compose.yml`): jobs, frames, picks, runs with SSE progress, project settings; serves the review page and, once built, the editor. Deps in `requirements-api.txt`, their own Docker layer. |

@@ -494,6 +494,8 @@ def run_stage(args: argparse.Namespace) -> int:
               f"{result['gates']['turnaround']}) - work/{args.slug}_curation.json")
         print(f"  next: anim post {result['base_job']} [--parts], then "
               f"anim publish {result['base_job']}")
+        print(f"  the turnaround is drawn from the base: anim turnaround {args.slug} --force "
+              f"re-renders all eight facings from this pick")
         return 0
     if not args.prompt:
         raise SystemExit("anim concept: --prompt is required (or --pick to choose)")

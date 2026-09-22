@@ -19,33 +19,9 @@ import pytest
 from anim import config, rigkit
 from anim.tools import direction_sheet
 from anim.util import sha256_file, write_json_in_place
-from test_rigkit import write_synthetic_glb
+from test_rigkit import TWO_BONE_MAP, write_synthetic_glb
 
 CELL = (64, 80)
-
-# Every OpenPose body joint onto the rig's only two bones, so
-# `rigkit.reference_frame` / `clip_keypoints` have something to resolve. The
-# face offsets are copied from `rigkit.KAYKIT` - the numbers don't matter here,
-# only that every face joint has one.
-TWO_BONE_MAP = rigkit.JointMap(
-    name="two-bone-test",
-    joints={
-        "neck": "foot",
-        "right_shoulder": "foot", "right_elbow": "foot", "right_wrist": "foot",
-        "left_shoulder": "foot", "left_elbow": "foot", "left_wrist": "foot",
-        "right_hip": "foot", "right_knee": "foot", "right_ankle": "foot",
-        "left_hip": "foot", "left_knee": "foot", "left_ankle": "foot",
-    },
-    head="toes",
-    forward_hint=(("foot", "toes"),),
-    face={
-        "nose": (0.48, 0.42, 0.0),
-        "right_eye": (0.58, 0.34, -0.16), "left_eye": (0.58, 0.34, 0.16),
-        "right_ear": (0.55, 0.02, -0.40), "left_ear": (0.55, 0.02, 0.40),
-    },
-    detect=("foot", "toes"),
-    note="test fixture only - not a real rig family, never added to RIGS",
-)
 
 
 @pytest.fixture

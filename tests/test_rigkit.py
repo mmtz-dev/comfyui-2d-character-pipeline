@@ -92,6 +92,32 @@ def write_synthetic_glb(path: Path, *, toes_z: float = 1.0) -> Path:
     return path
 
 
+# Every OpenPose body joint onto the rig's only two bones, so
+# `rigkit.reference_frame` / `clip_keypoints` have something to resolve. The
+# face offsets are copied from `rigkit.KAYKIT` - the numbers don't matter here,
+# only that every face joint has one. Shared with test_direction_sheet.py and
+# test_turnaround.py.
+TWO_BONE_MAP = rigkit.JointMap(
+    name="two-bone-test",
+    joints={
+        "neck": "foot",
+        "right_shoulder": "foot", "right_elbow": "foot", "right_wrist": "foot",
+        "left_shoulder": "foot", "left_elbow": "foot", "left_wrist": "foot",
+        "right_hip": "foot", "right_knee": "foot", "right_ankle": "foot",
+        "left_hip": "foot", "left_knee": "foot", "left_ankle": "foot",
+    },
+    head="toes",
+    forward_hint=(("foot", "toes"),),
+    face={
+        "nose": (0.48, 0.42, 0.0),
+        "right_eye": (0.58, 0.34, -0.16), "left_eye": (0.58, 0.34, 0.16),
+        "right_ear": (0.55, 0.02, -0.40), "left_ear": (0.55, 0.02, 0.40),
+    },
+    detect=("foot", "toes"),
+    note="test fixture only - not a real rig family, never added to RIGS",
+)
+
+
 @pytest.fixture
 def synthetic(tmp_path: Path) -> rigkit.Rig:
     return rigkit.load_rig(write_synthetic_glb(tmp_path / "two_bones.glb"))
@@ -873,3 +899,71 @@ def test_the_shield_is_the_far_hand_in_profile_and_the_near_hand_turned_round(ua
             assert l > r
         else:
             assert r == pytest.approx(l, abs=0.02), "facing the viewer, both hands level"
+
+
+# ---------------------------------------------------------------------------
+# The face on the far side (the turnaround feature)
+# ---------------------------------------------------------------------------
+FACE = ("nose", "right_eye", "left_eye", "right_ear", "left_ear")
+
+
+def _scores(kp: dict, joints: tuple[str, ...] = FACE) -> dict[str, float]:
+    entry = kp["frames"][0]
+    return {j: entry["scores"][kp["names"].index(j)] for j in joints}
+
+
+def test_the_two_bone_head_hides_its_face_as_it_turns_away(synthetic):
+    """The Turn clip swings the head 90 degrees about +Y over one second: at
+    t=0 it faces +z (the profile, viewer on its right), at t=0.5 it has
+    turned 45 degrees away, at t=1 it faces straight away. The cell is s0 in
+    every case - the HEAD moved, and the rule reads the posed head."""
+    frame = rigkit.reference_frame(synthetic, TWO_BONE_MAP)
+    proj = rigkit.Projection.for_rig(frame, CELL)
+    clip = synthetic.clip("Turn")
+    assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 0.0), frame, proj.near) == []
+    assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 0.5), frame, proj.near) \
+        == ["nose", "right_eye", "left_eye", "left_ear"], "45 away: the face and the far ear"
+    assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 1.0), frame, proj.near) \
+        == ["nose", "right_eye", "left_eye"], "straight away: both ears stay"
+    # Half a direction step is the threshold: 20 degrees is still the profile.
+    assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 20 / 90), frame,
+                                     proj.near) == []
+    assert rigkit.hidden_face_points(synthetic, synthetic.pose_at(clip, 25 / 90), frame,
+                                     proj.near) != []
+    kp = rigkit.clip_keypoints(synthetic, "Turn", fps=2, cell=CELL, frame=frame)
+    assert "hidden" not in kp["frames"][0] and all(s == 1.0 for s in kp["frames"][0]["scores"])
+    assert kp["frames"][1]["hidden"] == ["nose", "right_eye", "left_eye", "left_ear"]
+    assert _scores(kp | {"frames": kp["frames"][1:]}) == {
+        "nose": 0.0, "right_eye": 0.0, "left_eye": 0.0, "right_ear": 1.0, "left_ear": 0.0}
+    assert len(kp["frames"][1]["keypoints"]) == 18, "the points are still there, only unseen"
+
+
+@pytest.mark.parametrize("name", ["s0", "s180", "s225", "s270", "s315", "t0", "t90", "t270"])
+def test_the_profile_and_the_front_cells_keep_every_face_point(knight, name):
+    yaw, elevation = config.direction(name)
+    kp = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL, yaw=yaw, elevation=elevation)
+    for entry in kp["frames"]:
+        assert "hidden" not in entry, (name, entry["index"])
+        assert all(s == 1.0 for s in entry["scores"])
+
+
+@pytest.mark.parametrize("name, expect", [
+    ("s45", ["nose", "right_eye", "left_eye", "left_ear"]),
+    ("s90", ["nose", "right_eye", "left_eye"]),
+    ("s135", ["nose", "right_eye", "left_eye", "right_ear"]),
+])
+def test_the_back_cells_hide_the_face_and_the_far_ear(knight, name, expect):
+    """The viewer stands on the character's right at s0; turning away keeps
+    the right ear near at s45 and the left ear near at s135. From behind
+    both ears show and the face is gone."""
+    yaw, elevation = config.direction(name)
+    kp = rigkit.clip_keypoints(knight, "Idle", fps=12, cell=CELL, yaw=yaw, elevation=elevation)
+    for entry in kp["frames"]:
+        assert entry["hidden"] == expect, (name, entry["index"])
+    assert _scores(kp) == {j: (0.0 if j in expect else 1.0) for j in FACE}
+    # And the skeleton PNG no longer draws them: fewer lit pixels than with
+    # every score forced back to 1.0.
+    entry = kp["frames"][0]
+    drawn = posekit.draw(entry["keypoints"], entry["scores"], tuple(kp["source_size"]), CELL)
+    forced = posekit.draw(entry["keypoints"], [1.0] * 18, tuple(kp["source_size"]), CELL)
+    assert (drawn.max(axis=2) > 16).sum() < (forced.max(axis=2) > 16).sum()

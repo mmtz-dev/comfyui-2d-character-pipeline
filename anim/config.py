@@ -245,6 +245,10 @@ ACTION_PHASES: dict[str, dict[str, Any]] = {
 STUDIO_ACTIONS: dict[str, dict[str, Any]] = {
     "attack": {"verb": "strike",
                "clips": {"kaykit": "1H_Melee_Attack_Chop", "quaternius": "Sword_Attack"}},
+    # `Idle_Loop` is the neutral stand - sword hanging, shield at the side -
+    # which is the pose the concept pick shows and so the one the turnaround
+    # feature's identity gate compares like with like; the UAL's other idle,
+    # `Sword_Idle`, is a combat crouch with the blade raised.
     "idle": {"verb": "idle", "clips": {"kaykit": "Idle", "quaternius": "Idle_Loop"}},
     "walk": {"verb": "walk", "clips": {"kaykit": "Walking_A", "quaternius": "Walk_Loop"}},
     "run": {"verb": "run", "clips": {"kaykit": "Running_A", "quaternius": "Jog_Fwd_Loop"}},
@@ -488,10 +492,30 @@ CLIP_CELL = BASE_CELL
 CLIP_FRAME_STEP = 4
 # One prompt for every action; the action-specific phrase is looked up below
 # and the unit is the reference image, not the words. `--prompt` replaces it.
+# The view phrase names the direction cell (the turnaround feature): the
+# default cell's is the sentence every s0 clip was rendered with, word for
+# word, and any other cell says which way the figure faces instead of
+# "facing right".
 CLIP_PROMPT = (
-    "a single side-view pixel art character sprite, facing right, full body in "
+    "a single {view} pixel art character sprite, full body in "
     "frame, {phrase}, the same character and outfit as the reference image in "
     "every frame, plain flat white background, no ground shadow, no floor")
+CLIP_VIEW_PHRASES: dict[str, str] = {
+    "s0": "side-view, facing right",
+    "s45": "three-quarter back view, seen from behind and to the right, facing away-right",
+    "s90": "back view, seen from directly behind, facing away from the viewer",
+    "s135": "three-quarter back view, seen from behind and to the left, facing away-left",
+    "s180": "side-view, facing left",
+    "s225": "three-quarter front view, facing toward the viewer's left",
+    "s270": "front view, facing the viewer",
+    "s315": "three-quarter front view, facing toward the viewer's right",
+}
+CLIP_TOP_VIEW = "top-down view, seen from directly above, {facing}"
+CLIP_TOP_FACINGS: dict[int, str] = {
+    0: "facing east (screen right)", 45: "facing north-east", 90: "facing north (up-screen)",
+    135: "facing north-west", 180: "facing west (screen left)", 225: "facing south-west",
+    270: "facing south (down-screen)", 315: "facing south-east",
+}
 CLIP_ACTION_PHRASES: dict[str, str] = {
     "strike": "swinging a sword in a melee attack",
     "hit": "flinching from a hit",
@@ -503,11 +527,45 @@ CLIP_ACTION_PHRASES: dict[str, str] = {
 }
 
 
-def clip_prompt(action: str) -> str:
+def clip_view_phrase(direction_cell: str = DEFAULT_DIRECTION) -> str:
+    """The camera phrase for one cell of the direction table."""
+    yaw, elevation = direction(direction_cell)
+    if elevation == "top":
+        return CLIP_TOP_VIEW.format(facing=CLIP_TOP_FACINGS[yaw])
+    return CLIP_VIEW_PHRASES[f"s{yaw}"]
+
+
+def clip_prompt(action: str, direction_cell: str = DEFAULT_DIRECTION) -> str:
     action = action.strip().lower()
     phrase = CLIP_ACTION_PHRASES.get(action) or (f"performing a {action}" if action
                                                else "standing at rest")
-    return CLIP_PROMPT.format(phrase=phrase)
+    return CLIP_PROMPT.format(view=clip_view_phrase(direction_cell), phrase=phrase)
+
+
+# ---------------------------------------------------------------------------
+# The turnaround feature - `anim turnaround`, one idle still per direction
+# ---------------------------------------------------------------------------
+# sprite-studio.md S2: from the accepted base, one idle still per direction,
+# and the identity gate sits on those stills before any clip is spent. v1 is
+# the eight side facings; `--elevation top` is accepted by the code (the same
+# eight yaws) and left to the top-down pitch feature (#285) to run.
+TURNAROUND_ACTION = "idle"
+TURNAROUND_RIG = "quaternius"          # the bake-off ruling (2026-09-21): Quaternius UAL
+# The still is frame 0 of the idle clip, sampled TURNAROUND_CLIP_FRAMES times
+# at t=0 so `anim clip` renders a 4n+1 video (Wan's latent holds 4 frames per
+# slot; 5 is n=1, the shortest clip with a temporal window) of one held pose,
+# and the frame in the middle of it becomes the still - the first frame of a
+# Wan clip is the one the VAE encodes on its own and the one that leans on
+# the reference most, the last is the padding end.
+TURNAROUND_CLIP_FRAMES = 5
+TURNAROUND_STILL_INDEX = TURNAROUND_CLIP_FRAMES // 2
+# Route V as the bake-off ran it: skeleton over full-body depth at gain 0.35.
+TURNAROUND_CONTROL = "blend"
+TURNAROUND_DEPTH_GAIN = 0.35
+TURNAROUND_CELL = CLIP_CELL
+# A direction that has not answered in this long is recorded as failed and
+# the run goes on to the next (the brief's budget: ~1 min of GPU, 5 at most).
+TURNAROUND_TIMEOUT_S = float(os.environ.get("ANIM_TURNAROUND_TIMEOUT", "300"))
 
 
 # ---------------------------------------------------------------------------

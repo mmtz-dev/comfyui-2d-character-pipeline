@@ -194,6 +194,29 @@ whichever rule placed them in the cell.
 the same picture (the reflection of a profile IS the other profile), so the
 two are never combined - a direction says which way the figure faces, and
 `mirror` on top of one would say it twice.
+
+THE FACE ON THE FAR SIDE - the turnaround feature
+-------------------------------------------------
+A rig has no detector, so every joint carried confidence 1.0 in every cell -
+nose and eyes included on the back view, which told the pose ControlNet
+there was a face on the back of the head (DEVLOG 2026-09-20, left open for
+the turnaround). Now `clip_keypoints` asks `hidden_face_points` per frame:
+once the HEAD has turned past the profile away from the camera - the head's
+forward vector against the view's near axis, `fwd . near < -FACE_HIDE_TURN`,
+half a direction step (sin 22.5 deg) so a breathing head at the profile does
+not flicker - the nose and both eyes get confidence 0.0, and so does the ear
+on the far side (`lateral . near` past the same threshold). Confidence 0.0
+is how a filmed back view reads too: rtmlib reports what it cannot see below
+the threshold, and every consumer (the renderer, the picker, the part
+prompts) already treats such a joint as absent. The profile (s0, s180) and
+every front-facing cell draw exactly what they always did, byte for byte;
+s45 / s90 / s135 lose the face, and at s90 both ears stay - seen from behind,
+they are there. The alternative - a normal per point (nose forward, eyes a
+blend, ears lateral) against the near axis - is more honest geometry, but
+it hides the far eye and far ear at the exact profile, which every s0 job
+was rendered with and the ControlNet was trained on (DWPose keeps both on a
+profile shot); it is one threshold away in `hidden_face_points` if the gate
+wants it.
 """
 
 from __future__ import annotations
@@ -1094,18 +1117,27 @@ def posed_mesh(rig: Rig, world: np.ndarray, frame: RigFrame, *,
 # ---------------------------------------------------------------------------
 # 3D joints -> 2D cell
 # ---------------------------------------------------------------------------
-def openpose_points(rig: Rig, world: np.ndarray, frame: RigFrame) -> np.ndarray:
-    """(18, 3) world-space points in OpenPose order for one posed rig."""
-    pos = positions_by_name(rig, world)
-    jmap = frame.map
-    head_world = world[rig.index(jmap.head)]
+def head_axes(rig: Rig, world: np.ndarray, frame: RigFrame
+              ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """(head origin, forward, up, lateral) of the posed head, world space -
+    forward and up as the rest pose defined them, carried by the head bone;
+    lateral is the character's LEFT."""
+    head_world = world[rig.index(frame.map.head)]
     head = head_world[:3, 3]
     r_head = rotation_part(head_world)
     fwd = r_head @ frame.head_forward_local
     up = r_head @ frame.head_up_local
-    lateral = np.cross(up, fwd)          # the character's LEFT
+    lateral = np.cross(up, fwd)
     n = float(np.linalg.norm(lateral))
     lateral = lateral / n if n > 1e-9 else np.zeros(3)
+    return head, fwd, up, lateral
+
+
+def openpose_points(rig: Rig, world: np.ndarray, frame: RigFrame) -> np.ndarray:
+    """(18, 3) world-space points in OpenPose order for one posed rig."""
+    pos = positions_by_name(rig, world)
+    jmap = frame.map
+    head, fwd, up, lateral = head_axes(rig, world, frame)
 
     out = np.empty((len(OPENPOSE18), 3))
     for k, joint in enumerate(OPENPOSE18):
@@ -1116,6 +1148,34 @@ def openpose_points(rig: Rig, world: np.ndarray, frame: RigFrame) -> np.ndarray:
         else:
             out[k] = resolve_joint(jmap.joints[joint], pos)
     return out
+
+
+# The head has to turn this far past the profile, away from the camera,
+# before its face is hidden: sin(22.5 deg), half a direction step, so the
+# profile cells never flicker and the oblique-back cells always hide it.
+FACE_HIDE_TURN = math.sin(math.radians(22.5))
+# Which way each ear points, in units of the character's LEFT.
+_EAR_SIDE: dict[str, float] = {"left_ear": 1.0, "right_ear": -1.0}
+
+
+def hidden_face_points(rig: Rig, world: np.ndarray, frame: RigFrame,
+                       near: np.ndarray, turn: float = FACE_HIDE_TURN) -> list[str]:
+    """The face joints the camera cannot see for one posed head, in
+    OPENPOSE18 order (module docstring, THE FACE ON THE FAR SIDE).
+
+    `near` is the view's unit vector toward the viewer (`Projection.near`).
+    Empty until the head faces away by more than `turn`; then the nose and
+    both eyes, plus whichever ear is on the far side by the same margin.
+    """
+    _head, fwd, _up, lateral = head_axes(rig, world, frame)
+    near = np.asarray(near, dtype=float)
+    if float(fwd @ near) >= -turn:
+        return []
+    hidden = {"nose", "right_eye", "left_eye"}
+    for ear, side in _EAR_SIDE.items():
+        if side * float(lateral @ near) < -turn:
+            hidden.add(ear)
+    return [j for j in OPENPOSE18 if j in hidden]
 
 
 WORLD_UP = np.array([0.0, 1.0, 0.0])
@@ -1407,7 +1467,9 @@ def clip_keypoints(rig: Rig, clip_name: str, *, fps: int,
                    elevation: str = config.DEFAULT_ELEVATION) -> dict[str, Any]:
     """Sample a clip and return the `anim.keypoints/1` payload `anim pose` writes.
 
-    Every score is 1.0 and `person.score` is 1.0: a rig has no detector.
+    Every score is 1.0 and `person.score` is 1.0 - a rig has no detector -
+    except the face points the camera cannot see, which are 0.0 and listed
+    in the frame's `hidden` (module docstring, THE FACE ON THE FAR SIDE).
     `source_size` is the cell itself, so `anim.posekit.draw` places the points
     1:1. Each frame also carries its sample `time` in seconds. `yaw` and
     `elevation` pick the cell of the direction table when no `frame` is
@@ -1424,14 +1486,17 @@ def clip_keypoints(rig: Rig, clip_name: str, *, fps: int,
         world = rig.pose_at(clip, float(t))
         joints = openpose_points(rig, world, frame)
         pts2d = proj.to_2d(joints)
+        hidden = hidden_face_points(rig, world, frame, proj.near)
         entry: dict[str, Any] = {
             "index": index,
             "file": f"{index + 1:04d}.png",
             "time": round(float(t), 4),
             "keypoints": [[round(float(x), 2), round(float(y), 2)] for x, y in pts2d],
-            "scores": [1.0] * len(OPENPOSE18),
+            "scores": [0.0 if joint in hidden else 1.0 for joint in OPENPOSE18],
             "person": {"score": 1.0},
         }
+        if hidden:
+            entry["hidden"] = hidden
         if frame.props:
             anchor = proj.anchor_for(joints)
             entry["props"] = [

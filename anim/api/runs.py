@@ -48,7 +48,7 @@ from anim import cli, config
 from anim.stages import STAGE_ORDER
 from anim.util import read_json, write_json_in_place
 
-GPU_STAGES = frozenset({"base", "render", "clip", "concept", "bakeoff", "run"})
+GPU_STAGES = frozenset({"base", "render", "clip", "concept", "bakeoff", "turnaround", "run"})
 # `review` is a page, not a step - there is nothing to run.
 RUNNABLE = [name for name in STAGE_ORDER if name != "review"]
 

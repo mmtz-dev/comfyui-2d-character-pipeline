@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { BoardCell, BoardState, JobRow } from "./api";
+import type { BoardCell, BoardState, JobRow, TurnaroundState } from "./api";
 import {
   cellKey,
   cellOfJob,
@@ -10,6 +10,8 @@ import {
   gridOf,
   reduceBoard,
   tally,
+  turnaroundText,
+  turnaroundTiles,
   waitingOn,
   waitingText,
 } from "./board";
@@ -141,5 +143,43 @@ describe("the header lines", () => {
   it("count the cells", () => {
     const marked = reduceBoard(board, { type: "mark", key: "idle/s0", index: 0, mark: "accept" });
     expect(tally(marked)).toEqual({ cells: 3, accepted: 0, rejected: 0, pending: 3, marked: 1 });
+  });
+});
+
+describe("the turnaround under the gates", () => {
+  const direction = (name: string, status: "done" | "failed", seconds: number): TurnaroundState["directions"][string] => ({
+    direction: name, job: `knight_idle_${name}`, status, error: status === "failed" ? "ComfyError: timed out" : null,
+    seconds, gpu_seconds: seconds - 5,
+    still: status === "done" ? `/jobs/knight_idle_${name}/frames/post/0.png` : null,
+    raw: null, control: null, skeleton: null, depth: null, hidden_face: name === "s90" ? ["nose", "right_eye", "left_eye"] : [],
+    silhouette: status === "done" ? { width: 30, height: 53, pixels: 900, colours: 12 } : null,
+  });
+  const state: TurnaroundState = {
+    unit: "knight", elevation: "side", seed: 42, question: "One character in 8 facings?", updated: "2026-09-21T20:00:00+00:00",
+    plan: ["s0", "s45", "s90", "s135", "s180", "s225", "s270", "s315"],
+    directions: {
+      s0: direction("s0", "done", 30), s45: direction("s45", "done", 26), s90: direction("s90", "failed", 300),
+      s270: direction("s270", "done", 28),
+    },
+    done: 3, of: 8, page: "/work/_turnaround/knight/index.html",
+    identity: { directions: [], done: ["s0", "s45", "s270"], height: { spread: 2 }, width: { spread: 5 } },
+  };
+  it("lists every planned direction in compass order, rendered or not", () => {
+    const tiles = turnaroundTiles(state);
+    expect(tiles.map((t) => t.direction)).toEqual(state.plan);
+    expect(tiles[0]).toEqual({ direction: "s0", job: "knight_idle_s0", status: "done", still: "/jobs/knight_idle_s0/frames/post/0.png", error: null });
+    expect(tiles[2]!.status).toBe("failed");
+    expect(tiles[2]!.error).toContain("timed out");
+    expect(tiles[3]).toEqual({ direction: "s135", job: "", status: "not run", still: null, error: null });
+  });
+  it("says how far the turnaround got, in numbers", () => {
+    expect(turnaroundText(null)).toContain("no turnaround yet");
+    const text = turnaroundText(state);
+    expect(text).toContain("3 / 8 facings");
+    expect(text).toContain("seed 42");
+    expect(text).toContain("28 s per facing");
+    expect(text).toContain("silhouette spread 2 px tall, 5 px wide");
+    expect(text).toContain("failed: s90");
+    expect(text).not.toMatch(/verdict|one character/i);
   });
 });

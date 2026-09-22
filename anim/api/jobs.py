@@ -52,6 +52,9 @@ FRAME_STAGES: dict[str, Callable[[Job], list[Path]]] = {
     "pose": lambda job: job.skeletons(),
     "depth": lambda job: job.depths(),
     "clip": lambda job: job.clip_frames(),
+    # What `anim clip` sent as the control video, one PNG per position (the
+    # turnaround page shows it under each still).
+    "control": lambda job: _pngs(job.clip_dir / "control"),
     "strip": lambda job: _pngs(job.strip_dir),
     "render": lambda job: _pngs(job.render_dir),
     "post": lambda job: post_frames(job),

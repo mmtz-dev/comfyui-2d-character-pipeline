@@ -6,7 +6,7 @@ Routes (all JSON unless said otherwise):
 
     GET  /jobs                             every job under work/: name, stages done, direction, action, updated
     GET  /jobs/{job}                       job.json + stage status + frame-set sizes
-    GET  /jobs/{job}/frames                every PNG set (frames, pose, depth, clip, strip, render, post, candidates) with URLs
+    GET  /jobs/{job}/frames                every PNG set (frames, pose, depth, clip, control, strip, render, post, candidates) with URLs
     GET  /jobs/{job}/frames/{stage}/{n}.png  the PNG itself
     PUT  /jobs/{job}/frames/{stage}/{n}.png  overwrite it (image/png body, same size, alpha rounded)
     GET  /jobs/{job}/picks                 the review state (ReviewApp.state)
@@ -29,6 +29,7 @@ Routes (all JSON unless said otherwise):
     POST /curation/{unit}/cells/{action}/{dir}/regenerate   new seed + the cell's GPU stage -> 202
     PUT  /curation/{unit}/gates/{gate}  {"state"}   base | turnaround -> pending | accepted
     GET  /export/{unit}                    the last `anim export` of a unit: files, animations, warnings
+    GET  /turnaround/{unit}                the turnaround: per direction status, seconds, the stills' URLs, the identity table
     GET  /health                           {"ok": true, "work_dir": ..., "comfyui": reachable?}
     GET  /                                 web/dist/ when built, else the jobs page
     GET  /jobs/{job}/review                the click-to-pick page
@@ -57,6 +58,7 @@ from anim.api import runs as runs_api
 from anim.api.runs import RunManager, RunRefused
 from anim.job import Job
 from anim.stages import export as export_stage
+from anim.stages import turnaround as turnaround_stage
 from anim.stages.review import ReviewApp
 
 
@@ -395,6 +397,24 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
         if row is None:
             raise HTTPException(404, f"no export of {unit!r} yet; POST /jobs "
                                      f"{{\"stage\": \"export\", \"args\": "
+                                     f"{{\"unit\": \"{unit}\"}}}}")
+        return row
+
+    # --- the turnaround feature -------------------------------------------
+    @app.get("/turnaround/{unit}")
+    def get_turnaround(unit: str) -> dict[str, Any]:
+        """What `anim turnaround <unit>` recorded: the state file with, per
+        direction, its status, seconds and the URLs of the still, the raw
+        clip frame, the control frame, the skeleton and the depth through
+        the frame-set routes above. The board reads this to show the eight
+        stills as the thing the `turnaround` gate accepts. A turnaround runs
+        like any stage: `POST /jobs {"stage": "turnaround", "args": {"unit": ...}}`."""
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        row = turnaround_stage.listing(unit, work_dir)
+        if row is None:
+            raise HTTPException(404, f"no turnaround of {unit!r} yet; POST /jobs "
+                                     f"{{\"stage\": \"turnaround\", \"args\": "
                                      f"{{\"unit\": \"{unit}\"}}}}")
         return row
 

@@ -163,14 +163,19 @@ def test_a_part_too_small_on_the_base_yields_no_palette(base_job, palette, monke
 
 
 def test_an_action_locks_every_part_pixel_to_the_base_palette(base_job, action_job,
-                                                             palette):
+                                                             palette, tmp_path):
     wd = base_job.root.parent
     post_stage.post(base_job.name, palette=palette, matte="chroma",
                     parts=True, segmenter=FakeSegmenter(), work_dir=wd)
     base_palettes = json.loads((base_job.post_dir / "parts.json").read_text())["palettes"]
 
+    # `assets_dir` pinned: the lookup's first stop is the PUBLISHED sidecar,
+    # and the container mounts the owner's real one (the knight's concept
+    # pick, 2026-09-21) - without this the test locks to whatever is
+    # published today.
     report = post_stage.post(action_job.name, palette=palette, matte="chroma",
-                             parts=True, segmenter=action_segmenter(), work_dir=wd)
+                             parts=True, segmenter=action_segmenter(), work_dir=wd,
+                             assets_dir=tmp_path / "no-assets")
     assert report["parts"]["mode"] == "lock"
     assert report["parts"]["palettes_from"].endswith("knight_base/post/parts.json")
     assert report["parts"]["palettes"] == base_palettes
@@ -192,7 +197,7 @@ def test_an_action_locks_every_part_pixel_to_the_base_palette(base_job, action_j
 
 
 def test_a_part_with_no_base_palette_is_left_alone_and_says_so(base_job, action_job,
-                                                              palette):
+                                                              palette, tmp_path):
     wd = base_job.root.parent
     post_stage.post(base_job.name, palette=palette, matte="chroma",
                     parts=True, segmenter=FakeSegmenter(), work_dir=wd)
@@ -203,7 +208,8 @@ def test_a_part_with_no_base_palette_is_left_alone_and_says_so(base_job, action_
                                                           [264, 66], [204, 106]]]}]
     action_job.keypoints_path.write_text(json.dumps(entry))
     report = post_stage.post(action_job.name, palette=palette, matte="chroma",
-                             parts=True, segmenter=action_segmenter(), work_dir=wd)
+                             parts=True, segmenter=action_segmenter(), work_dir=wd,
+                             assets_dir=tmp_path / "no-assets")
     sword = report["frames"][0]["parts"]["sword"]
     assert sword["found"] is True and sword["pixels"] > 0
     assert sword["locked"] is False

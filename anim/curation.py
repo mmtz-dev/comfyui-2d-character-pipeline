@@ -33,9 +33,11 @@ base and after the turnaround with batch review at the end; also every step,
 or end only). `gate_blocks` is the one question the API's `POST /jobs`, the
 board's regenerate and the CLI's GPU stages ask before spending the card:
 
-    gates   `clip`, `render`, `bakeoff`, `run` (and the matrix, when it lands)
-            wait for the base gate; any cell outside the default direction,
-            and the matrix, wait for the turnaround gate as well
+    gates   `clip`, `render`, `bakeoff`, `turnaround`, `run` (and the matrix,
+            when it lands) wait for the base gate; any cell outside the
+            default direction, and the matrix, wait for the turnaround gate
+            as well - `turnaround` itself never does: it is the stage that
+            makes the stills that gate is about
     every   the same gates, and a cell's GPU stage also waits until every
             EARLIER cell that has a job is accepted - direction-major
             (every action of s0, then s45, ...), so the side view game-02
@@ -78,7 +80,7 @@ MODES = settings.CURATION_MODES
 # The stages that spend the GPU on a unit's cells, and so wait for its gates.
 # `matrix` is the action matrix feature's name, listed now so it is gated the
 # day it lands. `base` and `concept` MAKE the base; they are never gated.
-BASE_GATED = frozenset({"clip", "render", "bakeoff", "run", "matrix"})
+BASE_GATED = frozenset({"clip", "render", "bakeoff", "turnaround", "run", "matrix"})
 TURNAROUND_GATED = frozenset({"matrix"})
 # Which set the strip is drawn from, best first (the editor's rule, frames.ts).
 STRIP_SETS = ("post", "clip", "frames")

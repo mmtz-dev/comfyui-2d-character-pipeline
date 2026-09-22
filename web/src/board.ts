@@ -2,7 +2,7 @@
 // reducer the view folds edits into, and the header lines. No DOM, no
 // fetch - the tests run it in Node; board-view.ts draws it.
 
-import type { BoardCell, BoardState, CurationMode, FrameMark, GateState, JobRow, Waiting } from "./api";
+import type { BoardCell, BoardState, CurationMode, FrameMark, GateState, JobRow, TurnaroundState, Waiting } from "./api";
 
 /** The board's rows: the studio's five actions, and the pipeline verb of each
  * (attack <-> strike; the rest are the same word) - config.STUDIO_ACTIONS. */
@@ -191,6 +191,47 @@ export function waitingText(waiting: Waiting[]): string {
 export function gatesText(gates: Record<string, GateState>, mode: CurationMode): string {
   if (mode === "end") return "gates off (end-only review)";
   return `base ${gates.base ?? "pending"} · turnaround ${gates.turnaround ?? "pending"}`;
+}
+
+/** One entry per planned direction of the turnaround, in compass order (the
+ * plan's order, s0 first), whether or not it rendered - the thing the
+ * `turnaround` gate accepts (the turnaround feature). */
+export interface TurnaroundTile {
+  direction: string;
+  job: string;
+  status: string;
+  still: string | null;
+  error: string | null;
+}
+
+export function turnaroundTiles(state: Pick<TurnaroundState, "plan" | "directions">): TurnaroundTile[] {
+  return state.plan.map((direction) => {
+    const row = state.directions[direction];
+    return {
+      direction,
+      job: row?.job ?? "",
+      status: row?.status ?? "not run",
+      still: row?.still ?? null,
+      error: row?.error ?? null,
+    };
+  });
+}
+
+/** The header's one line about the turnaround: how many stills, the seed, the
+ * seconds, and the spread of the silhouette so a broken facing reads as a number. */
+export function turnaroundText(state: Pick<TurnaroundState, "done" | "of" | "seed" | "directions" | "identity"> | null): string {
+  if (!state) return "no turnaround yet - anim turnaround <unit> renders the eight idle stills";
+  const done = Object.values(state.directions).filter((d) => d.status === "done");
+  const seconds = done.map((d) => d.seconds ?? 0).reduce((a, b) => a + b, 0);
+  const per = done.length ? Math.round(seconds / done.length) : 0;
+  const failed = Object.values(state.directions).filter((d) => d.status === "failed").map((d) => d.direction);
+  const parts = [`${state.done} / ${state.of} facings`, `seed ${state.seed ?? "?"}`];
+  if (done.length) parts.push(`${per} s per facing`);
+  const h = state.identity?.height?.spread;
+  const w = state.identity?.width?.spread;
+  if (typeof h === "number" && typeof w === "number") parts.push(`silhouette spread ${h} px tall, ${w} px wide`);
+  if (failed.length) parts.push(`failed: ${failed.join(", ")}`);
+  return parts.join(" · ");
 }
 
 /** The counts under the grid. */
