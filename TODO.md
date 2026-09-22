@@ -44,10 +44,6 @@ Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid
 
 ## manual test: the camera direction feature · [#288](http://192.168.1.158:8700/work_packages/288)
 
-## manual test: the character concept feature · [#289](http://192.168.1.158:8700/work_packages/289)
-
-## manual test: the frame route bake-off feature · [#290](http://192.168.1.158:8700/work_packages/290)
-
 ## manual test: the palette feature · [#294](http://192.168.1.158:8700/work_packages/294)
 
 ## manual test: the curation board feature · [#295](http://192.168.1.158:8700/work_packages/295)
@@ -56,5 +52,5 @@ Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid
 
 ---
 
-*14 open · 12 closed. Counts and contents come straight from
+*12 open · 14 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
