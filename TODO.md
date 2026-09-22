@@ -14,10 +14,6 @@
 
 ## the sprite studio feature · [#271](http://192.168.1.158:8700/work_packages/271)
 
-### the turnaround feature · [#275](http://192.168.1.158:8700/work_packages/275)
-
-From the accepted base, one idle still per direction — 8 side-view facings for v1 — each with its own per-direction part palettes.
-
 ### the motion exaggeration feature · [#277](http://192.168.1.158:8700/work_packages/277)
 
 The animation-principle transforms, applied where the pipeline can actually apply them — on the rig, before projection — so the model renders an…
@@ -42,15 +38,15 @@ Later milestone. Spritely-style: upload a video in the editor → the existing e
 
 Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid or slice by alpha islands, name the rows as actions/directions, and…
 
-## manual test: the camera direction feature · [#288](http://192.168.1.158:8700/work_packages/288)
-
 ## manual test: the palette feature · [#294](http://192.168.1.158:8700/work_packages/294)
 
 ## manual test: the curation board feature · [#295](http://192.168.1.158:8700/work_packages/295)
 
 ## manual test: the spritesheet export feature · [#296](http://192.168.1.158:8700/work_packages/296)
 
+## manual test: the turnaround feature · [#297](http://192.168.1.158:8700/work_packages/297)
+
 ---
 
-*12 open · 14 closed. Counts and contents come straight from
+*11 open · 16 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
