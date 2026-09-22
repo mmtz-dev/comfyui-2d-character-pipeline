@@ -64,7 +64,7 @@ export function parseRunEvent(name: string, data: string): RunEvent | null {
       return { type: "progress", percent: asPercent(payload.percent) };
     case "done": {
       const status = payload.status;
-      if (status !== "done" && status !== "failed" && status !== "lost") return null;
+      if (status !== "done" && status !== "failed" && status !== "lost" && status !== "cancelled") return null;
       const returncode = typeof payload.returncode === "number" ? payload.returncode : null;
       return { type: "done", status, returncode, percent: asPercent(payload.percent) };
     }
@@ -108,6 +108,8 @@ export function describeRun(view: RunView): string {
       return `${view.stage}: failed (exit ${view.returncode ?? "?"})`;
     case "lost":
       return `${view.stage}: lost (the API restarted while it ran)`;
+    case "cancelled":
+      return `${view.stage}: cancelled`;
   }
 }
 

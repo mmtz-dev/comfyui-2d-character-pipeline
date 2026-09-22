@@ -4,6 +4,133 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-22 — the concept generation feature: the Concept tab, every attempt kept, img2img and edit, the model picker, Cancel
+
+**What.** [#300](http://192.168.1.158:8700/work_packages/300); manual test
+[#301](http://192.168.1.158:8700/work_packages/301). #298 made the views and the identity gate
+went green, but the loop the owner actually runs — generate, look, fix one, look again — was
+four CLI lines and a static page, and every rerun of `anim concept` threw the earlier attempts
+away (`prepare` wiped `candidates/`, `render_views` renumbered a view from 00). This is that
+loop as one tab of the studio, with the pipeline keeping the record. Decided in the grilling
+session before the plan (the frontier, in order): the name; scope — the concept images only,
+the walk / idle / run / jump / attack keyframes at wind-up / action / wind-down are **the
+action keyframes feature**, a follow-up on the accepted views; base from a prompt *or* an
+upload; the base is a separate hero shot and every view derives from it (it already was); Side
+is the left profile and the right is mirrored; every attempt is kept with one accepted per
+view; one model/LoRA choice per press with a per-unit default; 1–4 attempts per press; the
+turnaround consumes the accepted views (it already did); #298 lands first and this builds on
+it; the four main views up front and the obliques behind a fold; a curated registry rather than
+"everything ComfyUI reports"; both classic img2img and an instruction edit; a Concept tab rather
+than growing the static page; the views wait behind the base gate; per-view prompts; a new work
+package related to #298 and #285; random seed with a lock; buttons disabled while the GPU is
+busy, with Cancel; done = the manual test on the knight.
+
+- **Every attempt is kept — schema `anim.concept/2` and `anim.concept-views/2`.** One row shape
+  for a base candidate and a view attempt (`concept.Attempts`, `attempt_row`): `source`
+  (`txt2img` / `upload` / `existing` / `img2img` / `edit` / `views`), its own `prompt`,
+  `seed`, `model`, `loras`, `parent` (the attempt it reworks), `strength` or `instruction`,
+  the workflow and its hash as sent, the locked models, `seconds`, `sha256`. `prepare` appends
+  from `next_index` (`--fresh` is the old wipe); `render_views` appends to the view asked for
+  and keeps its pick; `--view-prompt` is the owner's sentence for one view. A `/1` manifest is
+  migrated in memory on read and written back on the first change (`migrate_manifest`,
+  `migrate_views`: `generated` → `txt2img`, the manifest-level prompt and LoRA hoisted onto the
+  rows) — the real knight job read straight through the API before any write. The seed is
+  **random** per run, since a derived seed on "Generate again" would redraw the same set; a
+  `--fresh` run still derives it so a unit's first set reproduces, and every row records its
+  own. `pick` provenance copies the row's prompt / model / LoRAs, not the manifest's.
+- **Upload, img2img, edit.** `--upload PNG` → `register_upload` (the file as given under
+  `uploads/`, fitted into the cell like `--existing`; the API's `PUT /concept/{unit}/upload`
+  is the raw PNG body, like the editor's frame save — no `python-multipart`). `--img2img
+  base:02 --strength 0.5` → **`gpu/workflows/img2img_pass.json`**: `concept_pass.json` minus
+  the ControlNet, the parent attempt through `LoadImage` → `VAEEncode` as the latent and the
+  KSampler's `denoise` = strength (`config.CONCEPT_IMG2IMG_STRENGTH` 0.55; the tab's slider
+  0.3–0.9). The prompt is the parent's when it has a Z-Image one, the unit's description for
+  an upload, and for a view attempt `config.concept_view_img2img_prompt` — the description
+  seen from that side — because a view's stored prompt is written for Qwen ("from image1 …")
+  and Z-Image would draw those words. `--edit left:01 --instruction "…"` reuses
+  `view_pass.json` with the parent as `image1` and `config.CONCEPT_EDIT_PROMPT` (the owner's
+  words, then the same keep-the-character clause the views use). Either lands on the same
+  target as its parent — an edit of `left:01` is `left:02`, pickable for the turnaround.
+  **TODO-verify on the GPU**: turbo at 8 steps with `denoise < 1`; `steps × strength` is the
+  usual rule and a one-line patch if the picture is mush (NOTES.md).
+- **The top-down view.** `config.CONCEPT_VIEWS["top"]` (yaw 270, `elevation: top`, "from
+  directly above …"); `CONCEPT_CORE_VIEWS` gains it, `CONCEPT_MAIN_VIEWS` / `ADVANCED_VIEWS`
+  are the tab's grouping, and `turnaround_reference_views("t*")` returns `("top", *row)` so
+  the top cells take it first (`test_the_reference_map_follows_the_compass` pins it). #285 —
+  the eight top-down facings through turnaround → matrix → export — stays open with a note.
+- **The model and the LoRAs — decided, with the alternative.** Checkpoint names were
+  hard-coded in the workflow JSONs, and the loaders had no PATCH title. Now
+  `concept_pass.json` / `img2img_pass.json` / `view_pass.json` carry `PATCH checkpoint (...)`
+  — "checkpoint", not "model", because `comfy.find_node` matches a substring and the LoRA
+  node's title already says `strength_model` — and `view_pass.json` gains the bypassed
+  `LoraLoaderModelOnly` `identity_pass.json` has. `comfy.patch_checkpoint` swaps the file;
+  `comfy.chain_loras` sets the first LoRA, clones the node once per extra one chained
+  `model → model` (the clones are not PATCH points, so the title stays unique) and bypasses
+  it with none. What may be named is **`gpu/models.registry.tsv`**: `file family role label
+  trigger default_strength`, one row per locked weight, families `zimage` | `qwen-edit` |
+  `wan`. A sibling file, not new lock columns, because `gpu/hf_download.py` refuses a lock
+  row that is not exactly 8 columns and `relock_models.py` is the lock's only writer. The
+  alternative — offer everything ComfyUI's `/object_info` lists — would let the owner hand a
+  Z-Image graph an SDXL checkpoint and learn at run time; the registry refuses in
+  `models_lock.resolve_model` / `resolve_loras` before a `/prompt` is posted, and
+  `GET /models?probe=1` still asks ComfyUI which registered files it can see. Resolution per
+  call: `--model` / `--lora FILE[:STRENGTH]` (repeatable) → `job.json["defaults"][family]`
+  (the tab's "save as unit default", `PUT /concept/{unit}/defaults`) → the workflow's own
+  checkpoint and, for Z-Image, the pixel LoRA at `--lora-strength`. `models_lock.for_workflow`
+  scans the graph's strings, so provenance lists stacked LoRAs with no change.
+- **The views wait behind the base gate.** `curation.views_blocked` — no base render, or the
+  record's base gate not accepted — and a `concept` branch in `gate_for_namespace` for
+  `--views` and a `--img2img` / `--edit` whose ref is a view; the base's own ops never wait.
+  `cli.main` and `POST /jobs` / `POST /concept/{unit}/generate` share it, so the CLI refuses
+  with the same words as the `423`; `--force` runs anyway. Decided over "views from whichever
+  candidate is selected": a view is GPU time on a character nobody has approved.
+- **Cancel.** `Run` carries its `Popen`; `_drive` spawns with `start_new_session=True`;
+  `RunManager.cancel` marks it, SIGTERMs the process group, SIGKILLs after 5 s, and for a
+  GPU stage posts ComfyUI `/interrupt` so the card drops the prompt the dead process was
+  waiting on; the thread records the exit as `cancelled` (a new status, in the SSE `done`
+  event and the panel's bar). `POST /runs/{id}/cancel`: `202`, `409` when over, `404`.
+- **The API.** `anim/api/concept.py` builds the tab's state from the files (`GET
+  /concept/{unit}`: the base attempts and every view's with URLs through the existing
+  `candidates` / `views` frame sets — the URL is the file's position in the listing, the
+  trick `curation.views_of` uses; `locked`, `gates`, `defaults`, `last_seed`, `views_stale`)
+  and the registry listing (`GET /models`). `POST /concept/{unit}/generate` takes one `op`
+  with that op's flags by name and becomes `anim concept …` argv through the run manager
+  (`ConceptRequest.args`, the `PaletteRequest` pattern), so a flag the stage gains is exposed
+  for free; `PUT …/upload`, `POST …/pick`, `POST …/views/{view}/pick`, `PUT …/defaults` are
+  the CPU writes, inline.
+- **The Concept tab.** `web/src/concept.ts` (pure, vitest: the view groups, the seed lock,
+  the request each button builds, the optimistic pick, the captions, the picker's choices and
+  "same as the unit's default") and `concept-view.ts` (DOM): the unit (from `/curation` plus
+  every `*_concept` job, or a typed slug for a unit with nothing yet), one picker per family
+  (checkpoint select, LoRA rows with strengths, + LoRA, save as unit default), × 1–4, lock
+  seed, the base (prompt, Generate, Upload PNG, the strip), the views (All / Front ✓ / Back /
+  Side / Top-down, the advanced `<details>`, a prompt + reset + Generate per view, the strip),
+  and under a clicked attempt the action bar — Accept · Regenerate · img2img (range) · Edit
+  (instruction) with the attempt's prompt, model and LoRAs. Every `button.gpu` waits while a
+  run holds the card — the panel's `/health` poll hands a run started from the CLI or the
+  Board to `setBusy` too — and Cancel does not. The Pipeline tab's one-line concept prompt is
+  gone; the Board is unchanged. `body.studio-board` widens the panel for the Concept tab as
+  for the Board.
+
+New: `gpu/models.registry.tsv`, `gpu/workflows/img2img_pass.json` (+ NOTES.md), `anim/api/concept.py`,
+`web/src/concept.ts` / `concept-view.ts`, `concept.Attempts` / `register_upload` / `plan_rework` /
+`render_pending` / `rework` / `set_defaults` / `migrate_manifest` / `migrate_views`,
+`models_lock.load_registry` / `resolve_model` / `resolve_loras`, `comfy.chain_loras` /
+`patch_checkpoint` / `object_info` / `combo_values` / `interrupt`, `curation.views_blocked`,
+`RunManager.cancel`, the `CONCEPT_EDIT_PROMPT` / `CONCEPT_VIEW_IMG2IMG_PROMPT` /
+`CONCEPT_FAMILIES` / `CONCEPT_MODELS` / `CONCEPT_IMG2IMG_STRENGTH` / `MODELS_REGISTRY` blocks
+in `anim/config.py`; the loaders in `concept_pass.json` and `view_pass.json` retitled. Tests:
+`tests/test_models_registry.py`, `tests/test_concept_api.py`, the concept tests for upload /
+img2img / edit / the registry / chaining / the gate, FakeComfy's `/object_info` and
+`/interrupt`. pytest 604 → **626 passed**, 4 skipped; vitest 45 → **59**.
+
+**Not yet run on the GPU.** Everything above is green against FakeComfy and the real knight
+job read through the new state builder; the manual test (#301) is the first real generate,
+img2img, edit and cancel from the tab. The API container bind-mounts the repo, so `web/dist`
+is live at once and the Python routes appear on the next `docker compose restart anim-api`.
+
+---
+
 ## 2026-09-22 — the multi-view reference feature: the prompt names the parts, no face off-front, one reference per view
 
 **What.** [#298](http://192.168.1.158:8700/work_packages/298). The first identity gate (the run

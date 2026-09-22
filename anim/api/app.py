@@ -17,6 +17,7 @@ Routes (all JSON unless said otherwise):
     GET  /runs                             every run this API knows, newest first
     GET  /runs/{run}                       status + log
     GET  /runs/{run}/events                text/event-stream: log, progress, done
+    POST /runs/{run}/cancel                stop a queued or running stage -> 202 + the run (status `cancelled`)
     GET  /settings   PUT /settings         work/project.json (palette shown expanded)
     GET  /palette                          the project palette record (palette.json)
     POST /palette  {"lospec"} | {"file"} | {"unit", "colours" | "from_sprite"}
@@ -31,6 +32,14 @@ Routes (all JSON unless said otherwise):
     PUT  /curation/{unit}/views/{view}  {"state"}   a view of the base -> pending | accepted | rejected
     GET  /export/{unit}                    the last `anim export` of a unit: files, animations, warnings
     GET  /turnaround/{unit}                the turnaround: per direction status, seconds, the stills' URLs, the identity table
+    GET  /concept/{unit}                   the concept generation feature: the base attempts, every view's attempts, picks, defaults
+    POST /concept/{unit}/generate          {"op": txt2img|views|img2img|edit, ...} -> `anim concept` in the background -> 202 + the run
+                                           (423 while the base gate is pending for a view op)
+    PUT  /concept/{unit}/upload            the owner's PNG (image/png body) as a base candidate
+    POST /concept/{unit}/pick  {"index"}   accept that base candidate (= the base gate)
+    POST /concept/{unit}/views/{view}/pick {"index"}  accept that view attempt for the turnaround
+    PUT  /concept/{unit}/defaults          {"family", "model", "loras"}: the unit's default checkpoint + LoRAs
+    GET  /models                           the model registry by family and role (?probe=1 asks ComfyUI what is installed)
     GET  /health                           {"ok": true, "work_dir": ..., "comfyui": reachable?}
     GET  /                                 web/dist/ when built, else the jobs page
     GET  /jobs/{job}/review                the click-to-pick page
@@ -52,12 +61,14 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, \
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from anim import __version__, comfy, config, curation, palettekit
+from anim import __version__, comfy, config, curation, models_lock, palettekit
+from anim.api import concept as concept_api
 from anim.api import jobs as jobs_api
 from anim.api import pages, settings
 from anim.api import runs as runs_api
 from anim.api.runs import RunManager, RunRefused
 from anim.job import Job
+from anim.stages import concept as concept_stage
 from anim.stages import export as export_stage
 from anim.stages import turnaround as turnaround_stage
 from anim.stages.review import ReviewApp
@@ -91,6 +102,96 @@ class GateRequest(BaseModel):
 
 class RegenerateRequest(BaseModel):
     seed: int | None = None
+
+
+class ConceptRequest(BaseModel):
+    """`POST /concept/{unit}/generate` (the concept generation feature). One
+    `op`; the rest are that op's `anim concept` flags by their `--help`
+    names, so `args()` is what the run manager turns into argv."""
+
+    op: str
+    prompt: str | None = None
+    views: list[str] | str | None = None
+    view_prompt: str | None = None
+    ref: str | None = None
+    strength: float | None = None
+    instruction: str | None = None
+    count: int | None = Field(default=None, ge=1, le=4)
+    seed: int | None = None
+    model: str | None = None
+    loras: list[str | dict[str, Any]] | None = None
+    lora_strength: float | None = None
+    sketch: str | None = None
+    fresh: bool = False
+    force: bool = False
+
+    def args(self, unit: str) -> dict[str, Any]:
+        args: dict[str, Any] = {"slug": unit}
+        if self.op == "txt2img":
+            if not self.prompt or not self.prompt.strip():
+                raise HTTPException(400, "txt2img needs a `prompt`")
+            args["prompt"] = self.prompt.strip()
+            if self.sketch:
+                args["sketch"] = self.sketch
+            if self.fresh:
+                args["fresh"] = True
+        elif self.op == "views":
+            views = self.views
+            if isinstance(views, list):
+                views = ",".join(v.strip() for v in views if v.strip())
+            args["views"] = views if views else ""
+            if self.view_prompt and self.view_prompt.strip():
+                args["view_prompt"] = self.view_prompt.strip()
+        elif self.op in ("img2img", "edit"):
+            if not self.ref:
+                raise HTTPException(400, f"{self.op} needs a `ref` (base:NN or <view>:NN)")
+            args[self.op] = self.ref
+            if self.op == "img2img":
+                if self.strength is not None:
+                    args["strength"] = self.strength
+                if self.prompt and self.prompt.strip():
+                    args["prompt"] = self.prompt.strip()
+            else:
+                if not self.instruction or not self.instruction.strip():
+                    raise HTTPException(400, "edit needs an `instruction`")
+                args["instruction"] = self.instruction.strip()
+        else:
+            raise HTTPException(400, f"op is txt2img, views, img2img or edit, not {self.op!r}")
+        if self.count is not None:
+            args["count"] = self.count
+        if self.seed is not None:
+            args["seed"] = self.seed
+        if self.model:
+            args["model"] = self.model
+        if self.loras is not None:
+            specs = []
+            for spec in self.loras:
+                if isinstance(spec, dict):
+                    file = str(spec.get("file") or "").strip()
+                    if not file:
+                        raise HTTPException(400, "a LoRA needs a `file`")
+                    strength = spec.get("strength")
+                    specs.append(f"{file}:{strength}" if strength is not None else file)
+                else:
+                    specs.append(str(spec))
+            args["lora"] = specs
+        if self.lora_strength is not None:
+            args["lora_strength"] = self.lora_strength
+        if self.force:
+            args["force"] = True
+        return args
+
+
+class PickRequest(BaseModel):
+    index: int
+    parts: str | None = None
+    avoid: str | None = None
+
+
+class DefaultsRequest(BaseModel):
+    family: str = "zimage"
+    model: str | None = None
+    loras: list[str | dict[str, Any]] = Field(default_factory=list)
 
 
 class PaletteRequest(BaseModel):
@@ -275,6 +376,18 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no",
                      "Connection": "keep-alive"})
 
+    @app.post("/runs/{run_id}/cancel", status_code=202)
+    def cancel_run(run_id: str) -> Any:
+        """The concept generation feature's Cancel: stop the stage's process
+        (and ComfyUI's current prompt for a GPU stage); the run ends as
+        `cancelled` and its GPU slot is free again."""
+        try:
+            run = manager.cancel(run_id)
+        except RunRefused as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"error": str(exc), **exc.extra})
+        return run.record()
+
     # --- settings ----------------------------------------------------------
     @app.get("/settings")
     def get_settings() -> dict[str, Any]:
@@ -425,6 +538,101 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
                                      f"{{\"stage\": \"turnaround\", \"args\": "
                                      f"{{\"unit\": \"{unit}\"}}}}")
         return row
+
+    # --- the concept generation feature -----------------------------------
+    def _concept_state(unit: str) -> dict[str, Any]:
+        row = concept_api.state(unit, work_dir)
+        if row is None:
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        return row
+
+    @app.get("/concept/{unit}")
+    def get_concept(unit: str) -> dict[str, Any]:
+        """The base attempts, every view's attempts, the picks, the unit's
+        model defaults and whether the views are locked behind the base gate."""
+        return _concept_state(unit)
+
+    @app.post("/concept/{unit}/generate", status_code=202)
+    def generate_concept(unit: str, body: ConceptRequest, response: Response) -> Any:
+        """`anim concept ...` in the background: txt2img of the base, views of
+        the accepted base, img2img or an edit of one attempt. 423 while a
+        view op waits for the base gate, 409 while the GPU is busy."""
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        args = body.args(unit)
+        locked = _gate("concept", args, None)
+        if locked is not None:
+            return locked
+        try:
+            run = manager.start("concept", args=args)
+        except RunRefused as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"error": str(exc), **exc.extra})
+        response.headers["Location"] = f"/runs/{run.id}"
+        return run.record()
+
+    @app.put("/concept/{unit}/upload")
+    async def upload_concept(unit: str, request: Request) -> dict[str, Any]:
+        """The owner's own image as a base candidate: the body is the PNG.
+        415 when it is not one. No GPU, no run - the state comes straight back."""
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        data = await request.body()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(415, "the body is not a PNG")
+        name = request.headers.get("x-filename") or "upload.png"
+        try:
+            row = concept_stage.register_upload(unit, data, name=Path(name).name, work_dir=work_dir)
+        except ValueError as exc:
+            raise HTTPException(415, str(exc)) from None
+        return {**_concept_state(unit), "uploaded": row}
+
+    @app.post("/concept/{unit}/pick")
+    def pick_concept(unit: str, body: PickRequest) -> dict[str, Any]:
+        """Accept a base candidate: `anim concept --pick NN`, which IS the
+        base gate. Optional `parts` / `avoid` phrases ride along."""
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        try:
+            concept_stage.pick(unit, body.index, parts=body.parts, avoid=body.avoid,
+                               work_dir=work_dir)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
+                                str(exc)) from None
+        return _concept_state(unit)
+
+    @app.post("/concept/{unit}/views/{view}/pick")
+    def pick_concept_view(unit: str, view: str, body: PickRequest) -> dict[str, Any]:
+        """Accept one view attempt for the turnaround: `--pick-view view=NN`."""
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        if view not in config.CONCEPT_VIEWS:
+            raise HTTPException(404, f"no view {view!r}; one of {list(config.CONCEPT_VIEWS)}")
+        try:
+            concept_stage.pick_view(unit, {view: body.index}, work_dir=work_dir)
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
+                                str(exc)) from None
+        return _concept_state(unit)
+
+    @app.put("/concept/{unit}/defaults")
+    def put_concept_defaults(unit: str, body: DefaultsRequest) -> dict[str, Any]:
+        """The unit's default checkpoint + LoRAs for one family, checked
+        against the registry; a later generate without its own picks uses them."""
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        try:
+            concept_stage.set_defaults(unit, body.family, model=body.model, loras=body.loras,
+                                       work_dir=work_dir)
+        except (ValueError, models_lock.RegistryError) as exc:
+            raise HTTPException(400, str(exc)) from None
+        return _concept_state(unit)
+
+    @app.get("/models")
+    def get_models(probe: bool = False) -> dict[str, Any]:
+        """gpu/models.registry.tsv by family and role; `?probe=1` also asks
+        ComfyUI which files it can see (3 s timeout, opt-in like /health)."""
+        return concept_api.models(probe=probe, comfyui_url=comfyui_url)
 
     # --- the pages ---------------------------------------------------------
     if web_dist.is_dir() and (web_dist / "index.html").exists():

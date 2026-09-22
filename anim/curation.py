@@ -661,11 +661,49 @@ def gate_blocks(unit: str, stage: str, *, action: str | None = None,
     return None
 
 
+def views_blocked(unit: str, work_dir: Path | None = None) -> str | None:
+    """The concept generation feature: why the views of `unit` may not be
+    drawn now, or None. A view is drawn FROM the base, so it waits for a
+    base to exist and for its gate to be accepted - GPU time on a character
+    nobody has approved is the thing the gate exists to save. A unit with a
+    base and no curation record at all (legacy) is not blocked."""
+    work = _work(work_dir)
+    base_job = Job.open(f"{unit}_base", work)
+    final = None
+    if base_job.manifest_path.exists():
+        final = (jobs_api._manifest(base_job).get("render") or {}).get("final")
+    if not final or not (base_job.render_dir / final).exists():
+        return (f"{unit}: no base to draw the views from - pick one first "
+                f"(`anim concept --unit {unit} --pick NN`, or the Concept tab)")
+    record = read(unit, work)
+    if record is None:
+        return None
+    if record["gates"].get("base") != "accepted":
+        return (f"{unit}: the base gate is pending - accept the base before its views "
+                f"are drawn (`anim curate {unit} --accept-gate base`, or the board)")
+    return None
+
+
+def _concept_touches_views(args: argparse.Namespace) -> bool:
+    if getattr(args, "views", None) is not None:
+        return True
+    for flag in ("img2img", "edit"):
+        ref = getattr(args, flag, None)
+        if isinstance(ref, str) and ref.partition(":")[0].strip().lower() in config.CONCEPT_VIEWS:
+            return True
+    return False
+
+
 def gate_for_namespace(stage: str, args: argparse.Namespace,
                        work_dir: Path | None = None, *, mode: str | None = None
                        ) -> str | None:
     """The gate answer for a parsed CLI line - what `anim <stage>` asks in
     `cli.main` and what `POST /jobs` asks with the same parser."""
+    if stage == "concept":
+        unit = getattr(args, "slug", None) or getattr(args, "unit", None)
+        if unit and _concept_touches_views(args):
+            return views_blocked(unit, work_dir)
+        return None
     if stage not in BASE_GATED and stage not in TURNAROUND_GATED:
         return None
     if getattr(args, "page_only", False) or getattr(args, "skeleton_only", False):

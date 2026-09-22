@@ -13,6 +13,8 @@ Endpoints, matching ComfyUI's real shapes:
     POST /prompt            {"prompt_id": ...}
     GET  /history/<id>      {"<id>": {"status": ..., "outputs": {...}}}
     GET  /view?filename=... the canned PNG bytes
+    GET  /object_info/<class>  a node's schema (the loaders' file lists, for `GET /models?probe=1`)
+    POST /interrupt         200, recorded (a cancelled run's "drop the prompt")
 """
 
 from __future__ import annotations
@@ -50,7 +52,8 @@ class FakeComfy:
 
     def __init__(self, *, png: bytes | None = None, fail_prompt: bool = False,
                  error_job: bool = False, batch: list[bytes] | None = None,
-                 version: str = "0.35.0-fake") -> None:
+                 version: str = "0.35.0-fake",
+                 object_info: dict[str, dict[str, list[str]]] | None = None) -> None:
         self.png = png if png is not None else canned_png()
         # The clip render feature's SaveImage returns one file per frame; when
         # `batch` is given, /history lists that many and /view serves them by
@@ -59,6 +62,9 @@ class FakeComfy:
         self.fail_prompt = fail_prompt
         self.error_job = error_job
         self.version = version
+        # `{class_type: {input_name: [files]}}` -> what /object_info answers.
+        self.object_info = object_info or {}
+        self.interrupts = 0
         self.uploads: list[str] = []
         self.prompts: list[dict[str, Any]] = []
         self.views: list[dict[str, str]] = []
@@ -133,6 +139,15 @@ class FakeComfy:
                             for i in range(count)]}},
                     }})
                     return
+                if parsed.path.startswith("/object_info/"):
+                    class_type = parsed.path.rsplit("/", 1)[-1]
+                    combos = fake.object_info.get(class_type)
+                    if combos is None:
+                        self._json(200, {})
+                        return
+                    self._json(200, {class_type: {"input": {"required": {
+                        name: [list(files)] for name, files in combos.items()}}}})
+                    return
                 if parsed.path == "/view":
                     query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
                     fake.views.append(query)
@@ -153,6 +168,10 @@ class FakeComfy:
                     fake.uploads.append(name)
                     self._json(200, {"name": name, "subfolder": "",
                                      "type": "input"})
+                    return
+                if parsed.path == "/interrupt":
+                    fake.interrupts += 1
+                    self._json(200, {})
                     return
                 if parsed.path == "/prompt":
                     if fake.fail_prompt:

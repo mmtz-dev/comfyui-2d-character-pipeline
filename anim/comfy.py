@@ -81,6 +81,39 @@ class ComfyClient:
         except (ComfyError, ValueError):
             return False
 
+    def object_info(self, class_type: str) -> dict[str, Any]:
+        """`GET /object_info/<class>` -> that node's schema. The concept
+        generation feature reads the loaders' combo lists out of it (which
+        checkpoint / LoRA files ComfyUI can actually see) for `GET /models`."""
+        response = self._get(f"/object_info/{class_type}")
+        if response.status_code != 200:
+            raise ComfyError(f"/object_info/{class_type} returned {response.status_code}")
+        payload = response.json()
+        return payload.get(class_type) or {}
+
+    def combo_values(self, class_type: str, input_name: str) -> list[str]:
+        """The file list a loader's combo input offers, or [] when the node
+        class is not installed or the input is not a combo."""
+        try:
+            info = self.object_info(class_type)
+        except ComfyError:
+            return []
+        required = ((info.get("input") or {}).get("required") or {})
+        spec = required.get(input_name)
+        if isinstance(spec, list) and spec and isinstance(spec[0], list):
+            return [str(v) for v in spec[0]]
+        return []
+
+    def interrupt(self) -> bool:
+        """`POST /interrupt`: stop the prompt ComfyUI is executing now. Used by
+        a cancelled run so the card does not finish an image nobody wants.
+        Never raises - a cancel must not fail because the service is off."""
+        try:
+            response = self.session.post(self._url("/interrupt"), timeout=self.timeout)
+        except requests.RequestException:
+            return False
+        return response.status_code == 200
+
     def upload_image(self, path: Path, *, subfolder: str = "",
                      overwrite: bool = True, name: str | None = None) -> str:
         """Upload one file and return the name a LoadImage node should use.
@@ -269,6 +302,66 @@ def bypass(workflow: dict[str, Any], needle: str, passthrough: str) -> dict[str,
                 other["inputs"][key] = list(source)
     del workflow[node_id]
     return workflow
+
+
+def patch_checkpoint(workflow: dict[str, Any], file: str) -> dict[str, Any]:
+    """The concept generation feature: swap the model the graph loads. The
+    loader is titled `PATCH checkpoint (...)` - "checkpoint", not "model",
+    because `find_node` matches substrings and the LoRA title already says
+    `strength_model`. Whichever of `unet_name` / `model_name` / `ckpt_name`
+    the loader has is the input that takes the file."""
+    node_id = find_node(workflow, "checkpoint")
+    inputs = workflow[node_id].setdefault("inputs", {})
+    key = next((k for k in ("unet_name", "model_name", "ckpt_name") if k in inputs), None)
+    if key is None:
+        raise KeyError(f"node {node_id} ({workflow[node_id].get('class_type')}) has no "
+                       f"model-file input; it has {sorted(inputs)}")
+    inputs[key] = file
+    return workflow
+
+
+def chain_loras(workflow: dict[str, Any], needle: str,
+                loras: list[tuple[str, float]] | list[dict[str, Any]]) -> list[str]:
+    """Set the LoRA node titled `needle` to the first LoRA and clone it once
+    per extra one, chained model -> model, so N LoRAs stack the way N
+    `LoraLoaderModelOnly` nodes in a row do in the editor. No LoRAs: the
+    node is bypassed (`bypass`), never left at strength 0 - ComfyUI validates
+    the filename even then. Returns the ids of the nodes that carry a LoRA,
+    in chain order. Mutates the workflow.
+    """
+    rows = [(r["file"], float(r["strength"])) if isinstance(r, dict) else (r[0], float(r[1]))
+            for r in loras]
+    rows = [(f, s) for f, s in rows if s != 0]
+    if not rows:
+        bypass(workflow, needle, "model")
+        return []
+    anchor = find_node(workflow, needle)
+    patch(workflow, needle, lora_name=rows[0][0], strength_model=rows[0][1])
+    if len(rows) == 1:
+        return [anchor]
+    numeric = [int(k) for k in workflow if str(k).isdigit()]
+    next_id = (max(numeric) + 1) if numeric else 1000
+    consumers = [(other_id, key) for other_id, other in workflow.items()
+                 if other_id != anchor
+                 for key, value in (other.get("inputs") or {}).items()
+                 if isinstance(value, list) and len(value) == 2 and value[0] == anchor]
+    ids = [anchor]
+    previous = anchor
+    for offset, (file, strength) in enumerate(rows[1:], 1):
+        node_id = str(next_id)
+        next_id += 1
+        clone = json.loads(json.dumps(workflow[anchor]))
+        clone["inputs"]["model"] = [previous, 0]
+        clone["inputs"]["lora_name"] = file
+        clone["inputs"]["strength_model"] = strength
+        title = (clone.get("_meta") or {}).get("title", "LoRA")
+        clone.setdefault("_meta", {})["title"] = f"{title} +{offset}".replace(PATCH_PREFIX, "chained", 1)
+        workflow[node_id] = clone
+        ids.append(node_id)
+        previous = node_id
+    for other_id, key in consumers:
+        workflow[other_id]["inputs"][key] = [previous, 0]
+    return ids
 
 
 def unlink(workflow: dict[str, Any], needle: str) -> dict[str, Any]:

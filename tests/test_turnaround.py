@@ -128,7 +128,9 @@ def test_the_reference_map_follows_the_compass():
     assert m["s225"] == ("front_left", "front") and m["s315"] == ("front_right", "front")
     for d in SIDE:
         assert config.turnaround_reference_views(d)[-1] == config.FRONT_VIEW
-        assert config.turnaround_reference_views(f"t{config.direction(d)[0]}") == m[d]
+        # A top cell asks for the top-down view first (the concept generation
+        # feature, #285), then its yaw's row.
+        assert config.turnaround_reference_views(f"t{config.direction(d)[0]}") == ("top", *m[d])
     # Every view a direction may want is a view `concept --views` can render.
     for views in m.values():
         assert all(v == "front" or v in config.CONCEPT_VIEWS for v in views)

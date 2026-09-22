@@ -387,7 +387,8 @@ def test_put_view_is_the_views_step_under_the_base_gate(api, unit, work_dir):
     board = api.put("/curation/knight/views/left", json={"state": "rejected"}).json()
     assert board["views"]["left"] == {**board["views"]["left"], "state": "rejected", "file": None,
                                       "url": None, "provisional": False}
-    assert api.put("/curation/knight/views/top", json={"state": "accepted"}).status_code == 404
+    assert api.put("/curation/knight/views/top", json={"state": "accepted"}).status_code == 200
+    assert api.put("/curation/knight/views/under", json={"state": "accepted"}).status_code == 404
     assert api.put("/curation/knight/views/back", json={"state": "maybe"}).status_code == 400
     assert board["gates"]["base"] == "accepted", "the views step moves no gate"
 

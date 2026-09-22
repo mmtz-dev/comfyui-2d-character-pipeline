@@ -1,9 +1,10 @@
-// The studio panel: the pipeline beside the Piskel canvas. Two tabs. The
+// The studio panel: the pipeline beside the Piskel canvas. Three tabs. The
 // Pipeline tab is four sections - Job (open a job's frames), Save (write them
 // back), Pipeline (start stages, follow the run), Palette (the project's
 // colours in Piskel's list); the Board tab is the curation board
-// (board-view.ts), which widens the panel because a grid of frame strips
-// needs the room. The Run section shows on both. Plain DOM, no framework:
+// (board-view.ts) and the Concept tab the concept generation feature
+// (concept-view.ts) - both widen the panel because a grid of images needs
+// the room. The Run section shows on all three. Plain DOM, no framework:
 // the page is one screen and Piskel itself is jQuery-era JavaScript, so a
 // second rendering model would be a second thing to learn.
 
@@ -24,6 +25,7 @@ import {
   type RunRecord,
 } from "./api";
 import { BoardView } from "./board-view";
+import { ConceptTab } from "./concept-view";
 import { chooseFrameSet, phaseLabels, type OpenableSet } from "./frames";
 import { projectPalette } from "./palette";
 import {
@@ -38,7 +40,7 @@ import { describeRun, followRun, viewOf, type RunView } from "./sse";
 
 const DEFAULT_FPS = 12;
 const TAB_KEY = "anim-studio.panel-tab";
-type Tab = "pipeline" | "board";
+type Tab = "pipeline" | "board" | "concept";
 
 /** What is open in the editor, if anything. */
 interface Opened {
@@ -103,7 +105,6 @@ export class StudioPanel {
     el("option", { value: "" }, "input: auto"),
     el("option", { value: "render" }, "input: render"),
     el("option", { value: "clip" }, "input: clip"));
-  private readonly conceptPrompt = el("input", { class: "studio-input", type: "text", placeholder: "concept prompt (who the character is)" });
   private readonly pipelineStatus = el("div", { class: "studio-status" });
   private readonly stageButtons: HTMLButtonElement[] = [];
   // Run
@@ -121,8 +122,14 @@ export class StudioPanel {
     openJob: (name) => void this.openByName(name),
     refreshHealth: () => void this.refreshHealth(),
   });
+  // Concept (the concept generation feature)
+  private readonly concept = new ConceptTab({
+    follow: (run) => this.follow(run),
+    refreshHealth: () => void this.refreshHealth(),
+  });
   private readonly tabButtons = new Map<Tab, HTMLButtonElement>();
   private tab: Tab = "pipeline";
+  private gpuRunSeen: string | null = null;
   // Health
   private readonly health: HTMLElement;
 
@@ -148,7 +155,13 @@ export class StudioPanel {
     this.root.replaceChildren(
       el("div", { class: "studio-tabs" },
         tabButton("pipeline", "Pipeline", "open a job, save frames, start stages"),
-        tabButton("board", "Board", "the curation board: accept / reject / regenerate per cell and per frame")),
+        tabButton("board", "Board", "the curation board: accept / reject / regenerate per cell and per frame"),
+        tabButton("concept", "Concept", "the concept generation feature: the base, its views, regenerate / img2img / edit, the model and LoRA picker")),
+      section(
+        "Concept",
+        "concept",
+        this.concept.root,
+      ),
       section(
         "Board",
         "board",
@@ -187,10 +200,7 @@ export class StudioPanel {
             () => this.run("clip", { job: this.jobName() })),
           gpu("bakeoff", "anim bakeoff --unit <slug> --action attack: two routes x two rigs",
             () => this.run("bakeoff", { unit: this.slug(), action: "attack" }))),
-        el("div", { class: "studio-row" },
-          this.conceptPrompt,
-          gpu("concept", "anim concept --unit <slug> --prompt ...: candidate base characters",
-            () => this.run("concept", { unit: this.slug(), prompt: this.conceptPrompt.value.trim() }))),
+        el("p", { class: "studio-help" }, "The base character and its views are on the Concept tab."),
         this.pipelineStatus,
       ),
       section(
@@ -238,14 +248,14 @@ export class StudioPanel {
     } catch {
       remembered = null;
     }
-    this.showTab(remembered === "board" ? "board" : "pipeline");
-    await Promise.all([this.refreshHealth(), this.refreshJobs(), this.refreshRuns(), this.refreshPalette(), this.board.start()]);
+    this.showTab(remembered === "board" || remembered === "concept" ? remembered : "pipeline");
+    await Promise.all([this.refreshHealth(), this.refreshJobs(), this.refreshRuns(), this.refreshPalette(), this.board.start(), this.concept.start()]);
   }
 
-  /** The Pipeline tab or the Board tab; the board widens the panel. */
+  /** The Pipeline tab, the Board tab or the Concept tab; the last two widen the panel. */
   showTab(tab: Tab): void {
     this.tab = tab;
-    document.body.classList.toggle("studio-board", tab === "board");
+    document.body.classList.toggle("studio-board", tab !== "pipeline");
     for (const [name, button] of this.tabButtons) button.classList.toggle("active", name === tab);
     for (const node of this.root.querySelectorAll<HTMLElement>("section[data-tab]")) {
       const owner = node.dataset.tab;
@@ -273,6 +283,20 @@ export class StudioPanel {
       this.health.textContent = health.gpu_run ? `GPU: ${health.gpu_run}` : `API v${health.version}`;
       this.health.className = `studio-health ${health.gpu_run ? "warn" : "ok"}`;
       this.health.title = `${health.work_dir}\nComfyUI at ${health.comfyui_url}`;
+      // A GPU run started anywhere (the CLI, the board) holds the Concept
+      // tab's buttons too; one that ended frees them.
+      if (health.gpu_run !== this.gpuRunSeen) {
+        this.gpuRunSeen = health.gpu_run;
+        if (health.gpu_run) {
+          try {
+            this.concept.setBusy(await getRun(health.gpu_run));
+          } catch {
+            this.concept.setBusy(null);
+          }
+        } else {
+          this.concept.setBusy(null);
+        }
+      }
     } catch (error) {
       this.health.textContent = "API unreachable";
       this.health.className = "studio-health bad";
@@ -400,11 +424,6 @@ export class StudioPanel {
   }
 
   private async run(stage: string, args: Record<string, unknown>): Promise<void> {
-    if (stage === "concept" && !args.prompt) {
-      status(this.pipelineStatus, "concept needs a prompt", "bad");
-      this.conceptPrompt.focus();
-      return;
-    }
     if (!args.job && !args.unit) {
       status(this.pipelineStatus, "pick a job first", "bad");
       return;
@@ -445,6 +464,7 @@ export class StudioPanel {
         void this.refreshRuns();
         void this.refreshHealth();
         if (this.tab === "board") void this.board.runFinished();
+        if (run.gpu) void this.concept.runFinished();
       }
     });
   }
@@ -453,7 +473,7 @@ export class StudioPanel {
     this.runTitle.textContent = `${view.id}${view.gpu ? "  (GPU)" : ""}`;
     this.runBar.style.width = `${view.percent ?? 0}%`;
     this.runBar.className = `studio-bar-fill ${view.status}`;
-    const kind = view.status === "done" ? "ok" : view.status === "failed" || view.status === "lost" ? "bad" : "";
+    const kind = view.status === "done" ? "ok" : view.status === "failed" || view.status === "lost" ? "bad" : view.status === "cancelled" ? "warn" : "";
     status(this.runLine, describeRun(view), kind);
     this.runLog.textContent = view.log.join("\n");
     this.runLog.scrollTop = this.runLog.scrollHeight;

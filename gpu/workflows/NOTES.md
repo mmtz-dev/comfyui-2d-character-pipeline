@@ -242,7 +242,38 @@ the aspect explains, that pad is the one-line change in `concept.render_views`.
 ### Patch points
 
 base image (`LoadImage`, image1), positive prompt (`TextEncodeQwenImageEditPlus.prompt`),
-seed, output prefix.
+seed, output prefix; since the concept generation feature also `PATCH checkpoint (model_name)`
+on the DiT loader and `PATCH optional LoRA (0.0 = bypassed)` - a `LoraLoaderModelOnly` between
+the loader and `ModelSamplingAuraFlow`, the same node `identity_pass.json` has, bypassed by
+`anim concept` unless `--lora` names a qwen-edit LoRA from `gpu/models.registry.tsv`. The
+stage also reuses this graph for an instruction edit (`anim concept --edit REF --instruction`):
+the parent attempt as image1 and `config.CONCEPT_EDIT_PROMPT` as the prompt.
+
+---
+
+## `img2img_pass.json` — the concept generation feature (2026-09-22)
+
+Classic img2img on the Z-Image stack: `anim concept --img2img REF --strength S` redraws one
+attempt (a base candidate or a view attempt) keeping its composition. `concept_pass.json`
+minus the ControlNet, with the latent coming from the source image instead of an empty one.
+
+| `class_type` | Inputs used | Where / what |
+|---|---|---|
+| `UNETLoader` (`PATCH checkpoint (unet_name)`), `CLIPLoader` (`lumina2`), `VAELoader`, `LoraLoaderModelOnly` (`PATCH Pixel-Art LoRA`), `ModelSamplingAuraFlow` shift 3, `CLIPTextEncode`, `ConditioningZeroOut`, `VAEDecode`, `SaveImage` | as in `concept_pass.json` | unchanged. |
+| `LoadImage` (`PATCH source image`) → `VAEEncode` | `pixels` = the attempt being reworked | the latent's size is the output's size, so a 768² attempt gives a 768² attempt - a drop-in for the one it reworks. The source is on the 16-px grid already (every attempt is the concept cell). |
+| `KSampler` (`PATCH seed - KSampler 8-step (denoise = strength)`) | `seed`, `denoise` = `--strength` | 8 steps, cfg 1, euler / simple as the turbo build wants; `denoise` is how much of the source is redrawn. `config.CONCEPT_IMG2IMG_STRENGTH` = 0.55; the studio's slider runs 0.3-0.9. |
+
+**TODO-verify on the GPU**: Z-Image-Turbo at 8 steps with `denoise < 1` (the turbo schedule
+is distilled for a full pass; a partial one may want fewer steps - `steps * strength` is the
+usual rule and would be a one-line patch on the same node). The graph validates against
+`/object_info` (every node and key is one `concept_pass.json` already sends); what is
+unverified is the picture.
+
+### Patch points
+
+source image (`LoadImage`), positive prompt, seed + `denoise` (one node), checkpoint, Pixel-Art
+LoRA `lora_name` + `strength_model` (node removed with no LoRA, cloned and chained with more
+than one - `anim.comfy.chain_loras`), output prefix.
 
 ---
 
@@ -297,8 +328,13 @@ skeleton instead of a posed character.
 | `identity_pass.json` | image1 reference sprite, image2 skeleton strip, image3 pose-pass output, LoRA strength, positive prompt, seed, output prefix |
 | `base_sprite.json` | standing skeleton filename, control `strength`, unit-description prompt, cell size, seed, output prefix |
 | `clip_render.json` | reference image filename, control video filename, clip size (width/height/length), positive prompt, negative prompt, seed (+ steps/cfg on the same node), output prefix |
-| `concept_pass.json` | sketch filename (scribble control; node removed when there is no sketch), control `strength`, Pixel-Art LoRA `lora_name` + `strength_model` (node removed at strength 0), positive prompt, cell size (square), seed, output prefix |
-| `view_pass.json` | base image (image1, also the latent), positive prompt (the view sentence + parts phrase), seed, output prefix |
+| `concept_pass.json` | checkpoint (`unet_name`), sketch filename (scribble control; node removed when there is no sketch), control `strength`, Pixel-Art LoRA `lora_name` + `strength_model` (node removed with no LoRA, chained with several), positive prompt, cell size (square), seed, output prefix |
+| `img2img_pass.json` | checkpoint (`unet_name`), source image, Pixel-Art LoRA (as above), positive prompt, seed + `denoise`, output prefix |
+| `view_pass.json` | checkpoint (`model_name`), optional LoRA (bypassed at none), base image (image1, also the latent), positive prompt (the view sentence + parts phrase, or an edit instruction), seed, output prefix |
+
+The checkpoint loaders are titled `PATCH checkpoint (...)` and never `PATCH model ...`:
+`anim.comfy.find_node` matches a substring of the title, and the LoRA node's title already
+contains `strength_model`.
 
 `LoadImage` filenames resolve against the container's `/basedir/input/`, so the CPU
 pipeline must copy its strips there before enqueuing.

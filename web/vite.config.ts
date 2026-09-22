@@ -15,7 +15,7 @@ export default defineConfig({
     host: true,
     port: 5173,
     proxy: Object.fromEntries(
-      ["/jobs", "/runs", "/settings", "/health", "/palette", "/curation", "/docs", "/openapi.json"].map((route) => [
+      ["/jobs", "/runs", "/settings", "/health", "/palette", "/curation", "/turnaround", "/export", "/concept", "/models", "/docs", "/openapi.json"].map((route) => [
         route,
         { target: "http://127.0.0.1:8720", changeOrigin: false },
       ]),

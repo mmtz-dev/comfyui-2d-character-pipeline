@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from anim import config
 
@@ -90,3 +90,131 @@ def _string_inputs(workflow: dict[str, Any]) -> set[str]:
             if isinstance(value, str):
                 values.add(value)
     return values
+
+
+# ---------------------------------------------------------------------------
+# The registry - the concept generation feature's model / LoRA picker
+# ---------------------------------------------------------------------------
+# gpu/models.registry.tsv says what each locked file IS: its workflow family
+# (a Z-Image graph cannot load a Qwen checkpoint) and its role. The lock keeps
+# the hashes; this keeps the meaning. Joined by `file`.
+FAMILIES = ("zimage", "qwen-edit", "wan")
+ROLES = ("checkpoint", "lora", "controlnet", "te", "vae")
+
+
+class RegistryError(ValueError):
+    """A model or LoRA the registry does not offer for that family."""
+
+
+@dataclass(frozen=True)
+class RegistryEntry:
+    file: str
+    family: str
+    role: str
+    label: str
+    trigger: str | None
+    default_strength: float | None
+    locked: LockedModel | None
+
+    def as_row(self) -> dict[str, Any]:
+        return {"file": self.file, "family": self.family, "role": self.role,
+                "label": self.label, "trigger": self.trigger,
+                "default_strength": self.default_strength,
+                "locked": self.locked is not None,
+                "repo": self.locked.repo if self.locked else None,
+                "license": self.locked.license if self.locked else None}
+
+
+def load_registry(path: Path | None = None,
+                  lock_path: Path | None = None) -> list[RegistryEntry]:
+    """Every row of the registry, joined to the lock. Missing file -> empty
+    list (like `load`): a test work dir has no GPU tree."""
+    path = Path(path) if path is not None else config.MODELS_REGISTRY
+    if not path.exists():
+        return []
+    locked = {m.file: m for m in load(lock_path)}
+    entries: list[RegistryEntry] = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        parts = [p.strip() for p in line.split("\t")]
+        if len(parts) != 6:
+            raise RegistryError(f"{path}:{number}: expected 6 tab-separated columns, "
+                                f"got {len(parts)}: {line!r}")
+        file, family, role, label, trigger, strength = parts
+        if family not in FAMILIES:
+            raise RegistryError(f"{path}:{number}: family {family!r} is not one of {FAMILIES}")
+        if role not in ROLES:
+            raise RegistryError(f"{path}:{number}: role {role!r} is not one of {ROLES}")
+        entries.append(RegistryEntry(
+            file=file, family=family, role=role, label=label or file,
+            trigger=None if trigger in ("", "-") else trigger,
+            default_strength=None if strength in ("", "-") else float(strength),
+            locked=locked.get(file)))
+    return entries
+
+
+def registry_for(family: str, role: str | None = None,
+                 path: Path | None = None, lock_path: Path | None = None
+                 ) -> list[RegistryEntry]:
+    return [e for e in load_registry(path, lock_path)
+            if e.family == family and (role is None or e.role == role)]
+
+
+def resolve_model(family: str, name: str | None, *, default: str,
+                  path: Path | None = None, lock_path: Path | None = None) -> str:
+    """The checkpoint file to patch in: `name` when the registry offers it
+    for `family`, the workflow's own default when None. A file the registry
+    does not know is refused HERE, before ComfyUI is asked."""
+    if name is None or not str(name).strip():
+        return default
+    name = str(name).strip()
+    offered = {e.file: e for e in registry_for(family, "checkpoint", path, lock_path)}
+    if name not in offered:
+        raise RegistryError(
+            f"{name!r} is not a {family} checkpoint in the registry; offered: "
+            f"{sorted(offered) or '(none - is gpu/models.registry.tsv mounted?)'}")
+    return name
+
+
+def parse_lora_spec(spec: str) -> tuple[str, float | None]:
+    """`file.safetensors:0.7` -> (file, 0.7); `file.safetensors` -> (file, None)."""
+    text = str(spec).strip()
+    file, sep, strength = text.rpartition(":")
+    if not sep or not file:
+        return text, None
+    try:
+        return file.strip(), float(strength)
+    except ValueError:
+        raise RegistryError(f"--lora takes FILE[:STRENGTH], not {spec!r}") from None
+
+
+def resolve_loras(family: str, specs: Sequence[str | dict[str, Any] | tuple[str, float | None]] | None,
+                  *, path: Path | None = None, lock_path: Path | None = None
+                  ) -> list[dict[str, Any]]:
+    """`["a.safetensors:0.8", {"file": "b.safetensors", "strength": 0.4}]` ->
+    `[{"file", "strength", "trigger"}, ...]`, each one a LoRA the registry
+    offers for `family`; a missing strength is the registry's default."""
+    if not specs:
+        return []
+    offered = {e.file: e for e in registry_for(family, "lora", path, lock_path)}
+    out: list[dict[str, Any]] = []
+    for spec in specs:
+        if isinstance(spec, dict):
+            file, strength = str(spec.get("file") or ""), spec.get("strength")
+        elif isinstance(spec, tuple):
+            file, strength = spec
+        else:
+            file, strength = parse_lora_spec(spec)
+        entry = offered.get(file)
+        if entry is None:
+            raise RegistryError(
+                f"{file!r} is not a {family} LoRA in the registry; offered: "
+                f"{sorted(offered) or '(none - is gpu/models.registry.tsv mounted?)'}")
+        strength = entry.default_strength if strength is None else float(strength)
+        if strength is None:
+            strength = 1.0
+        if any(row["file"] == file for row in out):
+            raise RegistryError(f"LoRA {file!r} given twice")
+        out.append({"file": file, "strength": strength, "trigger": entry.trigger})
+    return out

@@ -117,7 +117,7 @@ docker compose run --rm anim export knight              # sheets + atlas + Sprit
 | `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | **the game-02 adapter** of the spritesheet export feature — what game-02 reads today, unchanged: copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block; a phased pick adds `fps`, `loop`, `phases` and `durations_ms` to the block), then runs game-02's asset audit and fails loudly on a non-zero exit. `anim export --adapter game02` runs it per job. |
 | `export <unit>` | every `post/` of `<unit>_<action>[_<dir>]` | `work/_export/<unit>/sheets/*.png`, `atlas.json`, `<unit>.tres`, `preview.html` | **the spritesheet export feature** — the generic contract. One sheet per direction with one row per action (`--sheet packed`: one row-major sheet), a schema-versioned atlas (rects, phase tag and `duration_ms` per frame, loop, pivot, source job + commit), and a Godot 4 `SpriteFrames` over the sheets with per-frame durations — checked by reading it back before the stage returns. The cell is `frame_size` from `work/project.json` (`--size N` / `WxH` overrides). Missing cells are listed warnings, not errors. `--adapter game02` (or `export.adapter` in the settings) also runs `publish` per job. See "Export" below. |
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU. `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
-| `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>` and `--existing [png]` | `work/<slug>_concept/candidates/NN.png` + `job.json`; `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
+| `concept --unit <slug> --prompt "…"` | a description, optionally `--sketch <png>`, `--existing [png]`, `--upload <png>`, `--model` / `--lora FILE[:STRENGTH]`; or `--img2img REF --strength` / `--edit REF --instruction` on one attempt | `work/<slug>_concept/candidates/NN.png` + `job.json` (every attempt kept); `--pick NN\|existing` → `work/<slug>_base/render/concept_pick.png` | **a GPU stage — the character concept feature.** Text (or a sketch) to `--count` candidate front-facing base characters: Z-Image-Turbo int8 + the `tarn59` pixel-art LoRA (trigger and strength in `config.CONCEPT_LORA`), one `/prompt` and one seed per candidate, 768×768 on white; a sketch goes through the Fun ControlNet Union as a scribble, and without one no ControlNet node is in the graph. `--existing` registers the unit's published sprite (or a given file) as candidate 00 so the owner compares against it. `--pick` makes a candidate the unit's base render — the slot `clip`, `post --parts` and `publish` read — without touching `anim base`. Measured 2026-09-20: ~9 s per image after the first. See "Character concept" below. |
 | `bakeoff --unit <slug> --action attack` | the two rigs' attack clips | `work/bakeoff_<slug>_attack/{bakeoff.json,page/,report.md}` + one job per cell `work/bakeoff_<slug>_attack_<cell>/` | **a GPU stage — the frame route bake-off feature.** One action through both candidate routes for the in-between frames on both candidate rigs — four cells `V-kaykit`, `V-quaternius`, `K-kaykit`, `K-quaternius` — as ordinary `rig → clip → pick → post --parts` (V) and `rig → pick → strip → render → post --parts` (K) jobs called as a library, one seed, then one page with an animated 12 fps preview per row and one metric table. Resumable per cell (`--cells`, `--force`, `--page-only`); seconds per stage and VRAM per cell in `bakeoff.json`. The owner rules on the page; the stage picks nothing. See "The frame route bake-off" below. |
 | `turnaround <unit>` | the accepted base + the rig's idle clip | `work/<unit>_idle_<dir>/` per direction (`post/<unit>_idle_0.png`, `post/parts.json`), `work/<unit>_turnaround.json`, `work/_turnaround/<unit>/index.html` | **a GPU stage — the turnaround feature.** One idle still per direction from the accepted base — the eight side facings `s0 … s315` for v1 (`--elevation top` is accepted for #285) — each an ordinary `rig --yaw Y → clip → pick → post --input clip --parts` job called as a library: frame 0 of the Quaternius `Idle_Loop` held for 5 frames (Wan's shortest 4n+1 clip with a temporal window), skeleton over depth at gain 0.35, the middle frame is the still, every part locked to the base and the colours it shows written as **that direction's** `parts.json`. Resumable per direction (`--dirs`, `--force`, `--page-only`), one seed, seconds and VRAM per direction in the record, a failed direction recorded and skipped. The page asks the one question — *one character in 8 facings?* — with the identity numbers and no verdict; accepting it is the curation `turnaround` gate. `anim turnaround <unit> --force` after `concept --pick`. See "The turnaround" below. |
 | `palette --lospec <slug>` \| `--file <path>` | a Lospec slug (`https://lospec.com/palette-list/<slug>.json`) or a `.hex` / `.gpl` / one-row `.png` | `palette.gpl` + `.hex` + `.png` + `.json` beside `ANIM_PALETTE` | **the palette feature.** Installs the project palette — the `-remap` source of truth `post` reads. `--unit <slug> --colours '#…,#…'` or `--from-sprite <png>` writes the unit's sub-palette to `palette_units/<slug>.json`; `--list` prints what is installed; `--into <path>` targets another `.gpl`. Same input, same bytes. See "The project palette" below. |
@@ -403,6 +403,14 @@ curl -N http://192.168.1.158:8720/runs/<id>/events      # live log as SSE
 | `PUT /curation/{unit}/views/{view}` `{"state": "accepted" \| "rejected" \| "pending"}` | the views step under the base gate (the multi-view reference feature): one view of the base; the board's `views` row carries each view's state, file URL and `provisional` |
 | `GET /export/{unit}` | the last `anim export` of a unit under `work/_export/<unit>/`: `created`, `commit`, `frame_size`, `sheet_mode`, `sheets`, `animations` (frames, loop, fps, sheet, job), `warnings`, `files` with sizes; `404` with the `POST /jobs` line when there is none (the spritesheet export feature) |
 | `GET /turnaround/{unit}` | the last `anim turnaround` of a unit: seed, rig, per direction its status, seconds, `hidden_face`, silhouette and part numbers and the URLs of the still (`/jobs/<job>/frames/post/0.png`), the raw clip frame, the control frame (a new `control` frame set), the skeleton and the depth, and (the multi-view reference feature) `reference` — the view it used, `fallback`, the `warning`, and the URL of the image `clip` sent (`/jobs/<job>/frames/reference/0.png`) — plus `references` and `reference_map` for the run; the identity table; `404` with the `POST /jobs` line when there is none. The Board reads it to show the eight stills as the thing the `turnaround` gate accepts (the turnaround feature) |
+| `GET /concept/{unit}` | the concept generation feature: the base attempts (`candidates`, each with its `url`, `source`, `prompt`, `seed`, `model`, `loras`, `parent`), the accepted `pick`, `front_url`; every view with its `prompt`, `default_prompt`, `group` (`main` \| `advanced`), attempts, `pick` and curation `state`; `locked` (why the views may not be drawn now, or null), `gates`, the unit's model `defaults`, `last_seed`, `views_stale` |
+| `POST /concept/{unit}/generate` | `{"op": "txt2img" \| "views" \| "img2img" \| "edit", …}` with that op's `anim concept` flags by name (`prompt`, `views`, `view_prompt`, `ref`, `strength`, `instruction`, `count` 1–4, `seed`, `model`, `loras`, `lora_strength`, `fresh`, `force`) → `anim concept …` in the background, `202` + the run; `423` while a view op waits for the base gate, `409` while the GPU is busy, `400` for an op missing its input |
+| `PUT /concept/{unit}/upload` | the body is the PNG (`X-Filename` optional) → a base candidate of source `upload`; `415` when it is not a PNG. No run: the state comes back with `uploaded` |
+| `POST /concept/{unit}/pick` `{"index", "parts"?, "avoid"?}` | accept that base candidate — `anim concept --pick`, the base gate; `400` no such candidate |
+| `POST /concept/{unit}/views/{view}/pick` `{"index"}` | accept that view attempt for the turnaround — `--pick-view view=NN` |
+| `PUT /concept/{unit}/defaults` `{"family", "model", "loras"}` | the unit's default checkpoint + LoRAs for one family, checked against the registry (`400` otherwise) |
+| `GET /models` | `gpu/models.registry.tsv` by family and role, each row `locked` (in the lock) and — with `?probe=1` — `installed` (ComfyUI lists the file; 3 s timeout); plus the ops' families and the workflows' own checkpoints |
+| `POST /runs/{run}/cancel` | stop a queued or running stage: SIGTERM to its process group, SIGKILL after 5 s, ComfyUI `/interrupt` for a GPU stage; `202` + the run (it ends `cancelled`), `409` when it is over, `404` unknown |
 | `GET /health` | `ok`, the work dir, the active GPU run; `?probe=1` also asks ComfyUI (3 s timeout) |
 | `GET /` | the web pixel editor (`web/dist/`, see below), else a page listing the jobs and runs |
 | `GET /jobs/{job}/review` | the click-to-pick page |
@@ -455,10 +463,11 @@ timeline tiles carry a text tag); a re-pull is "copy upstream's `src/` over, re-
 |---|---|
 | Job | `GET /jobs`; Open loads the job's best PNG set — `post` (the 64×64 frames), else `clip`, else `frames` — as one animation, one layer, at the job's fps. The keyframe phase of each frame (`/jobs/{job}/picks`) shows on its timeline tile: `start`, `wind-up`, `action`… |
 | Save | every frame, layers flattened, alpha rounded to 0/255, `PUT` back to the set it came from. Same frame count and size as the set, or it refuses and says why |
-| Pipeline | `pick --phases` and `post` (CPU) start at a click; `clip`, `bakeoff` and `concept` (GPU) ask first — "this starts a GPU job". A `409` reads "GPU busy with `<id>`" and the panel follows that run instead |
+| Pipeline | `pick --phases` and `post` (CPU) start at a click; `clip` and `bakeoff` (GPU) ask first — "this starts a GPU job". A `409` reads "GPU busy with `<id>`" and the panel follows that run instead. The concept stage moved to its own tab |
 | Run | the run's log live over `/runs/{id}/events` (SSE) with a progress bar; recent runs are one click to follow |
 | Palette | the project palette from `GET /settings` (`palette.colours`, the palette feature's shape) goes into Piskel's palette list and is selected; a path-only or empty `palette` reads "no project palette" |
-| Board (a second tab) | the curation board — see "The curation board" below. The tab widens the panel; the Run section shows on both tabs |
+| Board (a second tab) | the curation board — see "The curation board" below. The tab widens the panel; the Run section shows on every tab |
+| Concept (a third tab) | the concept generation feature — the base, its views, regenerate / img2img / edit per attempt, the model and LoRA picker, Cancel. See "The Concept tab" below |
 
 **Build.** `web/dist/` is generated, never committed. The Dockerfile's node stage runs
 `npm ci && npm run build` and bakes it into the image at `/opt/anim/web/dist`; the API
@@ -466,7 +475,7 @@ timeline tiles carry a text tag); a re-pull is "copy upstream's `src/` over, re-
 
 ```bash
 cd web && npm ci && npm run build     # -> web/dist, served by the running anim-api at once
-cd web && npm test                    # vitest: the panel's pure parts (frame sets, phase tags, SSE, palette, alpha, the board)
+cd web && npm test                    # vitest: the panel's pure parts (frame sets, phase tags, SSE, palette, alpha, the board, the concept tab)
 cd web && npm run dev                 # http://localhost:5173, API routes proxied to :8720
 docker compose up -d --build anim-api # or rebuild the image and let it serve its own copy
 ```
@@ -499,11 +508,22 @@ docker compose run --rm anim concept --unit knight --parts "…" --avoid "…"  
 docker compose run --rm anim post knight_base --parts && docker compose run --rm anim publish knight_base
 
 # the views: the accepted base seen from the other sides, drawn FROM it by Qwen-Image-Edit
-docker compose run --rm anim concept --unit knight --views                 # back, left, right; 2 candidates each
+docker compose run --rm anim concept --unit knight --views                 # back, left, right, top; 2 attempts each
 docker compose run --rm anim concept --unit knight --views all --count 3   # + the four obliques
+docker compose run --rm anim concept --unit knight --views left --view-prompt "…"   # that view again, your sentence
 mkdir -p ~/.cache/claude/visuals/sprite-studio/views && cp -r work/_views/knight/. ~/.cache/claude/visuals/sprite-studio/views/
-docker compose run --rm anim concept --unit knight --pick-view back=01 left=00 right=01
+docker compose run --rm anim concept --unit knight --pick-view back=01 left=00 top=01
+
+# the concept generation feature: rework one attempt, choose the weights, keep everything
+docker compose run --rm anim concept --unit knight --upload scans/knight_base.png        # your art as a candidate
+docker compose run --rm anim concept --unit knight --img2img base:02 --strength 0.5      # classic redraw, composition kept
+docker compose run --rm anim concept --unit knight --edit left:01 --instruction "make the helmet red"
+docker compose run --rm anim concept --unit knight --prompt "…" --lora pixel_art_style_z_image_turbo.safetensors:0.6
+docker compose run --rm anim concept --unit knight --prompt "…" --fresh                   # start the unit's attempts over
 ```
+
+Or none of that: the studio's **Concept tab** (<http://192.168.1.158:8720/> → Concept) is the
+same stage with buttons — see "The Concept tab" below.
 
 - **No skeleton.** `base` is the pose stack because a standing sprite has to match the rig;
   a concept is earlier than that, so it is plain text-to-image on the same int8 Z-Image with
@@ -511,10 +531,14 @@ docker compose run --rm anim concept --unit knight --pick-view back=01 left=00 r
   0.8 (`--lora-strength`; 0 drops the node). The prompt is `config.CONCEPT_PROMPT`: the
   LoRA's trigger ("Pixel art style."), your description, then the base pass's framing and
   flat-white-background rules so `post`'s matte has something to key on.
-- **One `/prompt` and one seed per candidate** (base seed + index; the base seed is derived
-  from unit + prompt + sketch unless `--seed` is given), so any one candidate can be re-made
-  alone. `job.json` records the prompt, every seed, the LoRA and strength, the sketch, the
-  workflow hash (per candidate as sent, and the set's with seed 0) and the locked models.
+- **One `/prompt` and one seed per attempt** (first seed + index; random unless `--seed` is
+  given, derived from unit + prompt + sketch on a `--fresh` run so a unit's first set
+  reproduces), so any one attempt can be re-made alone. **Every attempt is kept** (schema
+  `anim.concept/2`, the concept generation feature): a run appends to `candidates/` and
+  `job.json`, `--fresh` is the old wipe, and each row says what it was made from and with —
+  `source` (`txt2img` / `upload` / `existing` / `img2img` / `edit`), its own prompt, seed,
+  `model`, `loras`, `parent` (the attempt it reworks), `strength` or `instruction`, the
+  workflow hash as sent and the locked models. A `/1` job is migrated in place on first touch.
 - **The sketch is a scribble.** The Fun ControlNet Union picks the condition from the image
   alone, so the sketch is sent as white strokes on black (a dark-on-light scan is inverted,
   transparency counts as paper), letterboxed into the cell, at `--sketch-strength` 0.6.
@@ -556,6 +580,57 @@ docker compose run --rm anim concept --unit knight --pick-view back=01 left=00 r
   alternative conditioning — Z-Image + the Fun ControlNet with a rig-rendered depth of the
   mannequin at that yaw — holds the pose but carries identity in the prompt only, the very
   failure this fixes; it is the fallback if the edit path stops keeping the character.
+  Since the concept generation feature a view asked for again gets **more** attempts (its
+  earlier ones and its pick stay), `--view-prompt "…"` replaces the config sentence for a
+  single view, and **`top`** (yaw 270 from above, `elevation: top`) is a view: the
+  turnaround's `t*` cells take it first (`config.turnaround_reference_views`). The views
+  **wait behind the base gate** — `anim concept --views` / `--edit <view>:NN` refuse with the
+  reason (the API's `423`) until the base is accepted; `--force` runs anyway.
+
+### The Concept tab — the concept generation feature
+
+The studio's Concept tab ([#300](http://192.168.1.158:8700/work_packages/300)) is `anim
+concept` with buttons and a memory: the base, its views, and a way to fix one attempt without
+redoing the rest.
+
+- **The base.** A prompt and **Generate** (× 1–4 per press, `--count`), or **Upload PNG**
+  (`--upload`: the file lands under `uploads/` as given and fitted into the cell as a
+  candidate — no GPU, no prompt). Every attempt stays in the strip; click one and **Accept**
+  it — that is `--pick`, and the base gate.
+- **The views.** **All** (back, side, top-down), **Front** (the accepted base itself — never
+  rendered), **Back**, **Side** (the left profile; the right is mirrored in a sheet),
+  **Top-down**; the right profile and the four obliques under an *advanced* fold. Each view
+  has its own prompt (seeded from `config.CONCEPT_VIEWS`, `--view-prompt`), its own strip of
+  attempts, and one accepted (`--pick-view`). Locked, with the reason, until the base is
+  accepted.
+- **Click an attempt** — a base candidate or a view attempt — for the action bar:
+  **Accept** · **Regenerate** (that target again with its prompt; a new seed unless the seed
+  is locked) · **img2img** (`--img2img REF --strength`: the attempt as the latent, redrawn at
+  the slider's strength on the Z-Image stack — `gpu/workflows/img2img_pass.json`, 0.3–0.9,
+  default `config.CONCEPT_IMG2IMG_STRENGTH` 0.55 — the composition kept; an optional prompt,
+  else the parent's, or for a view the unit's description seen from that side) · **Edit**
+  (`--edit REF --instruction "make the helmet red"`: the attempt as `image1` through
+  Qwen-Image-Edit with `config.CONCEPT_EDIT_PROMPT`). The new attempt lands on the same
+  target with `parent` = the one it reworks.
+- **The checkpoint and the LoRAs.** The settings row has one picker per family — *base*
+  (Z-Image: txt2img and img2img) and *views / edit* (Qwen-Image-Edit) — populated from
+  **`gpu/models.registry.tsv`** (`GET /models`): a hand-curated sibling of `models.lock`
+  (which is generated and fixed at 8 columns) saying which weight is a checkpoint / LoRA /
+  ControlNet / text encoder / VAE and for which family (`zimage` | `qwen-edit` | `wan`), with
+  a LoRA's trigger and default strength. Only the family's rows are offered, and the stage
+  refuses anything else before ComfyUI would (`models_lock.resolve_model` /
+  `resolve_loras`). LoRAs stack (`--lora FILE[:STRENGTH]` repeatable → chained
+  `LoraLoaderModelOnly` nodes, `comfy.chain_loras`; none → the node is bypassed). A choice
+  applies to that press; **save as unit default** writes `job.json["defaults"][family]`
+  (`PUT /concept/{unit}/defaults`) and later presses without a choice use it. `?probe=1`
+  marks each row `installed` from ComfyUI's own file lists.
+- **Seed.** Random per press; **lock seed** resends the last one so a prompt tweak changes
+  only what you changed.
+- **The GPU is one card.** While a run holds it every generate button waits — a run started
+  from the CLI or the Board too (`/health`'s `gpu_run`) — and **Cancel** ends it: `POST
+  /runs/{id}/cancel` sends SIGTERM to the stage's process group (SIGKILL after 5 s) and
+  ComfyUI `/interrupt`, the run ends `cancelled`, the slot is free. The static page
+  `work/_views/<unit>/index.html` is still written — a printout of `views.json`, not the UI.
 
 ### The curation board — the curation board feature
 
@@ -926,6 +1001,7 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | `ANIM_WORK_DIR` | `/work/work` | per-job scratch; everything regenerable |
 | `ANIM_WORKFLOW_DIR` | `/work/gpu/workflows` | the API-format workflows `render`, `clip`, `base` and `concept` POST |
 | `ANIM_MODELS_LOCK` | `/work/gpu/models.lock` | repo + revision + sha256 per weight, copied into the sidecar |
+| `ANIM_MODELS_REGISTRY` | `/work/gpu/models.registry.tsv` | which locked weight is a checkpoint / LoRA / … and for which family; the model picker's list (the concept generation feature) |
 | `ANIM_ASSETS_DIR` | `/assets` | game-02's published assets (read-write) |
 | `ANIM_GAME02_DIR` | `/game02` | the game-02 repo, read-only, so `publish` can run its audit here |
 | **`ANIM_PALETTE`** | `/assets_src/palette.gpl` | the `-remap` source of truth — the project palette (Lospec 2000, 182 colours, installed 2026-09-14). `anim palette` rewrites it and its `.hex` / `.png` / `.json`; `palette_units/` beside it holds the unit sub-palettes. See "The project palette" |
@@ -988,8 +1064,8 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 604 passed, 4 skipped (2026-09-22)
-cd web && npm test                                  # 45 passed - the editor panel's pure parts
+docker compose run --rm anim-pipeline pytest        # 626 passed, 4 skipped (2026-09-22)
+cd web && npm test                                  # 59 passed - the editor panel's pure parts
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

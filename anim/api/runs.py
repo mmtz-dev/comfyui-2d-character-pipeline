@@ -37,6 +37,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import subprocess
 import sys
 import threading
@@ -54,6 +55,8 @@ RUNNABLE = [name for name in STAGE_ORDER if name != "review"]
 
 RUNS_DIRNAME = "_runs"
 ACTIVE = ("queued", "running")
+# How long a cancelled stage gets to exit on SIGTERM before SIGKILL.
+CANCEL_GRACE_S = 5.0
 
 _STEP = re.compile(r"^\[(\d+)/(\d+)\]")
 _PROGRESS = re.compile(r"^progress:\s*(\d{1,3})\s*%", re.IGNORECASE)
@@ -172,6 +175,10 @@ class Run:
     returncode: int | None = None
     pid: int | None = None
     log: list[str] = field(default_factory=list)
+    # The concept generation feature: a run can be cancelled from the studio.
+    # The handle is the process itself; `cancelled` is what the exit reports.
+    cancelled: bool = False
+    proc: Any = field(default=None, repr=False, compare=False)
     # The manager's condition, shared so `events()` can wait on one lock.
     cond: threading.Condition = field(default_factory=threading.Condition,
                                       repr=False, compare=False)
@@ -187,6 +194,7 @@ class Run:
             "gpu": self.gpu, "status": self.status, "percent": self.percent,
             "started": self.started, "finished": self.finished,
             "returncode": self.returncode, "pid": self.pid,
+            "cancelled": self.cancelled,
             "log_lines": len(self.log), "url": f"/runs/{self.id}",
             "events": f"/runs/{self.id}/events",
         }
@@ -231,7 +239,7 @@ class RunManager:
                       percent=row.get("percent"), started=row.get("started", ""),
                       finished=row.get("finished"),
                       returncode=row.get("returncode"), pid=row.get("pid"),
-                      cond=self.cond)
+                      cancelled=bool(row.get("cancelled")), cond=self.cond)
             log_path = self.runs_dir / f"{run.id}.log"
             if log_path.exists():
                 run.log = log_path.read_text(encoding="utf-8",
@@ -321,10 +329,12 @@ class RunManager:
         command = [*self.python, run.stage, *run.argv]
         log_path = self.runs_dir / f"{run.id}.log"
         try:
+            # Its own session, so a cancel's killpg takes the stage and
+            # whatever it spawned (ffmpeg, the audit) and nothing else.
             proc = subprocess.Popen(
                 command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, env=self._env(),
-                encoding="utf-8", errors="replace")
+                encoding="utf-8", errors="replace", start_new_session=True)
         except OSError as exc:
             with self.cond:
                 run.status = "failed"
@@ -336,6 +346,10 @@ class RunManager:
         with self.cond:
             run.status = "running"
             run.pid = proc.pid
+            run.proc = proc
+            if run.cancelled:
+                # Cancelled between queued and running: stop it now.
+                self._kill(proc)
             self.cond.notify_all()
         self._save(run)
         assert proc.stdout is not None
@@ -353,12 +367,50 @@ class RunManager:
         returncode = proc.wait()
         with self.cond:
             run.returncode = returncode
-            run.status = "done" if returncode == 0 else "failed"
+            run.status = ("cancelled" if run.cancelled
+                          else "done" if returncode == 0 else "failed")
             run.finished = _now()
-            if returncode == 0:
+            run.proc = None
+            if run.status == "done":
                 run.percent = 100
             self.cond.notify_all()
         self._save(run)
+
+    # --- cancelling --------------------------------------------------------
+    @staticmethod
+    def _kill(proc: Any, signal_number: int = signal.SIGTERM) -> None:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal_number)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    def cancel(self, run_id: str) -> Run:
+        """Stop a queued or running stage: SIGTERM to its process group,
+        SIGKILL after `CANCEL_GRACE_S`, and - for a GPU stage - ComfyUI's own
+        `/interrupt`, so the card drops the prompt the dead process was
+        waiting on instead of finishing an image nobody wants. The run's
+        thread records the exit as `cancelled`. 404 unknown, 409 not active."""
+        with self.cond:
+            run = self.runs.get(run_id)
+            if run is None:
+                raise RunRefused(404, f"no run {run_id!r}")
+            if not run.active:
+                raise RunRefused(409, f"run {run_id} is {run.status}; nothing to cancel",
+                                 run=run.record())
+            run.cancelled = True
+            run.log.append("cancelled from the API")
+            proc = run.proc
+            self.cond.notify_all()
+        if proc is not None:
+            self._kill(proc)
+            try:
+                proc.wait(timeout=CANCEL_GRACE_S)
+            except subprocess.TimeoutExpired:
+                self._kill(proc, signal.SIGKILL)
+        if run.gpu and self.comfyui_url:
+            from anim import comfy
+            comfy.ComfyClient(self.comfyui_url, timeout=3.0).interrupt()
+        return run
 
     @staticmethod
     def _percent(line: str) -> int | None:

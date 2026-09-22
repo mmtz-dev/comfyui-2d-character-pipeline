@@ -55,7 +55,7 @@ export interface PicksState {
   frames: PickFrame[];
 }
 
-export type RunStatus = "queued" | "running" | "done" | "failed" | "lost";
+export type RunStatus = "queued" | "running" | "done" | "failed" | "lost" | "cancelled";
 
 export interface RunRecord {
   id: string;
@@ -68,6 +68,7 @@ export interface RunRecord {
   finished: string | null;
   returncode: number | null;
   pid: number | null;
+  cancelled?: boolean;
   log_lines: number;
   url: string;
   events: string;
@@ -385,4 +386,176 @@ export async function regenerateCell(
       runs: body.runs as RunRecord[] | undefined,
     },
   };
+}
+
+// --- the concept generation feature ------------------------------------------
+export type AttemptSource = "txt2img" | "upload" | "existing" | "img2img" | "edit" | "views";
+export type ConceptOp = "txt2img" | "views" | "img2img" | "edit";
+export type ModelFamily = "zimage" | "qwen-edit" | "wan";
+
+export interface LoraChoice {
+  file: string;
+  strength: number;
+}
+
+/** One attempt - a base candidate or a view attempt - as job.json / views.json record it. */
+export interface Attempt {
+  index: number;
+  file: string;
+  source: AttemptSource;
+  prompt: string | null;
+  description?: string | null;
+  seed: number | null;
+  model: string | null;
+  loras: LoraChoice[];
+  parent: { target: string; index: number } | null;
+  strength?: number | null;
+  instruction?: string | null;
+  workflow?: string | null;
+  seconds: number | null;
+  sha256?: string | null;
+  created?: string;
+  from?: string;
+  name?: string;
+  /** Added by the API: the image, and whether there is one yet. */
+  url: string | null;
+  rendered: boolean;
+}
+
+export interface ConceptView {
+  view: string;
+  yaw: number;
+  elevation: "side" | "top";
+  group: "main" | "advanced";
+  prompt: string;
+  default_prompt: string;
+  candidates: Attempt[];
+  pick: number | null;
+  state: "pending" | "accepted" | "rejected";
+  accepted_file: string | null;
+}
+
+export interface ConceptState {
+  unit: string;
+  job: string;
+  exists: boolean;
+  cell: [number, number];
+  /** Why the views may not be drawn now, or null. */
+  locked: string | null;
+  gates: Record<string, string>;
+  defaults: Partial<Record<ModelFamily, { model: string | null; loras: LoraChoice[] }>>;
+  last_seed: number | null;
+  parts_phrase: string | null;
+  base: {
+    description: string | null;
+    prompt: string | null;
+    sketch: unknown;
+    candidates: Attempt[];
+    pick: number | null;
+    accepted: boolean;
+    front_url: string | null;
+  };
+  views: Record<string, ConceptView>;
+  views_stale: boolean;
+  page: string;
+  uploaded?: Attempt;
+}
+
+export interface ConceptRequest {
+  op: ConceptOp;
+  prompt?: string;
+  views?: string[] | string;
+  view_prompt?: string;
+  ref?: string;
+  strength?: number;
+  instruction?: string;
+  count?: number;
+  seed?: number;
+  model?: string;
+  loras?: (string | LoraChoice)[];
+  lora_strength?: number;
+  fresh?: boolean;
+  force?: boolean;
+}
+
+export interface RegistryRow {
+  file: string;
+  family: ModelFamily;
+  role: "checkpoint" | "lora" | "controlnet" | "te" | "vae";
+  label: string;
+  trigger: string | null;
+  default_strength: number | null;
+  locked: boolean;
+  repo: string | null;
+  license: string | null;
+  installed: boolean | null;
+}
+
+export interface ModelsListing {
+  registry: string;
+  probed: boolean;
+  families: Record<ModelFamily, Record<RegistryRow["role"], RegistryRow[]>>;
+  ops: Record<ConceptOp, ModelFamily>;
+  workflow_defaults: Record<ModelFamily, string>;
+  default_lora: Record<ModelFamily, LoraChoice[]>;
+}
+
+export const getConcept = (unit: string) => getJSON<ConceptState>(`/concept/${encodeURIComponent(unit)}`);
+export const getModels = (probe = false) => getJSON<ModelsListing>(`/models${probe ? "?probe=1" : ""}`);
+
+/** `POST /concept/{unit}/generate`: the run (202), or the refusal (400 / 409 /
+ * 423) as a value, like `startRun` - a busy GPU or a pending gate is an
+ * answer the tab shows. */
+export async function generateConcept(
+  unit: string,
+  body: ConceptRequest,
+): Promise<{ run: RunRecord } | { refused: RunRefusal }> {
+  const response = await fetch(`/concept/${encodeURIComponent(unit)}/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status === 202) return { run: payload as unknown as RunRecord };
+  const error = (payload.error ?? payload.detail ?? response.statusText) as string;
+  return {
+    refused: {
+      status: response.status,
+      error: typeof error === "string" ? error : JSON.stringify(error),
+      run: payload.run as RunRecord | undefined,
+      runs: payload.runs as RunRecord[] | undefined,
+    },
+  };
+}
+
+/** `PUT /concept/{unit}/upload` with the PNG as the body. */
+export async function uploadConcept(unit: string, png: Blob, name: string): Promise<ConceptState> {
+  const response = await fetch(`/concept/${encodeURIComponent(unit)}/upload`, {
+    method: "PUT",
+    headers: { "Content-Type": "image/png", "X-Filename": name.replace(/[^\w.-]+/g, "_") || "upload.png" },
+    body: png,
+  });
+  if (!response.ok) throw new ApiError(response.status, await detail(response));
+  return (await response.json()) as ConceptState;
+}
+
+export const pickConcept = (unit: string, index: number, parts?: string, avoid?: string) =>
+  sendJSON<ConceptState>("POST", `/concept/${encodeURIComponent(unit)}/pick`, { index, parts, avoid });
+
+export const pickConceptView = (unit: string, view: string, index: number) =>
+  sendJSON<ConceptState>("POST", `/concept/${encodeURIComponent(unit)}/views/${encodeURIComponent(view)}/pick`, { index });
+
+export const putConceptDefaults = (unit: string, family: ModelFamily, model: string | null, loras: LoraChoice[]) =>
+  sendJSON<ConceptState>("PUT", `/concept/${encodeURIComponent(unit)}/defaults`, { family, model, loras });
+
+/** `POST /runs/{id}/cancel`: the run as it stands (202), or the refusal. */
+export async function cancelRun(id: string): Promise<{ run: RunRecord } | { refused: RunRefusal }> {
+  const response = await fetch(`/runs/${encodeURIComponent(id)}/cancel`, {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status === 202) return { run: payload as unknown as RunRecord };
+  const error = (payload.error ?? payload.detail ?? response.statusText) as string;
+  return { refused: { status: response.status, error: typeof error === "string" ? error : JSON.stringify(error) } };
 }

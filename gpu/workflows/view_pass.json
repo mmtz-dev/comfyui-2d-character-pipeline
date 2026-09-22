@@ -8,14 +8,14 @@
       "use_pin_memory": "disable"
     },
     "_meta": {
-      "title": "Qwen-Image-Edit-2509 INT4 r128 (Nunchaku)"
+      "title": "PATCH checkpoint (model_name) - Qwen-Image-Edit-2509 INT4 r128 (Nunchaku)"
     }
   },
   "2": {
     "class_type": "ModelSamplingAuraFlow",
     "inputs": {
       "model": [
-        "1",
+        "13",
         0
       ],
       "shift": 3
@@ -182,6 +182,20 @@
     },
     "_meta": {
       "title": "PATCH output prefix"
+    }
+  },
+  "13": {
+    "class_type": "LoraLoaderModelOnly",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "lora_name": "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors",
+      "strength_model": 0.0
+    },
+    "_meta": {
+      "title": "PATCH optional LoRA (0.0 = bypassed)"
     }
   }
 }

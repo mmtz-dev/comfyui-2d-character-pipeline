@@ -1,0 +1,36 @@
+# =====================================================================
+# models.registry.tsv - the concept generation feature's model picker
+# =====================================================================
+# HAND-CURATED. Which locked weight plays which part, and with which
+# workflow family. models.lock (generated, 8 columns, refused by
+# hf_download.py if a column is added) stays the source of hashes; this
+# file is joined to it by `file` and says what a row IS so the studio's
+# model / LoRA picker can list only what fits the step it is on: a
+# Z-Image workflow cannot load a Qwen checkpoint, and ComfyUI would only
+# tell you at run time.
+#
+# TAB-separated columns:
+#   file             dest_filename in models.lock (the join key)
+#   family           zimage | qwen-edit | wan   - the workflow stack it plugs into
+#   role             checkpoint | lora | controlnet | te | vae
+#   label            what the picker shows
+#   trigger          a LoRA's trigger phrase ("-" for none)
+#   default_strength a LoRA's default strength ("-" for none)
+#
+# A file listed here but absent from models.lock is shown as unlocked; one
+# in the lock but not here is not offered. `GET /models?probe=1` marks
+# each row installed or not from ComfyUI's own file lists.
+# ======================================================================
+z_image_turbo_int8_convrot.safetensors	zimage	checkpoint	Z-Image-Turbo INT8 (convrot)	-	-
+qwen_3_4b_fp8_mixed.safetensors	zimage	te	Qwen3-4B text encoder (Z-Image)	-	-
+z_image_ae.safetensors	zimage	vae	Z-Image VAE	-	-
+pixel_art_style_z_image_turbo.safetensors	zimage	lora	Pixel-Art style (tarn59)	Pixel art style.	0.8
+Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors	zimage	controlnet	Fun ControlNet Union 2.1 (full)	-	-
+Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors	zimage	controlnet	Fun ControlNet Union 2.1 (lite)	-	-
+svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors	qwen-edit	checkpoint	Qwen-Image-Edit 2509 INT4 lightning (Nunchaku)	-	-
+qwen_2.5_vl_7b_fp8_scaled.safetensors	qwen-edit	te	Qwen2.5-VL-7B text encoder	-	-
+qwen_image_vae.safetensors	qwen-edit	vae	Qwen-Image VAE	-	-
+Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors	qwen-edit	lora	Pixel-Art master (prithivMLmods; not installed, see models.lock)	-	0.8
+wan2.2_fun_control_5B_bf16.safetensors	wan	checkpoint	Wan 2.2 Fun-Control 5B	-	-
+umt5_xxl_fp8_e4m3fn_scaled.safetensors	wan	te	umT5-XXL text encoder	-	-
+wan2.2_vae.safetensors	wan	vae	Wan 2.2 VAE	-	-

@@ -87,19 +87,87 @@ def test_prepare_writes_the_job_with_one_seed_per_candidate(work_dir):
     assert manifest["sketch"] is None and manifest["pick"] is None
     assert [c["file"] for c in manifest["candidates"]] == ["00.png", "01.png", "02.png"]
     assert [c["seed"] for c in manifest["candidates"]] == [100, 101, 102]
-    assert {c["source"] for c in manifest["candidates"]} == {"generated"}
+    assert {c["source"] for c in manifest["candidates"]} == {"txt2img"}
     assert manifest["workflow"] == "concept_pass.json"
     assert job.candidates_dir.is_dir()
+    # The concept generation feature: every attempt says what it was made
+    # with - its own prompt, checkpoint and LoRA list - and where from.
+    first = manifest["candidates"][0]
+    assert first["prompt"] == manifest["prompt"] and first["description"] == "a knight"
+    assert first["model"] == config.CONCEPT_MODELS["zimage"]
+    assert first["loras"] == [{"file": config.CONCEPT_LORA["file"],
+                               "strength": config.CONCEPT_LORA["strength"]}]
+    assert first["parent"] is None and first["workflow"] == "concept_pass.json"
+    assert manifest["defaults"] == {} and manifest["next_index"] == 3
+    assert manifest["last_seed"] == 100
 
 
-def test_the_derived_seed_is_stable_and_changes_with_the_ask(work_dir):
-    a = concept_stage.prepare("knight", description="a knight", work_dir=work_dir)
+def test_a_second_prepare_appends_and_fresh_wipes(work_dir):
+    """Pressing Generate again keeps the earlier attempts (their files too);
+    --fresh is the old wipe."""
+    job = concept_stage.prepare("knight", description="a knight", count=2, seed=1,
+                                work_dir=work_dir)
+    for c in job.read_manifest()["candidates"]:
+        (job.candidates_dir / c["file"]).write_bytes(b"png")
+    concept_stage.prepare("knight", description="a taller knight", count=2, seed=50,
+                          work_dir=work_dir)
+    manifest = job.read_manifest()
+    assert [c["file"] for c in manifest["candidates"]] == ["00.png", "01.png", "02.png", "03.png"]
+    assert [c["seed"] for c in manifest["candidates"]] == [1, 2, 50, 51]
+    assert manifest["candidates"][0]["description"] == "a knight"
+    assert manifest["candidates"][2]["description"] == "a taller knight"
+    assert manifest["description"] == "a taller knight", "the manifest keeps the last ask"
+    assert (job.candidates_dir / "01.png").exists(), "nothing deleted"
+    assert manifest["next_index"] == 4
+    concept_stage.prepare("knight", description="a knight", count=1, seed=9, fresh=True,
+                          work_dir=work_dir)
+    manifest = job.read_manifest()
+    assert [c["file"] for c in manifest["candidates"]] == ["00.png"]
+    assert not (job.candidates_dir / "01.png").exists()
+
+
+def test_a_v1_manifest_is_migrated_in_place(work_dir):
+    job = Job.open("knight_concept", work_dir)
+    job.write_manifest({
+        "schema": "anim.concept/1", "slug": "knight", "created": "2026-09-20T00:00:00+00:00",
+        "description": "a knight", "prompt": "Pixel art style. a knight", "seed": 5,
+        "count": 2, "cell": [768, 768],
+        "lora": {"repo": "r", "file": config.CONCEPT_LORA["file"], "trigger": "t", "strength": 0.8},
+        "sketch": None, "workflow": "concept_pass.json", "workflow_sha256": "x",
+        "comfyui": None, "models": [],
+        "candidates": [{"index": 0, "file": "00.png", "source": "existing", "from": "a.png",
+                        "seed": None, "seconds": None},
+                       {"index": 1, "file": "01.png", "source": "generated", "seed": 5,
+                        "seconds": 8.0, "prompt_id": "p"}],
+        "pick": None})
+    store = concept_stage.Attempts("knight", "base", work_dir)
+    manifest = store.record
+    assert manifest["schema"] == concept_stage.CONCEPT_SCHEMA
+    assert [c["source"] for c in manifest["candidates"]] == ["existing", "txt2img"]
+    generated = manifest["candidates"][1]
+    assert generated["prompt"] == "Pixel art style. a knight"
+    assert generated["loras"] == [{"file": config.CONCEPT_LORA["file"], "strength": 0.8,
+                                   "trigger": "t"}]
+    assert generated["model"] == config.CONCEPT_MODELS["zimage"]
+    assert manifest["candidates"][0]["prompt"] is None
+    assert manifest["next_index"] == 2 and manifest["defaults"] == {}
+    assert json.loads(job.manifest_path.read_text())["schema"] == concept_stage.CONCEPT_SCHEMA
+
+
+def test_the_seed_is_random_by_default_and_derived_for_a_fresh_set(work_dir):
+    """Generate again must not redraw the same set, so a run without --seed
+    is random; a --fresh run derives it from the ask, so a unit's first set
+    reproduces."""
+    a = concept_stage.prepare("knight", description="a knight", fresh=True, work_dir=work_dir)
     seed_a = a.read_manifest()["seed"]
-    b = concept_stage.prepare("knight", description="a knight", work_dir=work_dir)
-    assert b.read_manifest()["seed"] == seed_a, "same ask, same set"
-    c = concept_stage.prepare("knight", description="a hound", work_dir=work_dir)
+    b = concept_stage.prepare("knight", description="a knight", fresh=True, work_dir=work_dir)
+    assert b.read_manifest()["seed"] == seed_a, "same ask, same first set"
+    c = concept_stage.prepare("knight", description="a hound", fresh=True, work_dir=work_dir)
     assert c.read_manifest()["seed"] != seed_a
     assert 0 <= seed_a < 2 ** 53
+    seeds = {concept_stage.prepare("knight", description="a hound", count=1,
+                                   work_dir=work_dir).read_manifest()["seed"] for _ in range(4)}
+    assert len(seeds) > 1 and all(0 <= s < 2 ** 53 for s in seeds)
 
 
 def test_prepare_refuses_an_empty_description_or_count(work_dir):
@@ -322,7 +390,8 @@ def test_render_concept_skips_the_existing_candidate(work_dir, workflow_dir,
             work_dir=work_dir)
     assert len(fake.prompts) == 2
     assert manifest["candidates"][0]["source"] == "existing"
-    assert "prompt_id" not in manifest["candidates"][0]
+    assert manifest["candidates"][0]["prompt_id"] is None
+    assert manifest["candidates"][0]["seconds"] is None
 
 
 def test_concept_against_an_unreachable_service_says_so(work_dir, workflow_dir):
@@ -475,7 +544,7 @@ def test_views_render_the_base_from_each_side_through_the_edit_path(work_dir, wo
         record = concept_stage.render_views(
             "knight", views="all", count=2, seed=500, client=comfy.ComfyClient(fake.url),
             workflow_dir=workflow_dir, work_dir=work_dir, log=logs.append)
-    assert list(record["views"]) == list(config.CONCEPT_VIEWS) and len(fake.prompts) == 14
+    assert list(record["views"]) == list(config.CONCEPT_VIEWS) and len(fake.prompts) == 16
     assert fake.uploads == ["anim_knight_concept_view_base.png"], "the base once, under the job's name"
     # The graph is the edit path: Qwen-Image-Edit with the base as image1 and
     # its latent; no ControlNet, no Z-Image, no LoRA.
@@ -492,7 +561,7 @@ def test_views_render_the_base_from_each_side_through_the_edit_path(work_dir, wo
     assert positive["image1"] == [comfy.find_node(graph, "base image"), 0]
     assert graph[comfy.find_node(graph, "seed")]["inputs"]["seed"] == 500
     seeds = [g[comfy.find_node(g, "seed")]["inputs"]["seed"] for g in fake.prompts]
-    assert seeds[:4] == [500, 501, 600, 601], "view offset x100, candidate +1"
+    assert seeds == list(range(500, 516)), "one seed per attempt, in order"
     assert graph[comfy.find_node(graph, "output prefix")]["inputs"]["filename_prefix"] \
         == "anim_pipeline/knight_concept/views/view_pass"
     # The layout: views/<view>_NN.png and views.json.
@@ -501,14 +570,19 @@ def test_views_render_the_base_from_each_side_through_the_edit_path(work_dir, wo
         f"{v}_{i:02d}.png" for v in config.CONCEPT_VIEWS for i in range(2))
     assert (out / "back_01.png").read_bytes() == png
     saved = json.loads((out / "views.json").read_text())
-    assert saved["schema"] == "anim.concept-views/1" and saved["slug"] == "knight"
+    assert saved["schema"] == "anim.concept-views/2" and saved["slug"] == "knight"
     assert saved["seed"] == 500 and saved["count"] == 2 and saved["parts_phrase"] == PARTS
     assert saved["base"]["job"] == "knight_base" and len(saved["base_sha256"]) == 64
     assert saved["workflow"] == "view_pass.json" and len(saved["workflow_sha256"]) == 64
     back = saved["views"]["back"]
     assert back["yaw"] == 90 and back["pick"] is None and back["prompt"] == positive["prompt"]
+    assert back["elevation"] == "side" and saved["views"]["top"]["elevation"] == "top"
     assert [c["index"] for c in back["candidates"]] == [0, 1]
     assert back["candidates"][1]["seed"] == 501 and back["candidates"][1]["file"] == "back_01.png"
+    assert back["candidates"][0]["source"] == "views" and back["candidates"][0]["parent"] is None
+    assert back["candidates"][0]["model"] == config.CONCEPT_MODELS["qwen-edit"]
+    assert back["candidates"][0]["loras"] == [], "no Qwen LoRA by default (not on disk)"
+    assert "from directly above" in saved["views"]["top"]["prompt"]
     assert len(back["candidates"][0]["sha256"]) == 64 and back["candidates"][0]["seconds"] is not None
     files = {m["file"] for m in saved["models"]}
     assert "svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors" in files
@@ -522,15 +596,18 @@ def test_views_render_the_base_from_each_side_through_the_edit_path(work_dir, wo
     for view in config.CONCEPT_VIEWS:
         assert f'id="{view}"' in html and f'id="{view}_00"' in html
     assert "--pick-view" in html and PARTS in html
-    assert sum(1 for line in logs if "concept views:" in line) == 14
-    # The default is the core three, and a bad name is refused before the GPU.
-    assert config.concept_view_names(None) == ["back", "left", "right"]
+    assert sum(1 for line in logs if "concept views:" in line) == 16
+    # The default is the core four, and a bad name is refused before the GPU.
+    assert config.concept_view_names(None) == ["back", "left", "right", "top"]
     assert config.concept_view_names("right,back") == ["back", "right"]
     with pytest.raises(ValueError, match="unknown view"):
-        config.concept_view_names("top")
+        config.concept_view_names("under")
 
 
-def test_views_of_a_second_run_keep_the_others_and_redo_the_asked(work_dir, workflow_dir):
+def test_views_of_a_second_run_keep_the_others_and_append_to_the_asked(work_dir, workflow_dir):
+    """The concept generation feature: a view asked for again gets MORE
+    attempts; nothing is deleted, the picks stay, --view-prompt is the
+    owner's sentence for that view."""
     _views_ready(work_dir, workflow_dir)
     with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
         concept_stage.render_views("knight", views="back,left", count=1, seed=1,
@@ -538,14 +615,26 @@ def test_views_of_a_second_run_keep_the_others_and_redo_the_asked(work_dir, work
                                    workflow_dir=workflow_dir, work_dir=work_dir, log=lambda _: None)
         concept_stage.pick_view("knight", {"back": 0}, work_dir=work_dir)
         concept_stage.render_views("knight", views="left", count=2, seed=9,
+                                   view_prompt="the knight from the left, shield arm nearest",
                                    client=comfy.ComfyClient(fake.url),
                                    workflow_dir=workflow_dir, work_dir=work_dir, log=lambda _: None)
     saved = json.loads(concept_stage.views_path("knight", work_dir).read_text())
     assert list(saved["views"]) == ["back", "left"]
     assert saved["views"]["back"]["pick"] == {**saved["views"]["back"]["pick"], "index": 0}, "the back's pick survives"
-    assert [c["seed"] for c in saved["views"]["left"]["candidates"]] == [9, 10]
+    left = saved["views"]["left"]
+    assert [c["seed"] for c in left["candidates"]] == [2, 9, 10]
+    assert [c["index"] for c in left["candidates"]] == [0, 1, 2]
+    assert left["candidates"][0]["prompt"] == config.concept_view_prompt("left", PARTS)
+    assert left["candidates"][1]["prompt"] == "the knight from the left, shield arm nearest"
+    assert left["prompt"] == "the knight from the left, shield arm nearest"
+    graph = fake.prompts[-1]
+    assert graph[comfy.find_node(graph, "positive prompt")]["inputs"]["prompt"] \
+        == "the knight from the left, shield arm nearest"
     assert sorted(p.name for p in concept_stage.views_dir("knight", work_dir).glob("*.png")) \
-        == ["back_00.png", "left_00.png", "left_01.png"]
+        == ["back_00.png", "left_00.png", "left_01.png", "left_02.png"]
+    with pytest.raises(ValueError, match="exactly one"):
+        concept_stage.render_views("knight", views="back,left", view_prompt="x",
+                                   work_dir=work_dir, log=lambda _: None)
 
 
 def test_pick_view_writes_into_the_base_and_the_curation_record(work_dir, workflow_dir):
@@ -565,7 +654,7 @@ def test_pick_view_writes_into_the_base_and_the_curation_record(work_dir, workfl
         pngs[path.name] = path.read_bytes()
     assert concept_stage.parse_view_picks(["back=01", "left=0", "right=02"]) == {"back": 1, "left": 0, "right": 2}
     with pytest.raises(ValueError, match="--pick-view takes"):
-        concept_stage.parse_view_picks(["top=1"])
+        concept_stage.parse_view_picks(["under=01"])
     with pytest.raises(ValueError, match="--pick-view takes"):
         concept_stage.parse_view_picks(["back"])
     result = concept_stage.pick_view("knight", {"back": 1, "right": 0}, work_dir=work_dir)
@@ -647,3 +736,229 @@ def test_the_cli_knows_the_stage():
     args = build_parser().parse_args(["concept", "--unit", "knight", "--pick", "01",
                                       "--parts", "helm, cloak", "--avoid", "bare head"])
     assert args.parts == "helm, cloak" and args.avoid == "bare head"
+
+
+# ---------------------------------------------------------------------------
+# The concept generation feature: upload, img2img, edit, model + LoRAs
+# ---------------------------------------------------------------------------
+REGISTRY = Path(__file__).resolve().parent.parent / "gpu" / "models.registry.tsv"
+
+
+def _lora_nodes(graph: dict) -> list[dict]:
+    return [n for n in graph.values() if n["class_type"] == "LoraLoaderModelOnly"]
+
+
+def test_upload_registers_the_owners_art_without_a_prompt_or_the_gpu(work_dir, reference_sprite):
+    row = concept_stage.register_upload("knight", reference_sprite, work_dir=work_dir)
+    job = Job.open("knight_concept", work_dir)
+    manifest = job.read_manifest()
+    assert row["source"] == "upload" and row["index"] == 0 and row["file"] == "00.png"
+    assert row["seed"] is None and row["prompt"] is None and len(row["sha256"]) == 64
+    assert manifest["candidates"] == [row] and manifest["description"] is None
+    kept = Path(row["from"])
+    assert kept.parent == job.root / "uploads" and kept.read_bytes() == reference_sprite.read_bytes()
+    with Image.open(job.candidates_dir / "00.png") as img:
+        assert img.size == tuple(config.CONCEPT_CELL), "fitted to the cell like the existing art"
+    # Bytes work too (the API's PUT body), and a non-image is refused.
+    row2 = concept_stage.register_upload("knight", reference_sprite.read_bytes(), name="mac.png",
+                                         work_dir=work_dir)
+    assert row2["index"] == 1 and row2["name"] == "mac.png"
+    with pytest.raises(ValueError, match="not an image"):
+        concept_stage.register_upload("knight", b"nope", work_dir=work_dir)
+    # It can be picked like any candidate: no generation record.
+    result = concept_stage.pick("knight", "00", work_dir=work_dir)
+    assert result["candidate"]["source"] == "upload"
+    provenance = json.loads(Job.open("knight_base", work_dir).provenance_path.read_text())
+    assert provenance["passes"] == [] and provenance["concept"]["source"] == "upload"
+
+
+def test_img2img_redraws_the_parent_at_the_strength_on_the_zimage_stack(work_dir, workflow_dir):
+    _concept_job(work_dir, workflow_dir)
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        result = concept_stage.rework(
+            "knight", "base:01", op="img2img", strength=0.5, seed=77, count=2,
+            client=comfy.ComfyClient(fake.url), workflow_dir=workflow_dir, work_dir=work_dir)
+    assert result["target"] == "base" and [r["index"] for r in result["attempts"]] == [2, 3]
+    rows = result["attempts"]
+    assert rows[0]["source"] == "img2img" and rows[0]["parent"] == {"target": "base", "index": 1}
+    assert rows[0]["strength"] == 0.5 and rows[0]["seed"] == 77 and rows[1]["seed"] == 78
+    assert rows[0]["workflow"] == "img2img_pass.json" and len(rows[0]["workflow_sha256"]) == 64
+    manifest = Job.open("knight_concept", work_dir).read_manifest()
+    assert rows[0]["prompt"] == manifest["candidates"][1]["prompt"], "the parent's prompt"
+    assert [c["file"] for c in manifest["candidates"]] == ["00.png", "01.png", "02.png", "03.png"]
+    assert (Job.open("knight_concept", work_dir).candidates_dir / "03.png").exists()
+    # The wire: the parent uploaded once under the job's name, the latent from
+    # it, denoise = strength, no ControlNet, the same checkpoint + LoRA.
+    assert fake.uploads == ["anim_knight_concept_src_base_01.png"]
+    graph = fake.prompts[0]
+    classes = _graph_classes(graph)
+    assert "VAEEncode" in classes and "EmptySD3LatentImage" not in classes
+    assert "ZImageFunControlnet" not in classes and "UNETLoader" in classes
+    assert graph[comfy.find_node(graph, "source image")]["inputs"]["image"] == "anim_knight_concept_src_base_01.png"
+    sampler = graph[comfy.find_node(graph, "seed")]["inputs"]
+    assert sampler["denoise"] == 0.5 and sampler["seed"] == 77
+    assert sampler["latent_image"] == [comfy.find_node(graph, "source image"), 0] or \
+        graph[sampler["latent_image"][0]]["class_type"] == "VAEEncode"
+    assert graph[comfy.find_node(graph, "checkpoint")]["inputs"]["unet_name"] == config.CONCEPT_MODELS["zimage"]
+    assert [n["inputs"]["lora_name"] for n in _lora_nodes(graph)] == [config.CONCEPT_LORA["file"]]
+    assert config.CONCEPT_LORA["file"] in {m["file"] for m in rows[0]["models"]}
+    with pytest.raises(ValueError, match="--strength"):
+        concept_stage.plan_rework("knight", "base:01", op="img2img", strength=1.5, work_dir=work_dir)
+    with pytest.raises(ValueError, match="base:NN"):
+        concept_stage.plan_rework("knight", "under:01", op="img2img", work_dir=work_dir)
+    with pytest.raises(ValueError, match="no attempt base:09"):
+        concept_stage.plan_rework("knight", "base:09", op="img2img", work_dir=work_dir)
+
+
+def test_edit_sends_the_instruction_through_the_edit_path(work_dir, workflow_dir):
+    _views_ready(work_dir, workflow_dir)
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.render_views("knight", views="left", count=1, seed=1,
+                                   client=comfy.ComfyClient(fake.url), workflow_dir=workflow_dir,
+                                   work_dir=work_dir, log=lambda _: None)
+        result = concept_stage.rework(
+            "knight", "left:00", op="edit", instruction="make the helmet red", seed=5,
+            client=comfy.ComfyClient(fake.url), workflow_dir=workflow_dir, work_dir=work_dir)
+    assert result["target"] == "left"
+    row = result["attempts"][0]
+    assert row["source"] == "edit" and row["index"] == 1 and row["file"] == "left_01.png"
+    assert row["parent"] == {"target": "left", "index": 0} and row["instruction"] == "make the helmet red"
+    assert row["prompt"] == config.concept_edit_prompt("make the helmet red", PARTS)
+    assert row["prompt"].startswith("make the helmet red. Keep the same pixel art character")
+    saved = json.loads(concept_stage.views_path("knight", work_dir).read_text())
+    assert [c["index"] for c in saved["views"]["left"]["candidates"]] == [0, 1]
+    assert (concept_stage.views_dir("knight", work_dir) / "left_01.png").exists()
+    # The wire: the parent (the view attempt, not the base) as image1.
+    assert fake.uploads[-1] == "anim_knight_concept_src_left_00.png"
+    graph = fake.prompts[-1]
+    assert graph[comfy.find_node(graph, "base image")]["inputs"]["image"] == "anim_knight_concept_src_left_00.png"
+    assert graph[comfy.find_node(graph, "positive prompt")]["inputs"]["prompt"] == row["prompt"]
+    assert "LoraLoaderModelOnly" not in _graph_classes(graph), "the optional LoRA is bypassed"
+    assert graph[comfy.find_node(graph, "output prefix")]["inputs"]["filename_prefix"] \
+        == "anim_pipeline/knight_concept/edit/view_pass"
+    assert Path(result["page"]).exists() and "edit of left:00" in Path(result["page"]).read_text()
+    # The edited attempt can be picked for the turnaround like any other.
+    concept_stage.pick_view("knight", {"left": 1}, work_dir=work_dir)
+    assert Job.open("knight_base", work_dir).read_manifest()["concept"]["views"]["left"]["candidate"] == 1
+    with pytest.raises(ValueError, match="--instruction"):
+        concept_stage.plan_rework("knight", "left:00", op="edit", instruction="  ", work_dir=work_dir)
+
+
+def test_img2img_of_a_view_describes_the_side_for_zimage(work_dir, workflow_dir):
+    _views_ready(work_dir, workflow_dir)
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.render_views("knight", views="back", count=1, seed=1,
+                                   client=comfy.ComfyClient(fake.url), workflow_dir=workflow_dir,
+                                   work_dir=work_dir, log=lambda _: None)
+        result = concept_stage.rework("knight", "back:00", op="img2img",
+                                      client=comfy.ComfyClient(fake.url),
+                                      workflow_dir=workflow_dir, work_dir=work_dir)
+    row = result["attempts"][0]
+    assert row["strength"] == config.CONCEPT_IMG2IMG_STRENGTH
+    assert row["prompt"] == config.concept_view_img2img_prompt("a knight", "back", PARTS)
+    assert "from directly behind" in row["prompt"] and "image1" not in row["prompt"]
+    assert "UNETLoader" in _graph_classes(fake.prompts[-1])
+
+
+def test_model_and_loras_are_chosen_per_call_from_the_registry(work_dir, workflow_dir):
+    lora_a = config.CONCEPT_LORA["file"]
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        manifest = concept_stage.concept(
+            "knight", description="a knight", count=1, seed=3,
+            model="z_image_turbo_int8_convrot.safetensors",
+            loras=[f"{lora_a}:0.3"],
+            registry_path=REGISTRY, client=comfy.ComfyClient(fake.url),
+            workflow_dir=workflow_dir, work_dir=work_dir)
+    row = manifest["candidates"][0]
+    assert row["model"] == "z_image_turbo_int8_convrot.safetensors"
+    assert row["loras"] == [{"file": lora_a, "strength": 0.3}]
+    graph = fake.prompts[0]
+    assert [(n["inputs"]["lora_name"], n["inputs"]["strength_model"]) for n in _lora_nodes(graph)] \
+        == [(lora_a, 0.3)]
+    assert manifest["lora"]["strength"] == 0.3, "the manifest's last-used LoRA follows"
+    # A checkpoint or LoRA the registry does not offer for Z-Image is refused
+    # before anything is posted.
+    from anim import models_lock
+    with FakeComfy() as fake:
+        with pytest.raises(models_lock.RegistryError, match="not a zimage checkpoint"):
+            concept_stage.concept("knight", description="a knight", count=1,
+                                  model="svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors",
+                                  registry_path=REGISTRY, client=comfy.ComfyClient(fake.url),
+                                  workflow_dir=workflow_dir, work_dir=work_dir)
+        with pytest.raises(models_lock.RegistryError, match="not a zimage LoRA"):
+            concept_stage.concept("knight", description="a knight", count=1,
+                                  loras=["nope.safetensors:0.5"], registry_path=REGISTRY,
+                                  client=comfy.ComfyClient(fake.url),
+                                  workflow_dir=workflow_dir, work_dir=work_dir)
+        assert fake.prompts == []
+
+
+def test_two_loras_chain_and_the_unit_default_is_remembered(work_dir, workflow_dir, tmp_path):
+    """Stacked LoRAs are chained LoraLoaderModelOnly nodes; a unit default
+    (the studio's "save as unit default") applies when a call names none."""
+    registry = tmp_path / "models.registry.tsv"
+    registry.write_text(REGISTRY.read_text() + "\n"
+                        "second_style.safetensors\tzimage\tlora\tSecond style\t-\t0.5\n")
+    lora_a = config.CONCEPT_LORA["file"]
+    defaults = concept_stage.set_defaults("knight", "zimage", model=None,
+                                          loras=[f"{lora_a}:0.6", "second_style.safetensors"],
+                                          registry_path=registry, work_dir=work_dir)
+    assert defaults == {"zimage": {"model": None, "loras": [
+        {"file": lora_a, "strength": 0.6}, {"file": "second_style.safetensors", "strength": 0.5}]}}
+    assert Job.open("knight_concept", work_dir).read_manifest()["defaults"] == defaults
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        manifest = concept_stage.concept(
+            "knight", description="a knight", count=1, seed=3, registry_path=registry,
+            client=comfy.ComfyClient(fake.url), workflow_dir=workflow_dir, work_dir=work_dir)
+    row = manifest["candidates"][0]
+    assert row["loras"] == defaults["zimage"]["loras"]
+    graph = fake.prompts[0]
+    nodes = _lora_nodes(graph)
+    assert [(n["inputs"]["lora_name"], n["inputs"]["strength_model"]) for n in nodes] \
+        == [(lora_a, 0.6), ("second_style.safetensors", 0.5)]
+    first = comfy.find_node(graph, "Pixel-Art LoRA")
+    second = next(k for k, n in graph.items() if n["class_type"] == "LoraLoaderModelOnly" and k != first)
+    assert graph[second]["inputs"]["model"] == [first, 0], "chained model -> model"
+    consumers = {k: n["class_type"] for k, n in graph.items()
+                 if n["inputs"].get("model") in ([first, 0], [second, 0])}
+    assert consumers == {second: "LoraLoaderModelOnly",
+                         next(k for k, n in graph.items() if n["class_type"] == "ModelSamplingAuraFlow"):
+                         "ModelSamplingAuraFlow"}, "what took the LoRA's model now takes the last one's"
+    assert graph[next(k for k, n in graph.items() if n["class_type"] == "ModelSamplingAuraFlow")]["inputs"]["model"] == [second, 0]
+    assert comfy.find_node(graph, "Pixel-Art LoRA") == first, "one PATCH title, still unique"
+    # The explicit flag beats the default; --lora-strength 0 means none.
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.concept("knight", description="a knight", count=1, lora_strength=0,
+                              registry_path=registry, client=comfy.ComfyClient(fake.url),
+                              workflow_dir=workflow_dir, work_dir=work_dir)
+    assert _lora_nodes(fake.prompts[0]) == []
+    with pytest.raises(Exception, match="not a zimage LoRA"):
+        concept_stage.set_defaults("knight", "zimage", model=None, loras=["ghost.safetensors"],
+                                   registry_path=registry, work_dir=work_dir)
+    with pytest.raises(ValueError, match="family"):
+        concept_stage.set_defaults("knight", "sdxl", model=None, loras=[], work_dir=work_dir)
+
+
+def test_the_views_wait_behind_the_base_gate(work_dir, workflow_dir):
+    """The concept generation feature: no base -> blocked; base picked (which
+    accepts the gate) -> free; gate reopened -> blocked; --force runs."""
+    from anim import curation
+    from anim.cli import build_parser
+
+    ns = build_parser().parse_args(["concept", "--unit", "knight", "--views"])
+    assert "no base" in curation.gate_for_namespace("concept", ns, work_dir)
+    ns = build_parser().parse_args(["concept", "--unit", "knight", "--prompt", "x"])
+    assert curation.gate_for_namespace("concept", ns, work_dir) is None, "the base itself is free"
+    _views_ready(work_dir, workflow_dir)
+    ns = build_parser().parse_args(["concept", "--unit", "knight", "--views"])
+    assert curation.gate_for_namespace("concept", ns, work_dir) is None
+    curation.set_gate("knight", "base", "pending", work_dir)
+    assert "base gate is pending" in curation.gate_for_namespace("concept", ns, work_dir)
+    ns = build_parser().parse_args(["concept", "--unit", "knight", "--edit", "left:00",
+                                    "--instruction", "x"])
+    assert "base gate is pending" in curation.gate_for_namespace("concept", ns, work_dir)
+    ns = build_parser().parse_args(["concept", "--unit", "knight", "--img2img", "base:00"])
+    assert curation.gate_for_namespace("concept", ns, work_dir) is None, "a base rework is free"
+    assert curation.gate_for_request("concept", ["--unit", "knight", "--views"], work_dir)
+    assert curation.gate_for_request("concept", ["--unit", "knight", "--views", "--force"],
+                                     work_dir) is None

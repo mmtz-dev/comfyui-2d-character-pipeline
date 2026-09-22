@@ -6,7 +6,7 @@
       "weight_dtype": "default"
     },
     "_meta": {
-      "title": "Z-Image-Turbo INT8 (convrot)"
+      "title": "PATCH checkpoint (unet_name) - Z-Image-Turbo INT8 (convrot)"
     }
   },
   "2": {

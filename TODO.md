@@ -38,6 +38,13 @@ Later milestone. Spritely-style: upload a video in the editor → the existing e
 
 Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid or slice by alpha islands, name the rows as actions/directions, and…
 
+### the concept generation feature · [#300](http://192.168.1.158:8700/work_packages/300)
+
+What. A Concept tab in the sprite studio where the owner makes a unit's concept art without the CLI: a base image from a prompt (Z-Image-Turbo + the…
+
+- [ ] **manual test: the concept generation feature** · [#301](http://192.168.1.158:8700/work_packages/301)
+  Run the API (already up on Docker Desktop) and open the studio's Concept tab: <http://192.168.1.158:8720/> → Concept.
+
 ## manual test: the palette feature · [#294](http://192.168.1.158:8700/work_packages/294)
 
 ## manual test: the curation board feature · [#295](http://192.168.1.158:8700/work_packages/295)
@@ -48,5 +55,5 @@ Later milestone. Sorceress-style: import a foreign sprite sheet, detect the grid
 
 ---
 
-*11 open · 18 closed. Counts and contents come straight from
+*13 open · 18 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*

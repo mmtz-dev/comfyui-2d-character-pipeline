@@ -48,6 +48,12 @@ WORKFLOW_DIR = Path(os.environ.get("ANIM_WORKFLOW_DIR", "/work/gpu/workflows"))
 # `render` copies the rows for the files a workflow names into provenance.json,
 # and `publish` copies them again into the sidecar's generation.models.
 MODELS_LOCK = Path(os.environ.get("ANIM_MODELS_LOCK", "/work/gpu/models.lock"))
+# The concept generation feature: which locked weight is a checkpoint, a LoRA,
+# a text encoder... and for which workflow family (zimage | qwen-edit | wan).
+# Hand-curated beside the lock (the lock is generated and fixed at 8 columns);
+# `GET /models` and the studio's model / LoRA picker read it.
+MODELS_REGISTRY = Path(os.environ.get("ANIM_MODELS_REGISTRY",
+                                      "/work/gpu/models.registry.tsv"))
 # game-02's published assets. `publish` writes here; the Mac edits the same
 # bytes over the Samba share.
 ASSETS_DIR = Path(os.environ.get("ANIM_ASSETS_DIR", "/assets"))
@@ -657,9 +663,11 @@ TURNAROUND_REFERENCE_BY_DIR: dict[str, tuple[str, ...]] = {
 
 
 def turnaround_reference_views(direction_cell: str) -> tuple[str, ...]:
-    """The views to try for one cell, best first; the last is always "front"."""
-    yaw, _elevation = direction(direction_cell)
-    return TURNAROUND_REFERENCE_BY_DIR[f"s{yaw}"]
+    """The views to try for one cell, best first; the last is always "front".
+    A top cell tries the top-down view first, then its yaw's row."""
+    yaw, elevation = direction(direction_cell)
+    row = TURNAROUND_REFERENCE_BY_DIR[f"s{yaw}"]
+    return ("top", *row) if elevation == "top" else row
 
 
 # ---------------------------------------------------------------------------
@@ -715,24 +723,44 @@ def concept_prompt(description: str, trigger: str | None = None) -> str:
 # them: "right" is the right profile (yaw 0, facing screen right), "left" the
 # left profile (yaw 180), "back" yaw 90, and the obliques by the two sides
 # they show. "front" is the base itself and is never rendered.
+# `elevation` is "side" for the seven eye-level views and "top" for the
+# top-down one (the concept generation feature, #285): the top cells of the
+# turnaround take the top view first, then their yaw's row.
 CONCEPT_VIEWS: dict[str, dict[str, Any]] = {
-    "back": {"yaw": 90, "sentence": "from directly behind, turned all the way round: "
-                                    "the back of the head, the back of the body, whatever "
-                                    "hangs from the shoulders; no face visible"},
-    "left": {"yaw": 180, "sentence": "from the character's left side, in full profile, "
-                                     "facing screen left"},
-    "right": {"yaw": 0, "sentence": "from the character's right side, in full profile, "
-                                    "facing screen right"},
-    "back_right": {"yaw": 45, "sentence": "from behind and to the character's right, a "
-                                          "three-quarter back view; no face visible"},
-    "back_left": {"yaw": 135, "sentence": "from behind and to the character's left, a "
-                                          "three-quarter back view; no face visible"},
-    "front_left": {"yaw": 225, "sentence": "from the front and to the character's left, "
-                                           "a three-quarter front view"},
-    "front_right": {"yaw": 315, "sentence": "from the front and to the character's right, "
-                                            "a three-quarter front view"},
+    "back": {"yaw": 90, "elevation": "side",
+             "sentence": "from directly behind, turned all the way round: "
+                         "the back of the head, the back of the body, whatever "
+                         "hangs from the shoulders; no face visible"},
+    "left": {"yaw": 180, "elevation": "side",
+             "sentence": "from the character's left side, in full profile, "
+                         "facing screen left"},
+    "right": {"yaw": 0, "elevation": "side",
+              "sentence": "from the character's right side, in full profile, "
+                          "facing screen right"},
+    "top": {"yaw": 270, "elevation": "top",
+            "sentence": "from directly above, a top-down view looking straight down: "
+                        "the top of the head and the shoulders, the character facing "
+                        "the bottom of the frame, the feet foreshortened beneath them"},
+    "back_right": {"yaw": 45, "elevation": "side",
+                   "sentence": "from behind and to the character's right, a "
+                               "three-quarter back view; no face visible"},
+    "back_left": {"yaw": 135, "elevation": "side",
+                  "sentence": "from behind and to the character's left, a "
+                              "three-quarter back view; no face visible"},
+    "front_left": {"yaw": 225, "elevation": "side",
+                   "sentence": "from the front and to the character's left, "
+                               "a three-quarter front view"},
+    "front_right": {"yaw": 315, "elevation": "side",
+                    "sentence": "from the front and to the character's right, "
+                                "a three-quarter front view"},
 }
-CONCEPT_CORE_VIEWS: tuple[str, ...] = ("back", "left", "right")
+# `--views` with no list; and how the studio's Concept tab groups them: the
+# main buttons (Front is the base itself, Side is the left profile - the
+# right is mirrored in a sprite sheet) and the advanced group behind a fold.
+CONCEPT_CORE_VIEWS: tuple[str, ...] = ("back", "left", "right", "top")
+CONCEPT_MAIN_VIEWS: tuple[str, ...] = ("back", "left", "top")
+CONCEPT_ADVANCED_VIEWS: tuple[str, ...] = ("right", "back_right", "back_left",
+                                           "front_left", "front_right")
 CONCEPT_VIEW_COUNT = 2
 FRONT_VIEW = "front"
 # The edit prompt for Qwen-Image-Edit (gpu/workflows/view_pass.json): image1
@@ -765,6 +793,53 @@ def concept_view_prompt(view: str, parts: str | None) -> str:
     sentence = CONCEPT_VIEWS[view]["sentence"]
     parts = (parts or "").strip().rstrip(",.") or "outfit"
     return CONCEPT_VIEW_PROMPT.format(sentence=sentence, parts=parts)
+
+
+# The concept generation feature: an instruction edit of one attempt through
+# the same Qwen-Image-Edit path ("make the helmet red"). The owner's words
+# first; the rest keeps the figure a drop-in for the one it edits.
+CONCEPT_EDIT_PROMPT = (
+    "{instruction}. Keep the same pixel art character from image1 otherwise: the same "
+    "{parts}, the same colours, the same outline weight, the same proportions, the same "
+    "size and pose, one figure only, plain flat white background, no ground shadow, no floor.")
+
+
+def concept_edit_prompt(instruction: str, parts: str | None) -> str:
+    instruction = " ".join(str(instruction or "").split()).strip().rstrip(".")
+    if not instruction:
+        raise ValueError("--instruction is required for an edit: what should change")
+    parts = (parts or "").strip().rstrip(",.") or "outfit"
+    return CONCEPT_EDIT_PROMPT.format(instruction=instruction, parts=parts)
+
+
+# Classic img2img of a VIEW attempt runs on the Z-Image stack, whose prompt
+# is a description, not an edit instruction: the unit seen from that side.
+CONCEPT_VIEW_IMG2IMG_PROMPT = (
+    "{trigger} a single pixel art character sprite of {description}, seen {sentence}, "
+    "standing at rest, full body in frame, feet at the bottom edge, chunky readable "
+    "silhouette, bold dark outline, flat shaded, the same {parts}, plain flat white "
+    "background, no ground shadow, no floor")
+
+
+def concept_view_img2img_prompt(description: str, view: str, parts: str | None,
+                                trigger: str | None = None) -> str:
+    trigger = CONCEPT_LORA["trigger"] if trigger is None else trigger
+    parts = (parts or "").strip().rstrip(",.") or "outfit"
+    return CONCEPT_VIEW_IMG2IMG_PROMPT.format(
+        trigger=trigger, description=description.strip(),
+        sentence=CONCEPT_VIEWS[view]["sentence"], parts=parts).replace("  ", " ").strip()
+
+
+# Which registry family each concept op draws from (gpu/models.registry.tsv),
+# and the checkpoint each workflow ships with - the default when no --model.
+CONCEPT_FAMILIES: dict[str, str] = {"txt2img": "zimage", "img2img": "zimage",
+                                    "views": "qwen-edit", "edit": "qwen-edit"}
+CONCEPT_MODELS: dict[str, str] = {
+    "zimage": "z_image_turbo_int8_convrot.safetensors",
+    "qwen-edit": "svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors",
+}
+# Classic img2img: how much of the source is redrawn (KSampler denoise).
+CONCEPT_IMG2IMG_STRENGTH = 0.55
 
 
 # The part palette lock feature - what each unit is made of, and where it is
