@@ -4,6 +4,33 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-23 — the LPC spritesheet generator: evaluated, not adopted
+
+**What.** The owner asked whether the [Universal LPC Spritesheet Character
+Generator](https://liberatedpixelcup.github.io/Universal-LPC-Spritesheet-Character-Generator/)
+could feed this pipeline — as final art, as a base to restyle, or as a pose source. It can't,
+and nothing was built. The research is in `game_core/discovery/game02/lpc-spritesheet-generator-research.md`
+(committed `e17b3b6` in `game_core`).
+
+**Why not.** Three reasons, any one of which is enough:
+
+- **Licence.** `games-design-wiki/shared/asset-pipeline.md:101` bans LPC by name, and
+  game-02's `tools/asset_audit.py:62-66` passes only CC0 / public domain. Using LPC as a pose
+  or img2img reference doesn't dodge this: `asset-pipeline.md:104` treats a skeleton fed to an
+  image model as a derivative of its source.
+- **Projection.** LPC is 4 directions, top-down 3/4 view. Game-02 is side view (profile),
+  8 yaws, per its art bible. Even LPC's left/right rows are drawn at a slight downward angle.
+- **No gap to fill.** Motion already comes from CC0 rigs (KayKit, Quaternius) and filmed
+  clips; art comes from the generation stages in the house style and palette.
+
+**The thing to not re-litigate — and the one caveat.** Most core LPC bodies are
+triple-licensed, and one option is OGA-BY 3.0 (attribution only, no share-alike). That weakens
+the ban's stated "viral share-alike" reason, but it doesn't change the outcome: the audit is
+CC0-only and rejects attribution licences on purpose. Reopening LPC means reopening the
+CC0-only rule first, not arguing about LPC's licences.
+
+---
+
 ## 2026-09-22 — the concept generation feature: the model pickers work before a unit does
 
 **What.** A fix on top of the entry below. On a fresh Concept tab both checkpoint `<select>`s
