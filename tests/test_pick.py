@@ -425,6 +425,39 @@ def test_a_loop_action_records_its_closure_and_the_review_page_shows_it(posed_jo
     assert "f.phase" in page
 
 
+def test_the_run_and_jump_verbs_phase_like_every_other_studio_action(posed_job):
+    """The action matrix feature renders all five studio actions, and `run` and
+    `jump` are the two no other test phases. `run` is a loop of 8 with no
+    anticipation frame; `jump` is a one-shot of 10 that spends one frame of its
+    budget on the beat before the leap."""
+    runner = pick_stage.phase_plan("run")
+    assert runner.budget == 8 and runner.loop is True and runner.verb == "run"
+    jumper = pick_stage.phase_plan("jump")
+    assert jumper.budget == 10 and jumper.loop is False and jumper.verb == "jump"
+    assert jumper.anticipation is True and runner.anticipation is False
+
+    record = pick_stage.pick(posed_job.name, action="run", phases=True, force=True,
+                             work_dir=posed_job.root.parent)
+    block = record["phases"]
+    assert block["plan"]["action"] == "run" and record["n"] == 8
+    assert len(record["picks"]) == 8 == len(set(record["picks"]))
+    assert block["tags"] == runner.tags() and set(block["tags"]) <= set(config.PHASE_NAMES)
+    assert block["anticipation"] is None, "a cycle has no beat to anticipate"
+    assert block["closure"] is not None and record["timing"]["loop"] is True
+    assert record["timing"]["source"] == "phases:run"
+
+    record = pick_stage.pick(posed_job.name, action="jump", phases=True, force=True,
+                             work_dir=posed_job.root.parent)
+    block = record["phases"]
+    assert block["plan"]["action"] == "jump" and record["n"] == 10
+    assert len(record["picks"]) == 10 == len(set(record["picks"]))
+    assert block["closure"] is None and record["timing"]["loop"] is False
+    assert block["anticipation"] is not None
+    assert block["tags"][block["anticipation"]] == "wind-up"
+    # Both verbs default to the phase picker: the art bible budgets neither.
+    assert config.phases_default("run") and config.phases_default("jump")
+
+
 def test_phases_off_is_byte_identical_for_an_existing_job(posed_job):
     """The golden file is picks.json as HEAD 447ad25 wrote it for this very
     fixture, before the feature. `strike` is an art-bible verb, so the

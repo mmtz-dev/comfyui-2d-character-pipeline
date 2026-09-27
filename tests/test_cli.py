@@ -8,8 +8,8 @@ from anim import __version__, cli
 from anim.stages import STAGE_ORDER
 
 EXPECTED = ["extract", "pose", "rig", "clip", "pick", "review", "strip", "render",
-            "post", "publish", "export", "base", "concept", "bakeoff", "turnaround", "palette",
-            "curate", "run"]
+            "post", "publish", "export", "base", "concept", "animate", "bakeoff",
+            "matrix", "palette", "curate", "run"]
 
 
 def test_every_stage_in_the_plan_is_registered():
@@ -81,3 +81,21 @@ def test_the_api_port_default_matches_compose(tmp_path):
     assert f'"--port", "{config.API_PORT}"' in compose
     assert "8710:8710" not in compose
     assert "\n  review:" not in compose
+
+
+def test_sigterm_unwinds_through_cleanup_instead_of_killing(monkeypatch):
+    """Cancel is SIGTERM; it must raise SystemExit so `except BaseException`
+    cleanup (dropping a planned attempt) runs rather than dying mid-frame."""
+    import signal
+
+    from anim import cli
+
+    installed = {}
+    monkeypatch.setattr(signal, "signal", lambda sig, handler: installed.setdefault(sig, handler))
+    monkeypatch.setattr(cli, "build_parser", lambda: (_ for _ in ()).throw(RuntimeError("stop")))
+    with pytest.raises(RuntimeError):
+        cli.main([])
+    handler = installed[signal.SIGTERM]
+    with pytest.raises(SystemExit) as exc:
+        handler(signal.SIGTERM, None)
+    assert exc.value.code == 128 + signal.SIGTERM

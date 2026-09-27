@@ -117,11 +117,7 @@ def render(job_name: str, *, seed: int | None = None, strength: float | None = N
     try:
         stats = client.system_stats()
     except comfy.ComfyError as exc:
-        raise comfy.ComfyUnreachable(
-            f"the GPU image service is not answering at {client.base_url}: "
-            f"{exc}\nStart it with: sudo systemctl start docker  (owner, in a "
-            f"TTY), then\n  docker --context docker-default compose -f "
-            f"tools/anim-pipeline/gpu/compose.yml up -d") from exc
+        raise comfy.unreachable(client.base_url, exc) from exc
 
     skeleton = job.strip_dir / layout["strip"]["file"]
     reference = job.strip_dir / layout["reference"]["file"]

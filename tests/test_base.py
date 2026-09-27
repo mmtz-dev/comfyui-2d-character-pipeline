@@ -137,3 +137,74 @@ def test_base_against_an_unreachable_service_says_so(work_dir, workflow_dir):
                                client=comfy.ComfyClient("http://127.0.0.1:1",
                                                         timeout=1),
                                workflow_dir=workflow_dir)
+
+
+# ---------------------------------------------------------------------------
+# The front base pose feature
+# ---------------------------------------------------------------------------
+def test_the_front_pose_is_synthesised_not_photographed():
+    """Same licence question as its side-view sibling, same answer."""
+    payload = base_stage.stand_payload(base_stage.STAND_POSE_FRONT)
+    assert payload["model"] == "canned"
+    assert payload["rig"] == "openpose18"
+    frame = payload["frames"][0]
+    assert len(frame["keypoints"]) == len(frame["scores"]) == 18
+    assert "SYNTHESISED" in payload["_note"]
+
+
+def test_the_front_figure_faces_the_viewer():
+    """The whole point of the file: limbs spread across x, not stacked in a
+    column. The side pose collapses every joint into ~66px, which is what put
+    hooded_archer's arms, torso and legs on one patch of cloak."""
+    front = base_stage.stand_payload(base_stage.STAND_POSE_FRONT)["frames"][0]["keypoints"]
+    side = base_stage.stand_payload()["frames"][0]["keypoints"]
+    spread = max(p[0] for p in front) - min(p[0] for p in front)
+    assert spread > 200, "a front view spreads the limbs across the cell"
+    assert spread > 3 * (max(p[0] for p in side) - min(p[0] for p in side))
+    # OpenPose-18: a person facing us has their right on our left.
+    right_shoulder, left_shoulder = front[2], front[5]
+    right_ankle, left_ankle = front[10], front[13]
+    assert right_shoulder[0] < left_shoulder[0]
+    assert right_ankle[0] < left_ankle[0]
+    assert front[0][1] < front[1][1] < front[8][1] < right_ankle[1]
+
+
+def test_repose_swaps_the_pose_and_leaves_the_render_alone(work_dir):
+    """Why `repose` exists at all: re-picking would clear the accepted views,
+    so a unit picked before the front pose landed must be able to fix its part
+    prompts without paying for its views twice."""
+    job = base_stage.prepare("hooded_archer", cell=(768, 768), work_dir=work_dir)
+    job.render_dir.mkdir(parents=True, exist_ok=True)
+    (job.render_dir / "concept_pick.png").write_bytes(b"not really a png")
+    views = {"back": {"file": "view_back.png"}}
+    job.update_manifest(render={"seed": 11, "passes": ["concept_pass"],
+                                "final": "concept_pick.png"},
+                        concept={"job": "hooded_archer_concept", "views": views})
+    before = json.loads(job.keypoints_path.read_text())
+
+    result = base_stage.repose("hooded_archer", work_dir=work_dir)
+
+    after = json.loads(job.keypoints_path.read_text())
+    assert before["frames"][0]["keypoints"] != after["frames"][0]["keypoints"]
+    assert after["source_size"] == [768, 768]
+    manifest = job.read_manifest()
+    assert manifest["render"]["final"] == "concept_pick.png", "render untouched"
+    assert manifest["concept"]["views"] == views, "accepted views untouched"
+    assert manifest["pose"]["cell"] == [768, 768]
+    assert result["job"] == job.name
+
+
+def test_repose_refuses_a_rig_posed_base(work_dir):
+    """A rig base's pose is the rig's; swapping in the canned skeleton would
+    silently decouple it from the motion source the manifest names."""
+    job = base_stage.prepare("knight", work_dir=work_dir)
+    job.update_manifest(pose={"rig": "openpose18", "model": "rig",
+                              "mode": "kaykit", "cell": [512, 768],
+                              "detected": 1})
+    with pytest.raises(ValueError, match="rig"):
+        base_stage.repose("knight", work_dir=work_dir)
+
+
+def test_repose_needs_a_base_job_to_exist(work_dir):
+    with pytest.raises(FileNotFoundError, match="no base job"):
+        base_stage.repose("nobody", work_dir=work_dir)

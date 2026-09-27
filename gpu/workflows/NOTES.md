@@ -218,7 +218,7 @@ positive prompt, cell size, seed, output prefix — see the table below.
 Qwen-Image-Edit 2509 (the INT4 Nunchaku build `identity_pass.json` loads) asked for the
 accepted base **from another side**: `anim concept --views` sends the base as `image1` and a
 per-view sentence (`config.CONCEPT_VIEWS`, "seen from directly behind, turned all the way
-round …") with the unit's parts phrase, and the turnaround hands each direction the view that
+round …") with the unit's parts phrase, and the matrix hands each direction the view that
 already shows that side. One image in, one out; no LoRA node (the Qwen pixel LoRA is not on
 disk and `identity_pass.json` bypasses it at 0.0 anyway), no ControlNet.
 

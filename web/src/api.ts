@@ -55,7 +55,20 @@ export interface PicksState {
   frames: PickFrame[];
 }
 
-export type RunStatus = "queued" | "running" | "done" | "failed" | "lost" | "cancelled";
+/** `partial` is the batch stages\' own: the process finished and some of the
+ * cells it planned did not. See anim/outcome.py - a run whose every cell
+ * failed used to arrive here as `done` at 100%. */
+export type RunStatus = "queued" | "running" | "done" | "partial" | "failed" | "lost" | "cancelled";
+
+/** What `matrix` and `bakeoff` accomplished, in cells. Null for
+ * every other stage: a single-shot stage has no cells to count, and no tally
+ * is not a tally of zero. Older records (before 2026-09-24) carry none. */
+export interface RunCells {
+  done: number;
+  failed: number;
+  blocked: number;
+  of: number;
+}
 
 export interface RunRecord {
   id: string;
@@ -69,6 +82,7 @@ export interface RunRecord {
   returncode: number | null;
   pid: number | null;
   cancelled?: boolean;
+  cells?: RunCells | null;
   log_lines: number;
   url: string;
   events: string;
@@ -139,7 +153,7 @@ export interface BoardCell {
 }
 
 export interface Waiting {
-  kind: "gate" | "cell";
+  kind: "gate" | "view" | "parts" | "cell";
   key: string;
   why: string;
 }
@@ -147,12 +161,28 @@ export interface Waiting {
 export type ViewState = "pending" | "accepted" | "rejected";
 
 /** One view of the base (the multi-view reference feature): the views step
- * under the base gate. `url` is the file on the base job, null when the
- * record names a view the base no longer carries. */
+ * under the base gate. The API sends all eight slots of `CONCEPT_VIEWS`, so
+ * `missing` (the base carries no file for it) is the ring's third state
+ * beside accepted and pending. `url` is the file on the base job, null when
+ * the view is missing. `wanted_by` names the matrix directions that ask
+ * for this view first - s0 wants `right`. */
 export interface BoardView {
   view: string;
   yaw: number;
+  elevation?: string;
   state: ViewState;
+  /** Optional: an API from before the eight-slot ring sends only what exists. */
+  missing?: boolean;
+  /** How many candidates `concept --views` has drawn for this view. A slot
+   * can be missing from the base and still have attempts waiting for a pick. */
+  attempts?: number;
+  wanted_by?: string[];
+  /** The mirrored view feature; optional for the same reason as `missing` -
+   * an API from before it sends neither. `mirror_of` is the partner this slot
+   * could be flipped from, `mirrored` that it already was. */
+  mirror_of?: string | null;
+  mirrored?: boolean;
+  mirrored_from?: string | null;
   file: string | null;
   url: string | null;
   candidate: number | null;
@@ -168,6 +198,15 @@ export interface BoardState {
   exists: boolean;
   path: string;
   gates: Record<string, GateState>;
+  /** Why a gate cannot be accepted right now, per gate, or null when it can.
+   * Optional because the long-lived API process may predate this build. */
+  gate_blocked?: Record<string, string | null>;
+  /** Whether `<unit>_base/post/parts.json` exists - the measured part palettes
+   * every direction locks its colours to. Optional for the same reason as
+   * `gate_blocked`: the long-lived API process may predate this build. */
+  base_parts?: boolean;
+  /** The job whose `post --parts` measures them. */
+  base_parts_job?: string;
   views: Record<string, BoardView>;
   actions: string[];
   directions: string[];
@@ -181,55 +220,94 @@ export interface CurationUnit {
   record: boolean;
 }
 
-// --- the turnaround feature -------------------------------------------------
-export type TurnaroundStatus = "done" | "failed" | "running" | "not run";
+// --- the action matrix feature ------------------------------------------------
+/** What one cell's record says it is. `kept` is done with the owner's own
+ * hand-edited picks left alone; `not run` is planned and never started. */
+export type MatrixCellStatus = "done" | "failed" | "blocked" | "kept" | "not run";
 
-export interface TurnaroundDirection {
+/** Does the last pick lead back into the first (`pick`'s `loop_closure`)?
+ * Information, not a failure: idle / walk / run are loops and Wan does not
+ * know it. `metric: "none"` means neither poses nor frames could answer. */
+export interface LoopClosure {
+  first: number;
+  last: number;
+  metric: "pose" | "pixel" | "none";
+  distance: number | null;
+  tolerance: number;
+  ok: boolean | null;
+}
+
+/**
+ * One (action x direction) cell of `GET /matrix/{unit}`, as
+ * `matrix.listing()` builds it. Every planned cell has a row whether or not
+ * anything has run, so the tab can grey what it cannot generate on first
+ * load: `runnable` and `reason` are recomputed from the curation record on
+ * every GET, never read back from the state file.
+ */
+export interface MatrixCell {
+  key: string;
+  action: string;
+  /** The PIPELINE verb - attack's job is `<unit>_strike[_<dir>]`. */
+  verb: string;
   direction: string;
+  yaw: number;
   job: string;
-  status: TurnaroundStatus;
-  error: string | null;
+  /** The rig's clip for the action, null when that rig ships none (jump). */
+  clip: string | null;
+  status: MatrixCellStatus;
+  runnable: boolean;
+  /** The whole sentence a blocked cell shows - never a silent grey. */
+  reason: string | null;
+  /** The accepted view of the base this cell would render against. */
+  view: string | null;
+  /** The views the direction wants, best first (`matrix_reference_views`). */
+  wanted: string[];
+  frames: number;
+  /** `/jobs/<job>/frames/post/<i>.png`, one per finished frame. */
+  strip: string[];
+  /** The phase tag of each frame of `strip`, null where there is none. */
+  phases: (string | null)[];
+  fps: number;
+  loop: boolean;
+  closure: LoopClosure | null;
   seconds: number | null;
   gpu_seconds: number | null;
-  /** `/jobs/{job}/frames/post/0.png` once the direction is done. */
-  still: string | null;
-  raw: string | null;
-  control: string | null;
-  skeleton: string | null;
-  depth: string | null;
-  hidden_face: string[] | null;
-  silhouette: { width: number; height: number; pixels: number; colours: number } | null;
-  prompt?: string | null;
-  /** The reference this still handed Wan (the multi-view reference feature):
-   * which view of the base, whether it fell back to the front, and the URL
-   * of the image `clip` actually sent. */
-  reference?: TurnaroundReference | null;
-}
-
-export interface TurnaroundReference {
-  view: string | null;
-  kind: string | null;
-  file: string | null;
-  fallback: boolean;
-  warning: string | null;
-  provisional: boolean;
-  state: string | null;
-  url: string | null;
-}
-
-/** `GET /turnaround/{unit}`: what `anim turnaround` recorded, per direction. */
-export interface TurnaroundState {
-  unit: string;
-  elevation: string;
   seed: number | null;
-  question: string;
-  updated: string;
-  plan: string[];
-  directions: Record<string, TurnaroundDirection>;
+  error: string | null;
+  /** The cell's status on the Board, so the tab needs no second fetch. */
+  curation: CellStatus | null;
+}
+
+/** The counts of the last run's plan; null before anything has run. */
+export interface MatrixSummary {
   done: number;
+  failed: number;
+  blocked: number;
   of: number;
-  page: string;
-  identity: { directions: string[]; done: string[]; height: { spread: number } | null; width: { spread: number } | null } & Record<string, unknown>;
+  gpu_seconds: number;
+  seconds: number;
+}
+
+/** `GET /matrix/{unit}`: the whole five-by-eight grid with its live verdicts.
+ * There is no 404 for "no matrix yet" - only a name that is not a unit slug. */
+export interface MatrixState {
+  unit: string;
+  schema: string;
+  elevation: string;
+  /** The unit's one seed, once a run has derived it. */
+  seed: number | null;
+  rig: { name: string; glb: string };
+  actions: string[];
+  directions: string[];
+  cells: Record<string, MatrixCell>;
+  /** The #277 hold: the widest selection the stage will accept (0 = no cap). */
+  max_cells: number;
+  selectable: number;
+  /** Seconds one cell costs, warm - multiply by the selection. */
+  estimate_seconds: number;
+  summary: MatrixSummary | null;
+  updated: string | null;
+  path: string;
 }
 
 export class ApiError extends Error {
@@ -340,15 +418,9 @@ export const putCell = (
   body: { status?: CellStatus; frames?: Record<string, FrameMark | null> },
 ) => sendJSON<BoardCell>("PUT", cellPath(unit, action, direction), body);
 
-/** The unit's turnaround, or null when none has run yet (the API's 404). */
-export async function getTurnaround(unit: string): Promise<TurnaroundState | null> {
-  try {
-    return await getJSON<TurnaroundState>(`/turnaround/${encodeURIComponent(unit)}`);
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 404) return null;
-    throw error;
-  }
-}
+/** The action matrix. Always answers for a unit slug - a unit nothing has
+ * run for still gets a row per planned cell, blocked with the reason. */
+export const getMatrix = (unit: string) => getJSON<MatrixState>(`/matrix/${encodeURIComponent(unit)}`);
 
 export const putGate = (unit: string, gate: string, state: GateState) =>
   sendJSON<BoardState>("PUT", `/curation/${encodeURIComponent(unit)}/gates/${encodeURIComponent(gate)}`, { state });
@@ -389,7 +461,7 @@ export async function regenerateCell(
 }
 
 // --- the concept generation feature ------------------------------------------
-export type AttemptSource = "txt2img" | "upload" | "existing" | "img2img" | "edit" | "views";
+export type AttemptSource = "txt2img" | "upload" | "existing" | "img2img" | "edit" | "views" | "animate" | "mirror";
 export type ConceptOp = "txt2img" | "views" | "img2img" | "edit";
 export type ModelFamily = "zimage" | "qwen-edit" | "wan";
 
@@ -434,6 +506,15 @@ export interface Attempt {
   /** Added by the API: the image, and whether there is one yet. */
   url: string | null;
   rendered: boolean;
+  /** The animate tab feature: the owner's pose sentence (the rest of
+   * `prompt` is the wrapper), what the attempt was drawn from - the images in
+   * the order Qwen-Image-Edit saw them - the skeleton frame, if any, and for a
+   * mirrored attempt the partner frame it is the flip of. */
+  pose_prompt?: string | null;
+  draw_from?: DrawFrom | null;
+  images?: AnimateImage[];
+  skeleton?: AnimateSkeleton | null;
+  mirror?: { direction: string; frame: string; ref: string; sha256: string; how: string } | null;
 }
 
 export interface ConceptView {
@@ -447,10 +528,17 @@ export interface ConceptView {
   pick: number | null;
   hidden_count: number;
   /** The accepted attempt was edited after it was accepted: the copy the
-   * turnaround reads is the older picture until it is accepted again. */
+   * matrix reads is the older picture until it is accepted again. */
   pick_stale: boolean;
   state: "pending" | "accepted" | "rejected";
   accepted_file: string | null;
+  /** The mirrored view feature. `mirror_of` is the view this one COULD be
+   * derived from by flipping it (null for back, top and front, which look
+   * straight down the symmetry plane); `mirrored` / `mirrored_from` say the
+   * picture the base carries already IS that flip. Two different facts. */
+  mirror_of: string | null;
+  mirrored: boolean;
+  mirrored_from: string | null;
 }
 
 export interface ConceptState {
@@ -477,8 +565,15 @@ export interface ConceptState {
   };
   views: Record<string, ConceptView>;
   views_stale: boolean;
+  /** Seconds one WARM view render takes, measured from this unit's own
+   * records (or every unit's, or the config constant). The first render of a
+   * cold run costs COLD_SECONDS more while Qwen-Image-Edit loads. */
+  estimate_seconds: number;
   page: string;
   uploaded?: Attempt;
+  /** The one line a mirror press answers with when the unit carries handed
+   * gear: the flip swaps the sword hand. Absent on every other response. */
+  warning?: string | null;
 }
 
 export interface ConceptRequest {
@@ -565,6 +660,10 @@ export const pickConcept = (unit: string, index: number, parts?: string, avoid?:
 
 export const pickConceptView = (unit: string, view: string, index: number) =>
   sendJSON<ConceptState>("POST", `/concept/${encodeURIComponent(unit)}/views/${encodeURIComponent(view)}/pick`, { index });
+/** The mirrored view feature: the same route, deriving the view from its
+ * accepted partner instead of naming one of its own attempts. No GPU. */
+export const mirrorConceptView = (unit: string, view: string) =>
+  sendJSON<ConceptState>("POST", `/concept/${encodeURIComponent(unit)}/views/${encodeURIComponent(view)}/pick`, { mirror: true });
 
 /** `PUT .../attempts/{target}/{index}/image`: the editor's Save (the retouch
  * feature). The body is the PNG; transparency is flattened onto white. */
@@ -633,4 +732,227 @@ export async function cancelRun(id: string): Promise<{ run: RunRecord } | { refu
   if (response.status === 202) return { run: payload as unknown as RunRecord };
   const error = (payload.error ?? payload.detail ?? response.statusText) as string;
   return { refused: { status: response.status, error: typeof error === "string" ? error : JSON.stringify(error) } };
+}
+
+// --- the animate tab feature -------------------------------------------------
+/** view = the direction's accepted view; keys = the approved keyframes either
+ * side of the frame; both = the view and the two keys. */
+export type DrawFrom = "view" | "keys" | "both";
+export type FrameStatus = "empty" | "generating" | "review" | "approved" | "rejected";
+export type Batch = "all" | "keys" | "rejected" | "inbetweens";
+
+export interface AnimateImage {
+  role: "view" | "before" | "after" | "skeleton";
+  ref: string;
+  path: string;
+  sha256: string;
+}
+
+export interface AnimateSkeleton {
+  frame: number;
+  default_frame: number;
+  frames: number;
+  fps: number;
+  time: number;
+  clip: string;
+  rig: string;
+  file?: string;
+}
+
+export interface FrameNeighbour {
+  id: string;
+  position: number;
+  label: string;
+  approved: boolean;
+}
+
+export interface AnimateFrame {
+  id: string;
+  /** 1-based, what "Frame N" says. */
+  position: number;
+  label: string;
+  key: boolean;
+  phase: string | null;
+  /** Where in the rig clip the frame samples, 0..1 (the template's instant). */
+  at: number;
+  status: FrameStatus;
+  current: number | null;
+  verdict: { state: "approved" | "rejected"; index: number; sha256: string; at: string } | null;
+  prompt: string;
+  default_prompt: string;
+  draw_from: DrawFrom;
+  before: FrameNeighbour | null;
+  after: FrameNeighbour | null;
+  default_skeleton_frame: number | null;
+  skeleton_frame: number | null;
+  candidates: Attempt[];
+  hidden_count: number;
+  game_url: string | null;
+}
+
+export interface CompassCell {
+  direction: string;
+  view: string;
+  yaw: number;
+  url: string | null;
+  blocked: string | null;
+  mirror_of: string | null;
+  approved: number;
+  frames: number;
+  exists: boolean;
+}
+
+export interface AnimateState {
+  unit: string;
+  action: string;
+  verb: string;
+  direction: string;
+  view: string;
+  job: string;
+  exists: boolean;
+  loop: boolean;
+  fps: number;
+  height: number;
+  max_frames: number;
+  phases: string[];
+  draw_from_options: DrawFrom[];
+  max_images: number;
+  compass: CompassCell[];
+  actions: { action: string; verb: string; frames: number; loop: boolean; clip: string | null }[];
+  /** Why frames may not be drawn now (the base gate), or null. */
+  locked: string | null;
+  reference: { view: string; sha256: string; url: string | null } | null;
+  reference_error: string | null;
+  rig: { rig: string; clip: string; duration: number; fps: number; frames: number; times: number[] } | null;
+  rig_error: string | null;
+  /** `/animate/.../skeleton/{frame}.png` - replace `{frame}`. */
+  skeleton_url: string;
+  frames: AnimateFrame[];
+  counts: Record<FrameStatus | "total", number>;
+  next_step: { step: "keys" | "inbetweens" | "done"; targets: number[]; waiting: number[] };
+  mirror: {
+    partner: string | null;
+    partner_view: string | null;
+    available: boolean;
+    partner_pictures: number;
+    last: { from: string; at: string; frames: number; warning: string } | null;
+    warning: string | null;
+  };
+  output: { job: string; at: string | null; written: boolean; stale: boolean; ready: boolean; error: string | null };
+  defaults: ConceptState["defaults"];
+  last_seed: number | null;
+  /** Present on the responses that did something worth a line. */
+  warning?: string | null;
+  mirrored?: number;
+  approved?: string[];
+  added?: string;
+  written?: { job: string; frames: number; board: string };
+  edited?: Attempt;
+}
+
+export interface AnimateRequest {
+  frame?: string;
+  batch?: Batch;
+  prompt?: string;
+  draw_from?: DrawFrom;
+  skeleton?: boolean;
+  skeleton_frame?: number;
+  count?: number;
+  seed?: number;
+  model?: string;
+  force?: boolean;
+}
+
+function animatePath(unit: string, action: string, direction: string): string {
+  return `/animate/${encodeURIComponent(unit)}/${encodeURIComponent(action)}/${encodeURIComponent(direction)}`;
+}
+
+async function runOrRefusal(response: Response): Promise<{ run: RunRecord } | { refused: RunRefusal }> {
+  const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (response.status === 202) return { run: payload as unknown as RunRecord };
+  const error = (payload.error ?? payload.detail ?? response.statusText) as string;
+  return {
+    refused: {
+      status: response.status,
+      error: typeof error === "string" ? error : JSON.stringify(error),
+      run: payload.run as RunRecord | undefined,
+      runs: payload.runs as RunRecord[] | undefined,
+    },
+  };
+}
+
+export const getAnimate = (unit: string, action: string, direction: string) =>
+  getJSON<AnimateState>(animatePath(unit, action, direction));
+
+/** `POST /animate/.../generate`: the run (202), or the refusal as a value. */
+export async function generateAnimate(
+  unit: string, action: string, direction: string, body: AnimateRequest,
+): Promise<{ run: RunRecord } | { refused: RunRefusal }> {
+  const response = await fetch(`${animatePath(unit, action, direction)}/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify(body),
+  });
+  return runOrRefusal(response);
+}
+
+export const addAnimateFrame = (unit: string, action: string, direction: string, after: number) =>
+  sendJSON<AnimateState>("POST", `${animatePath(unit, action, direction)}/frames`, { after });
+
+export const putAnimateFrame = (unit: string, action: string, direction: string, frame: string,
+  body: { key?: boolean; phase?: string | null; current?: number }) =>
+  sendJSON<AnimateState>("PUT", `${animatePath(unit, action, direction)}/frames/${encodeURIComponent(frame)}`, body);
+
+export async function removeAnimateFrame(unit: string, action: string, direction: string, frame: string): Promise<AnimateState> {
+  const response = await fetch(`${animatePath(unit, action, direction)}/frames/${encodeURIComponent(frame)}`, {
+    method: "DELETE", headers: { Accept: "application/json" },
+  });
+  if (!response.ok) throw new ApiError(response.status, await detail(response));
+  return (await response.json()) as AnimateState;
+}
+
+export const judgeAnimateFrame = (unit: string, action: string, direction: string, frame: string,
+  verdict: "approve" | "reject", index?: number) =>
+  sendJSON<AnimateState>("POST", `${animatePath(unit, action, direction)}/frames/${encodeURIComponent(frame)}/${verdict}`,
+    index === undefined ? {} : { index });
+
+export const approveReviewed = (unit: string, action: string, direction: string) =>
+  sendJSON<AnimateState>("POST", `${animatePath(unit, action, direction)}/approve-reviewed`, {});
+
+export const mirrorAnimate = (unit: string, action: string, direction: string) =>
+  sendJSON<AnimateState>("POST", `${animatePath(unit, action, direction)}/mirror`, {});
+
+export const outputAnimate = (unit: string, action: string, direction: string, replaceJob = false) =>
+  sendJSON<AnimateState>("POST", `${animatePath(unit, action, direction)}/output`, { replace_job: replaceJob });
+
+function animateAttemptPath(unit: string, action: string, direction: string, frame: string, index: number): string {
+  return `${animatePath(unit, action, direction)}/attempts/${encodeURIComponent(frame)}/${index}`;
+}
+
+export const hideAnimateAttempt = (unit: string, action: string, direction: string, frame: string, index: number, hidden: boolean) =>
+  sendJSON<AnimateState>("PUT", animateAttemptPath(unit, action, direction, frame, index), { hidden });
+
+/** The editor's Save over one frame attempt. */
+export async function putAnimateImage(unit: string, action: string, direction: string, frame: string, index: number, png: Blob): Promise<AnimateState> {
+  const response = await fetch(`${animateAttemptPath(unit, action, direction, frame, index)}/image`, {
+    method: "PUT", headers: { "Content-Type": "image/png" }, body: png,
+  });
+  if (!response.ok) throw new ApiError(response.status, await detail(response));
+  return (await response.json()) as AnimateState;
+}
+
+/** The retouch feature's masked redraw on a frame attempt -> a run, or the refusal. */
+export async function inpaintAnimate(
+  unit: string, action: string, direction: string, frame: string, index: number, canvas: Blob,
+  options: { prompt?: string; strength?: number; seed?: number } = {},
+): Promise<{ run: RunRecord } | { refused: RunRefusal }> {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(options)) {
+    if (value !== undefined && value !== null && value !== "") query.set(key, String(value));
+  }
+  const suffix = query.toString() ? `?${query}` : "";
+  const response = await fetch(`${animateAttemptPath(unit, action, direction, frame, index)}/inpaint${suffix}`, {
+    method: "POST", headers: { "Content-Type": "image/png" }, body: canvas,
+  });
+  return runOrRefusal(response);
 }

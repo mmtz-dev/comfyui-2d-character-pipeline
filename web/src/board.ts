@@ -2,7 +2,7 @@
 // reducer the view folds edits into, and the header lines. No DOM, no
 // fetch - the tests run it in Node; board-view.ts draws it.
 
-import type { BoardCell, BoardState, BoardView, CurationMode, FrameMark, GateState, JobRow, TurnaroundState, ViewState, Waiting } from "./api";
+import type { BoardCell, BoardState, BoardView, CurationMode, FrameMark, GateState, JobRow, ViewState, Waiting } from "./api";
 
 /** The board's rows: the studio's five actions, and the pipeline verb of each
  * (attack <-> strike; the rest are the same word) - config.STUDIO_ACTIONS. */
@@ -22,7 +22,7 @@ export const DIRECTIONS: readonly string[] = ["side", "top"].flatMap((elevation)
 export const MODES: readonly CurationMode[] = ["gates", "every", "end"];
 
 export const MODE_HELP: Record<CurationMode, string> = {
-  gates: "gates: clips wait for the base to be accepted, and a direction outside s0 for the turnaround; review in a batch",
+  gates: "gates: clips wait for the base to be accepted, and a matrix direction for its view; review in a batch",
   every: "every step: as gates, and a cell's clip waits until every earlier cell is accepted (s0's actions first)",
   end: "end only: nothing blocks; review everything at the end",
 };
@@ -149,20 +149,47 @@ function recount(board: BoardState): BoardState {
   return { ...board, waiting: waitingOn(board) };
 }
 
+/** The views step as waiting entries - the API's `waiting_views`: the slots
+ * nobody has drawn at all first, then the ones that need a decision (an
+ * attempt waiting for a pick, a picked view waiting for a verdict). */
+export function waitingViews(unit: string, views: Record<string, BoardView>): Waiting[] {
+  const tiles = viewTiles({ unit, views });
+  const because = (tile: ViewTile) => (tile.wantedBy.length ? `; ${tile.wantedBy.join(", ")} wants it` : "");
+  const undrawn = tiles.filter((t) => t.missing && !t.attempts)
+    .map((t) => ({ kind: "view" as const, key: t.view, why: `no ${t.view} view of the base yet - render it on the Concept tab (\`anim concept --unit ${unit} --views ${t.view}\`)${because(t)}` }));
+  const decide = tiles.filter((t) => (t.missing && t.attempts) || (!t.missing && t.state === "pending"))
+    .map((t) => ({
+      kind: "view" as const, key: t.view,
+      why: t.missing
+        ? `${t.attempts} attempt${t.attempts === 1 ? "" : "s"} at the ${t.view} view and none picked - pick one on the Concept tab (\`anim concept --unit ${unit} --pick-view ${t.view}=NN\`)${because(t)}`
+        : `judge the ${t.view} view of the base - accept it or reject it`,
+    }));
+  return [...undrawn, ...decide];
+}
+
 /**
  * What the owner has to decide - the API's `waiting_on`, computed again here
- * so an optimistic edit updates the header. Gates first (not in `end` mode),
- * then the rejected and the pending cells that have frames; in `every` mode
- * only the first such cell, the rest are queued behind it.
+ * so an optimistic edit updates the header. In pipeline order: the gates (not
+ * in `end` mode), the views of the base and its part palettes, then the
+ * rejected and the pending cells that have frames; in
+ * `every` mode only the first such cell, the rest are queued behind it.
  */
-export function waitingOn(board: Pick<BoardState, "mode" | "gates" | "cells">): Waiting[] {
+export function waitingOn(board: Pick<BoardState, "mode" | "gates" | "cells"> & Partial<BoardState>): Waiting[] {
   const out: Waiting[] = [];
+  const unit = board.unit ?? "<unit>";
   if (board.mode !== "end") {
     if (board.gates.base !== "accepted") {
       out.push({ kind: "gate", key: "base", why: "accept the base (the concept pick) before any cell renders" });
     }
-    if (board.gates.turnaround !== "accepted") {
-      out.push({ kind: "gate", key: "turnaround", why: "accept the turnaround before any cell outside s0 renders" });
+    // Only when the API sent the view slots: one from before the eight-slot
+    // ring sends none, and guessing at them would make an optimistic line
+    // disagree with the GET that follows it.
+    if (board.exists && board.views && Object.keys(board.views).length) {
+      out.push(...waitingViews(unit, board.views));
+      if (board.base_parts === false) {
+        const job = board.base_parts_job ?? `${unit}_base`;
+        out.push({ kind: "parts", key: job, why: `no part palettes yet - \`anim post ${job} --parts\` measures them off the accepted base (CPU, no GPU); every direction locks its colours to them` });
+      }
     }
   }
   const ordered = Object.values(board.cells).sort((a, b) => cellOrder(a.key) - cellOrder(b.key));
@@ -194,24 +221,56 @@ export function waitingText(waiting: Waiting[]): string {
   return `waiting on you: ${items.join(", ")}`;
 }
 
-export function gatesText(gates: Record<string, GateState>, mode: CurationMode): string {
+/** The gates line. A gate with nothing behind it says so instead of printing
+ * a state the owner should not act on. */
+export function gatesText(gates: Record<string, GateState>, mode: CurationMode,
+                          blocked: Record<string, string | null> = {}): string {
   if (mode === "end") return "gates off (end-only review)";
-  return `base ${gates.base ?? "pending"} · turnaround ${gates.turnaround ?? "pending"}`;
+  const one = (gate: string) => {
+    const state = gates[gate] ?? "pending";
+    return state !== "accepted" && blocked[gate] ? `${gate} has nothing to accept` : `${gate} ${state}`;
+  };
+  return GATES.map(one).join(" · ");
 }
 
-/** The seven views `concept --views` can render, in the table's order
- * (config.CONCEPT_VIEWS); "front" is the base itself. */
-export const VIEWS: readonly string[] = ["back", "left", "right", "back_right", "back_left", "front_left", "front_right"];
+/** The curation gates (curation.GATES). The views of the base, accepted one
+ * by one, are the rest of the human gate; there is no second gate. */
+export const GATES: readonly string[] = ["base"];
 
-/** One tile per view of the base the board knows (the multi-view reference
- * feature): the views step under the base gate, in the table's order. */
+/** The eight views `concept --views` can render, in the table's order
+ * (config.CONCEPT_VIEWS); "front" is the base itself and is never one. */
+export const VIEWS: readonly string[] = ["back", "left", "right", "top", "back_right", "back_left", "front_left", "front_right"];
+
+/**
+ * One tile per view slot (the multi-view reference feature): ALL EIGHT, in
+ * the table's order, whether or not the base carries the file - a slot with
+ * no file is the ring's third state and the one that usually matters, since
+ * a direction of the matrix whose view is missing is blocked. `how` is the line a
+ * missing slot shows: what to run to fill it.
+ */
 export interface ViewTile {
   view: string;
   yaw: number;
   state: ViewState;
   url: string | null;
   provisional: boolean;
-  /** Click cycles: pending -> accepted -> rejected -> pending. */
+  /** The base carries no file for this view: nothing to judge yet. */
+  missing: boolean;
+  /** Candidates `concept --views` has drawn for it. Missing with attempts is
+   * a pick waiting to be made; missing with none is GPU time not yet spent. */
+  attempts: number;
+  /** The matrix directions that ask for this view first ("s0" wants "right"). */
+  wantedBy: string[];
+  /** How to fill a missing slot; null when the slot has a file. */
+  how: string | null;
+  /** The mirrored view feature: the partner this slot could be derived from
+   * (null for back and top, which sit on the symmetry plane), and whether the
+   * picture on the base already IS that flip. The ring marks the second. */
+  mirrorOf: string | null;
+  mirrored: boolean;
+  mirroredFrom: string | null;
+  /** Click cycles: pending -> accepted -> rejected -> pending. A missing
+   * slot has nothing to cycle, and the view renders no button for it. */
   next: ViewState;
 }
 
@@ -221,77 +280,90 @@ export function nextViewState(state: ViewState): ViewState {
   return "pending";
 }
 
-export function viewTiles(board: Pick<BoardState, "views">): ViewTile[] {
+export function viewTiles(board: Pick<BoardState, "views"> & Partial<BoardState>): ViewTile[] {
   const views = board.views ?? {};
-  return VIEWS.filter((name) => views[name]).map((name) => {
-    const row = views[name] as BoardView;
-    return { view: name, yaw: row.yaw, state: row.state, url: row.url, provisional: row.provisional, next: nextViewState(row.state) };
-  });
-}
-
-/** The one line over the views row. */
-export function viewsText(board: Pick<BoardState, "views">): string {
-  const tiles = viewTiles(board);
-  if (!tiles.length) return "no views of the base yet - anim concept --unit <unit> --views renders back, left, right";
-  const accepted = tiles.filter((t) => t.state === "accepted").length;
-  const provisional = tiles.filter((t) => t.provisional).length;
-  const parts = [`${accepted} / ${tiles.length} views accepted`];
-  if (provisional) parts.push(`${provisional} provisional (picked for a rerun - your --pick-view supersedes it)`);
-  const rejected = tiles.filter((t) => t.state === "rejected").map((t) => t.view);
-  if (rejected.length) parts.push(`rejected: ${rejected.join(", ")} (the turnaround falls back past them)`);
-  return parts.join(" · ");
-}
-
-/** One entry per planned direction of the turnaround, in compass order (the
- * plan's order, s0 first), whether or not it rendered - the thing the
- * `turnaround` gate accepts (the turnaround feature). */
-export interface TurnaroundTile {
-  direction: string;
-  job: string;
-  status: string;
-  still: string | null;
-  error: string | null;
-  /** The reference the still used: "back", "front (fallback)" ...; null before it ran. */
-  reference: string | null;
-  referenceUrl: string | null;
-}
-
-export function referenceText(ref: { view: string | null; fallback: boolean; provisional: boolean } | null | undefined): string | null {
-  if (!ref || !ref.view) return null;
-  const notes = [ref.fallback ? "fallback" : null, ref.provisional ? "provisional" : null].filter(Boolean);
-  return notes.length ? `${ref.view} (${notes.join(", ")})` : ref.view;
-}
-
-export function turnaroundTiles(state: Pick<TurnaroundState, "plan" | "directions">): TurnaroundTile[] {
-  return state.plan.map((direction) => {
-    const row = state.directions[direction];
+  const unit = board.unit ?? "<unit>";
+  return VIEWS.map((name) => {
+    const row: BoardView | undefined = views[name];
+    // No row at all is the same gap as a row with no file: an API from
+    // before the eight-slot ring simply left the empty slots out.
+    const missing = !row || row.missing === true || (row.missing === undefined && !row.url);
+    const attempts = row?.attempts ?? 0;
     return {
-      direction,
-      job: row?.job ?? "",
-      status: row?.status ?? "not run",
-      still: row?.still ?? null,
-      error: row?.error ?? null,
-      reference: referenceText(row?.reference),
-      referenceUrl: row?.reference?.url ?? null,
+      view: name,
+      yaw: row?.yaw ?? 0,
+      state: row?.state ?? "pending",
+      url: row?.url ?? null,
+      provisional: row?.provisional ?? false,
+      missing,
+      attempts,
+      wantedBy: row?.wanted_by ?? [],
+      mirrorOf: row?.mirror_of ?? null,
+      mirrored: !missing && (row?.mirrored ?? false),
+      mirroredFrom: row?.mirrored_from ?? null,
+      how: !missing ? null
+        : attempts ? `anim concept --unit ${unit} --pick-view ${name}=NN`
+        : `anim concept --unit ${unit} --views ${name}`,
+      next: nextViewState(row?.state ?? "pending"),
     };
   });
 }
 
-/** The header's one line about the turnaround: how many stills, the seed, the
- * seconds, and the spread of the silhouette so a broken facing reads as a number. */
-export function turnaroundText(state: Pick<TurnaroundState, "done" | "of" | "seed" | "directions" | "identity"> | null): string {
-  if (!state) return "no turnaround yet - anim turnaround <unit> renders the eight idle stills";
-  const done = Object.values(state.directions).filter((d) => d.status === "done");
-  const seconds = done.map((d) => d.seconds ?? 0).reduce((a, b) => a + b, 0);
-  const per = done.length ? Math.round(seconds / done.length) : 0;
-  const failed = Object.values(state.directions).filter((d) => d.status === "failed").map((d) => d.direction);
-  const parts = [`${state.done} / ${state.of} facings`, `seed ${state.seed ?? "?"}`];
-  if (done.length) parts.push(`${per} s per facing`);
-  const h = state.identity?.height?.spread;
-  const w = state.identity?.width?.spread;
-  if (typeof h === "number" && typeof w === "number") parts.push(`silhouette spread ${h} px tall, ${w} px wide`);
-  if (failed.length) parts.push(`failed: ${failed.join(", ")}`);
+/** The one line over the views ring: how many slots are filled, how many of
+ * those are accepted, and - the point of the line - which are missing. */
+export function viewsText(board: Pick<BoardState, "views"> & Partial<BoardState>): string {
+  const tiles = viewTiles(board);
+  const have = tiles.filter((t) => !t.missing);
+  const unpicked = tiles.filter((t) => t.missing && t.attempts).map((t) => t.view);
+  const missing = tiles.filter((t) => t.missing && !t.attempts).map((t) => t.view);
+  const accepted = have.filter((t) => t.state === "accepted").length;
+  const parts = [`${have.length} / ${tiles.length} views on the base, ${accepted} accepted`];
+  if (unpicked.length) parts.push(`drawn, not picked: ${unpicked.join(", ")} (pick one on the Concept tab)`);
+  if (missing.length) parts.push(`missing: ${missing.join(", ")} (the Concept tab renders them)`);
+  const provisional = have.filter((t) => t.provisional).length;
+  if (provisional) parts.push(`${provisional} provisional (picked for a rerun - your --pick-view supersedes it)`);
+  const rejected = have.filter((t) => t.state === "rejected").map((t) => t.view);
+  if (rejected.length) parts.push(`rejected: ${rejected.join(", ")} (the matrix refuses the facings that want them)`);
+  // The mirrored view feature: named on the line because a flip is a different
+  // KIND of view - the same pixels as its partner, the other hand - and the
+  // owner reading "6 / 8 views" deserves to know two of them cost no GPU.
+  const mirrored = have.filter((t) => t.mirrored)
+    .map((t) => `${t.view} ← ${t.mirroredFrom ?? "its partner"}`);
+  if (mirrored.length) parts.push(`mirrored: ${mirrored.join(", ")} (flipped, not generated)`);
   return parts.join(" · ");
+}
+
+/** One button per gate, decided here rather than in the DOM: a gate whose
+ * subject does not exist yet (`gate_blocked`, the API's `gate_blockers`) is
+ * not acceptable, so the button is disabled and carries the reason. An
+ * ACCEPTED gate stays clickable even when blocked - reopening it is how the
+ * owner undoes a judgement that was made over an empty set. */
+export interface GateButton {
+  gate: string;
+  state: GateState;
+  label: string;
+  title: string;
+  blocked: string | null;
+  disabled: boolean;
+}
+
+export function gateButtons(board: Pick<BoardState, "gates" | "mode"> & Partial<BoardState>): GateButton[] {
+  return GATES.map((gate) => {
+    const state = board.gates[gate] ?? "pending";
+    const blocked = board.gate_blocked?.[gate] ?? null;
+    const wouldAccept = state !== "accepted";
+    const disabled = board.mode === "end" || (wouldAccept && blocked !== null);
+    return {
+      gate,
+      state,
+      label: blocked && wouldAccept ? `${gate}: nothing to accept` : `${gate}: ${state}`,
+      title: blocked && wouldAccept ? blocked
+        : state === "accepted" ? `${gate} accepted - click to reopen${blocked ? ` (${blocked})` : ""}`
+        : `accept the ${gate} gate`,
+      blocked,
+      disabled,
+    };
+  });
 }
 
 /** The counts under the grid. */
@@ -304,4 +376,46 @@ export function tally(board: Pick<BoardState, "cells">): { cells: number; accept
     pending: cells.filter((c) => c.status === "pending").length,
     marked: cells.reduce((n, c) => n + Object.keys(c.frames).length, 0),
   };
+}
+
+/** The part-palette job the matrix needs, when it is missing.
+ *
+ * `post --parts` is a CPU job (SAM over the accepted base, ~45 s) and it is the
+ * one thing standing between a unit with accepted views and its matrix cells,
+ * which all lock their colours to it. The Pipeline tab's `post` sends only
+ * {job, source}, so pressing it would post the sprite and skip the
+ * measurement. Null when the base already has them - there is nothing to offer.
+ */
+export interface PartsOffer {
+  job: string;
+  label: string;
+  title: string;
+  confirm: string;
+}
+
+export function partsOffer(
+  board: Pick<BoardState, "unit" | "gates"> & Partial<BoardState>,
+): PartsOffer | null {
+  if (!board.unit) return null;
+  // `undefined` is an API that predates the field, and guessing "missing" there
+  // would offer the job to every unit including ones that have it.
+  if (board.base_parts !== false) return null;
+  if (board.gates.base !== "accepted") return null;   // nothing to measure yet
+  const job = board.base_parts_job ?? `${board.unit}_base`;
+  return {
+    job,
+    label: "measure part palettes",
+    title: `anim post ${job} --parts: SAM over the accepted base, once, to record what colour `
+      + `each part is.\nA CPU job - it does not touch the card - and the matrix renders `
+      + `no cell without it.`,
+    confirm: `measure ${board.unit}'s part palettes from its accepted base (${job}).\n`
+      + `This runs anim post ${job} --parts: about 45 s on the CPU, no GPU. Every matrix `
+      + `cell then locks its colours to the result, which is what keeps the same colours at `
+      + `every facing.\n\nContinue?`,
+  };
+}
+
+/** The args `POST /jobs {stage: "post"}` takes for it. */
+export function partsArgs(offer: Pick<PartsOffer, "job">): Record<string, unknown> {
+  return { job: offer.job, parts: true };
 }

@@ -317,18 +317,70 @@ def test_the_model_entry_is_the_pinned_row():
                            "(downloads 184 MB on first use)")
 def test_sam2_finds_the_knights_helmet_and_legs_on_the_base_render():
     base = Path("/work/work/knight_base")
-    if not (base / "render" / "base_sprite.png").exists():
-        pytest.skip("no work/knight_base render in this checkout")
+    from anim import posekit
     from anim.util import read_json
 
+    if not (base / "job.json").exists():
+        pytest.skip("no work/knight_base in this checkout")
+    # `render.final` is base_sprite.png for a rig/canned base and
+    # concept_pick.png for one the concept stage picked - ask the manifest.
+    final = (read_json(base / "job.json").get("render") or {}).get("final")
+    render = base / "render" / (final or "base_sprite.png")
+    if not render.exists():
+        pytest.skip(f"no {render.name} in this checkout")
+
     payload = read_json(base / "pose" / "keypoints.json")
-    with Image.open(base / "render" / "base_sprite.png") as img:
+    with Image.open(render) as img:
         rgb = np.asarray(img.convert("RGB"))
+    # A canned payload carries no `names`; resolve them from the rig the way
+    # post._mask_cells does, or this raises TypeError instead of running.
+    names = list(payload.get("names") or posekit.rig_names(payload["rig"]))
     prompts = partkit.prompts_for(config.parts_for_unit("knight"),
-                                  payload["frames"][0], payload["names"],
+                                  payload["frames"][0], names,
                                   tuple(payload["source_size"]), rgb.shape[1::-1])
     results = partkit.Sam2Segmenter().segment(rgb, prompts)
     alpha = np.full(rgb.shape[:2], 255, np.uint8)
     out = partkit.resolve(config.parts_for_unit("knight"), prompts, results, alpha)
     assert out.found["helmet"] and out.found["legs"]
     assert out.mask("helmet").sum() < out.mask("legs").sum()
+
+
+# ---------------------------------------------------------------------------
+# The part tables describe the art, not the rig
+# ---------------------------------------------------------------------------
+def test_the_archer_is_not_cut_up_like_the_knight():
+    """The archer wears one full-length cloak. Naming arms/torso/legs on it
+    asks SAM for three regions that share every pixel, and on 2026-09-24 all
+    three came back below the contamination gate with 0 px, which failed
+    all eight directions."""
+    names = [p.name for p in config.parts_for_unit("hooded_archer")]
+    assert names == ["hood", "gloves", "boots", "cloak"]
+    assert not {"arms", "torso", "legs"} & set(names)
+    assert names[-1] == "cloak", ("priority resolves an overlap to the earlier "
+                                  "row, so the part that covers the others is last")
+
+
+def test_every_part_table_prompts_from_joints_the_rig_has():
+    """A typo in a joint name is silent - the part just never gets a prompt."""
+    from anim import rigkit
+
+    known = set(rigkit.OPENPOSE18)
+    for slug, table in config.UNIT_PARTS.items():
+        for part in table:
+            for joint in part.joints:
+                assert joint in known, f"{slug}.{part.name}: unknown joint {joint}"
+            for a, b, _t in part.mids:
+                assert a in known, f"{slug}.{part.name}: unknown joint {a}"
+                assert b in known, f"{slug}.{part.name}: unknown joint {b}"
+            assert part.joints or part.mids or part.prop, \
+                f"{slug}.{part.name} can never be prompted"
+
+
+def test_the_archers_hood_reaches_past_its_face_opening():
+    """The crown point is what stops SAM returning the dark opening instead of
+    the hood: at the knight's 1.35 it lands inside the opening, and the palette
+    came out all shadow (2026-09-24, an 11k px blob beating the 26k px hood)."""
+    hood = next(p for p in config.parts_for_unit("hooded_archer")
+                if p.name == "hood")
+    crowns = [t for a, b, t in hood.mids if (a, b) == ("neck", "nose")]
+    assert crowns and max(crowns) >= 2.0

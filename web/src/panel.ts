@@ -1,10 +1,12 @@
-// The studio panel: the pipeline beside the Piskel canvas. Three tabs. The
+// The studio panel: the pipeline beside the Piskel canvas. Five tabs. The
 // Pipeline tab is four sections - Job (open a job's frames), Save (write them
 // back), Pipeline (start stages, follow the run), Palette (the project's
 // colours in Piskel's list); the Board tab is the curation board
-// (board-view.ts) and the Concept tab the concept generation feature
-// (concept-view.ts) - both widen the panel because a grid of images needs
-// the room. The Run section shows on all three. Plain DOM, no framework:
+// (board-view.ts), the Concept tab the concept generation feature
+// (concept-view.ts), the Animate tab the animate tab feature
+// (animate-view.ts) and the Matrix tab the action matrix feature
+// (matrix-view.ts) - all four widen the panel because a grid of images needs
+// the room. The Run section shows on all five. Plain DOM, no framework:
 // the page is one screen and Piskel itself is jQuery-era JavaScript, so a
 // second rendering model would be a second thing to learn.
 
@@ -12,6 +14,7 @@ import {
   ApiError,
   getConcept,
   getHealth,
+  getAnimate,
   getJob,
   getPicks,
   getRun,
@@ -19,7 +22,9 @@ import {
   listFrames,
   listJobs,
   listRuns,
+  inpaintAnimate,
   inpaintAttempt,
+  putAnimateImage,
   putConceptImage,
   putFrame,
   startRun,
@@ -30,6 +35,8 @@ import {
 } from "./api";
 import { BoardView } from "./board-view";
 import { ConceptTab } from "./concept-view";
+import { AnimateTab, type AnimateCell } from "./animate-view";
+import { MatrixTab } from "./matrix-view";
 import { chooseFrameSet, phaseLabels, type OpenableSet } from "./frames";
 import { projectPalette } from "./palette";
 import {
@@ -40,11 +47,14 @@ import {
   setFrameTags,
   setProjectPalette,
 } from "./piskel-bridge";
-import { describeRun, followRun, viewOf, type RunView } from "./sse";
+import { describeCells, describeRun, followRun, runTone, succeeded, viewOf, type RunView } from "./sse";
 
 const DEFAULT_FPS = 12;
 const TAB_KEY = "anim-studio.panel-tab";
-type Tab = "pipeline" | "board" | "concept";
+type Tab = "pipeline" | "board" | "concept" | "animate" | "matrix";
+/** Every tab, so a remembered one that no longer exists falls back rather
+ * than hiding every section. */
+const TABS: Tab[] = ["pipeline", "board", "concept", "animate", "matrix"];
 
 /** One concept attempt open in the editor (the retouch feature): Save writes
  * it back over itself, and Inpaint sends the canvas for a masked redraw. */
@@ -53,12 +63,15 @@ interface OpenedAttempt {
   target: string;
   index: number;
   file: string;
+  /** Set when it is a frame attempt (the animate tab feature): `target` is
+   * then the frame's id, and Save / Inpaint go back to that tab's routes. */
+  animate?: AnimateCell;
 }
 
 /** What is open in the editor, if anything. */
 interface Opened {
   job: JobRow | { name: string };
-  set: OpenableSet | "candidates" | "views";
+  set: OpenableSet | "candidates" | "views" | "animate";
   entries: FrameEntry[];
   fps: number;
   width: number;
@@ -148,6 +161,24 @@ export class StudioPanel {
     refreshHealth: () => void this.refreshHealth(),
     editPixels: (unit, target, attempt) => void this.editAttempt(unit, target, attempt),
   });
+  // Animate (the animate tab feature): every frame of one animation by hand,
+  // so it borrows the same three things - and the editor for Pixel edit and
+  // Inpaint on a frame's attempt.
+  private readonly animate = new AnimateTab({
+    follow: (run) => this.follow(run),
+    refreshHealth: () => void this.refreshHealth(),
+    editPixels: (cell, frame, attempt, mode) =>
+      void this.editAttempt(cell.unit, frame, attempt, cell, mode),
+  });
+  // Matrix (the action matrix feature): the tab LAUNCHES cells, the Board
+  // reviews them - so it borrows the panel's run following and its editor,
+  // and sends the owner to the Board for the gates a blocked cell names.
+  private readonly matrix = new MatrixTab({
+    follow: (run) => this.follow(run),
+    openJob: (name) => void this.openByName(name),
+    refreshHealth: () => void this.refreshHealth(),
+    showBoard: () => this.showTab("board"),
+  });
   private readonly tabButtons = new Map<Tab, HTMLButtonElement>();
   private tab: Tab = "pipeline";
   private gpuRunSeen: string | null = null;
@@ -178,11 +209,27 @@ export class StudioPanel {
       el("div", { class: "studio-tabs" },
         tabButton("pipeline", "Pipeline", "open a job, save frames, start stages"),
         tabButton("board", "Board", "the curation board: accept / reject / regenerate per cell and per frame"),
-        tabButton("concept", "Concept", "the concept generation feature: the base, its views, regenerate / img2img / edit, the model and LoRA picker")),
+        tabButton("concept", "Concept", "the concept generation feature: the base, its views, regenerate / img2img / edit, the model and LoRA picker"),
+        tabButton("animate", "Animate", "the animate tab feature: draw every frame of one animation by hand, direction by direction, approve each, play it, ship it"),
+        tabButton("matrix", "Matrix", "the action matrix: pick actions × directions and generate")),
+      section(
+        "Matrix",
+        "matrix",
+        el("p", { class: "studio-help" },
+          "Rows are the studio's actions, columns the eight facings - the whole grid, whether or not it has run. "
+          + "Tick what to render and Generate: one run walks the cells, checkpointing after each. A cell that cannot "
+          + "render says why; accept what it names on the Board and it un-greys."),
+        this.matrix.root,
+      ),
       section(
         "Concept",
         "concept",
         this.concept.root,
+      ),
+      section(
+        "Animate",
+        "animate",
+        this.animate.root,
       ),
       section(
         "Board",
@@ -271,11 +318,12 @@ export class StudioPanel {
     } catch {
       remembered = null;
     }
-    this.showTab(remembered === "board" || remembered === "concept" ? remembered : "pipeline");
-    await Promise.all([this.refreshHealth(), this.refreshJobs(), this.refreshRuns(), this.refreshPalette(), this.board.start(), this.concept.start()]);
+    this.showTab(TABS.includes(remembered as Tab) ? (remembered as Tab) : "pipeline");
+    await Promise.all([this.refreshHealth(), this.refreshJobs(), this.refreshRuns(), this.refreshPalette(),
+      this.board.start(), this.concept.start(), this.animate.start(), this.matrix.start()]);
   }
 
-  /** The Pipeline tab, the Board tab or the Concept tab; the last two widen the panel. */
+  /** The Pipeline tab, or one of the three grid tabs; the grids widen the panel. */
   showTab(tab: Tab): void {
     this.tab = tab;
     document.body.classList.toggle("studio-board", tab !== "pipeline");
@@ -307,17 +355,25 @@ export class StudioPanel {
       this.health.className = `studio-health ${health.gpu_run ? "warn" : "ok"}`;
       this.health.title = `${health.work_dir}\nComfyUI at ${health.comfyui_url}`;
       // A GPU run started anywhere (the CLI, the board) holds the Concept
-      // tab's buttons too; one that ended frees them.
+      // and Matrix tabs' buttons too; one that ended frees them.
       if (health.gpu_run !== this.gpuRunSeen) {
         this.gpuRunSeen = health.gpu_run;
         if (health.gpu_run) {
+          let run: RunRecord | null = null;
           try {
-            this.concept.setBusy(await getRun(health.gpu_run));
+            run = await getRun(health.gpu_run);
           } catch {
-            this.concept.setBusy(null);
+            run = null;
           }
+          this.concept.setBusy(run);
+          this.animate.setBusy(run);
+          this.matrix.setBusy(run);
+          this.board.setBusy(run);
         } else {
           this.concept.setBusy(null);
+          this.animate.setBusy(null);
+          this.matrix.setBusy(null);
+          this.board.setBusy(null);
         }
       }
     } catch (error) {
@@ -409,13 +465,14 @@ export class StudioPanel {
    * set), show the editor, and remember where it came from so Save writes it
    * back over itself and Inpaint can send the canvas for a masked redraw.
    */
-  async editAttempt(unit: string, target: string, attempt: Attempt): Promise<void> {
+  async editAttempt(unit: string, target: string, attempt: Attempt,
+                    animate?: AnimateCell, mode: "pixels" | "inpaint" = "pixels"): Promise<void> {
     if (!attempt.url) {
       status(this.saveStatus, `${target}:${attempt.index} has no image to edit`, "bad");
       return;
     }
-    const job = `${unit}_concept`;
-    const set = target === "base" ? "candidates" : "views";
+    const job = animate ? `${unit}_animate_${animate.action}_${animate.direction}` : `${unit}_concept`;
+    const set = animate ? "animate" : target === "base" ? "candidates" : "views";
     status(this.jobStatus, `opening ${attempt.file} ...`);
     this.showTab("pipeline");
     try {
@@ -429,13 +486,17 @@ export class StudioPanel {
       this.opened = {
         job: { name: job }, set, fps: DEFAULT_FPS, width: loaded.width, height: loaded.height,
         entries: [{ index, file: attempt.file, url: attempt.url }],
-        attempt: { unit, target, index: attempt.index, file: attempt.file },
+        attempt: { unit, target, index: attempt.index, file: attempt.file, animate },
       };
       status(this.jobStatus,
         `${unit} ${target}:${String(attempt.index).padStart(2, "0")} (${attempt.file}), `
-        + `${loaded.width}×${loaded.height} - paint it, then Save; rub an area out and Inpaint redraws it`, "ok");
+        + `${loaded.width}×${loaded.height} - `
+        + (mode === "inpaint" ? "rub out the area to redraw with the eraser, then press Inpaint below"
+          : "paint it, then Save; rub an area out and Inpaint redraws it"), "ok");
       this.saveButton.disabled = false;
       this.saveButton.textContent = "Save → the attempt";
+      // The retouch feature's masked redraw: the Concept tab's and, since the
+      // animate tab feature, a frame's attempt on the Animate tab.
       this.inpaintRow.hidden = false;
       status(this.saveStatus, "");
     } catch (error) {
@@ -469,12 +530,17 @@ export class StudioPanel {
     try {
       const canvas = await this.canvas();
       if (!canvas) return;
-      await putConceptImage(attempt.unit, attempt.target, attempt.index, canvas.png);
+      if (attempt.animate) {
+        await putAnimateImage(attempt.unit, attempt.animate.action, attempt.animate.direction,
+          attempt.target, attempt.index, canvas.png);
+      } else {
+        await putConceptImage(attempt.unit, attempt.target, attempt.index, canvas.png);
+      }
       status(this.saveStatus,
         `${attempt.file} saved; erased pixels became white. Its record keeps the seed it was `
         + "generated from and now says it was edited by hand.", "ok");
-      this.showTab("concept");
-      await this.concept.runFinished();
+      this.showTab(attempt.animate ? "animate" : "concept");
+      await (attempt.animate ? this.animate.runFinished() : this.concept.runFinished());
     } catch (error) {
       status(this.saveStatus, `save stopped - ${errorText(error)}`, "bad");
     } finally {
@@ -493,10 +559,14 @@ export class StudioPanel {
     try {
       const canvas = await this.canvas();
       if (!canvas) return;
-      const result = await inpaintAttempt(attempt.unit, attempt.target, attempt.index, canvas.png, {
+      const options = {
         prompt: this.inpaintPrompt.value.trim() || undefined,
         strength: Number(this.inpaintStrength.value),
-      });
+      };
+      const cell = attempt.animate;
+      const result = cell
+        ? await inpaintAnimate(attempt.unit, cell.action, cell.direction, attempt.target, attempt.index, canvas.png, options)
+        : await inpaintAttempt(attempt.unit, attempt.target, attempt.index, canvas.png, options);
       if ("refused" in result) {
         const { refused } = result;
         status(this.saveStatus, refused.status === 409
@@ -601,12 +671,27 @@ export class StudioPanel {
         void this.refreshJobs();
         void this.refreshRuns();
         void this.refreshHealth();
-        if (this.tab === "board") void this.board.runFinished();
+        // The view goes with it: a tab that started a run is where the
+        // owner is looking when it ends, and "0 of 8 cells done" belongs
+        // there and not only in the panel's run line.
+        if (this.tab === "board") void this.board.runFinished(view);
         if (run.gpu) void this.concept.runFinished();
-        if (run.gpu && this.opened?.attempt && view.status === "done") {
+        if (run.gpu) void this.animate.runFinished();
+        // A matrix run writes its state file after every cell, so the grid is
+        // worth re-reading whenever any GPU run ends - a clip or a post from
+        // elsewhere changes what a cell shows too.
+        if (run.gpu) void this.matrix.runFinished(view);
+        if (run.gpu && this.opened?.attempt && succeeded(view)) {
           // An inpaint rewrote the attempt that is open: show what came back.
           const attempt = this.opened.attempt;
-          void getConcept(attempt.unit).then((state) => {
+          const cell = attempt.animate;
+          if (cell) {
+            void getAnimate(attempt.unit, cell.action, cell.direction).then((state) => {
+              const row = state.frames.find((f) => f.id === attempt.target)?.candidates
+                .find((a) => a.index === attempt.index);
+              if (row) void this.editAttempt(attempt.unit, attempt.target, row, cell);
+            }).catch(() => undefined);
+          } else void getConcept(attempt.unit).then((state) => {
             const rows = attempt.target === "base"
               ? state.base.candidates : state.views[attempt.target]?.candidates ?? [];
             const row = rows.find((a) => a.index === attempt.index);
@@ -621,8 +706,7 @@ export class StudioPanel {
     this.runTitle.textContent = `${view.id}${view.gpu ? "  (GPU)" : ""}`;
     this.runBar.style.width = `${view.percent ?? 0}%`;
     this.runBar.className = `studio-bar-fill ${view.status}`;
-    const kind = view.status === "done" ? "ok" : view.status === "failed" || view.status === "lost" ? "bad" : view.status === "cancelled" ? "warn" : "";
-    status(this.runLine, describeRun(view), kind);
+    status(this.runLine, describeRun(view), runTone(view.status));
     this.runLog.textContent = view.log.join("\n");
     this.runLog.scrollTop = this.runLog.scrollHeight;
   }
@@ -633,8 +717,14 @@ export class StudioPanel {
       this.runsList.replaceChildren(
         ...runs.map((run) =>
           el("li", { class: `studio-run ${run.status}` },
-            el("a", { href: "#", title: run.argv.join(" "), onclick: (event: Event) => { event.preventDefault(); void this.followById(run.id); } },
-              `${run.status}  ${run.stage}${run.gpu ? " (GPU)" : ""}  ${run.started.replace("T", " ").slice(5, 16)}`))),
+            el("a", {
+            href: "#",
+            // The tally is the hover, not the line: the list is one row per
+            // run and must stay scannable, but "0 of 8 cells done" is the
+            // first thing wanted about a row that says `failed`.
+            title: [run.argv.join(" "), describeCells(run.cells ?? null)].filter(Boolean).join("\n"),
+            onclick: (event: Event) => { event.preventDefault(); void this.followById(run.id); },
+          }, `${run.status}  ${run.stage}${run.gpu ? " (GPU)" : ""}  ${run.started.replace("T", " ").slice(5, 16)}`))),
       );
       if (!runs.length) this.runsList.replaceChildren(el("li", { class: "studio-run" }, "no runs yet"));
     } catch (error) {

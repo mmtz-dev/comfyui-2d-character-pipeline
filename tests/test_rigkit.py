@@ -96,8 +96,7 @@ def write_synthetic_glb(path: Path, *, toes_z: float = 1.0) -> Path:
 # Every OpenPose body joint onto the rig's only two bones, so
 # `rigkit.reference_frame` / `clip_keypoints` have something to resolve. The
 # face offsets are copied from `rigkit.KAYKIT` - the numbers don't matter here,
-# only that every face joint has one. Shared with test_direction_sheet.py and
-# test_turnaround.py.
+# only that every face joint has one. Shared with test_direction_sheet.py.
 TWO_BONE_MAP = rigkit.JointMap(
     name="two-bone-test",
     joints={
@@ -903,7 +902,7 @@ def test_the_shield_is_the_far_hand_in_profile_and_the_near_hand_turned_round(ua
 
 
 # ---------------------------------------------------------------------------
-# The face on the far side (the turnaround feature)
+# The face on the far side (the multi-view reference feature)
 # ---------------------------------------------------------------------------
 FACE = ("nose", "right_eye", "left_eye", "right_ear", "left_ear")
 
@@ -969,7 +968,7 @@ def test_the_profile_and_front_cells_are_byte_identical_to_a_rig_with_no_face_ru
 ])
 def test_the_back_cells_hide_every_face_point(knight, name, expect):
     """Turned away past the profile - s45, s90, s135 - no face point is
-    drawn: nose, both eyes AND both ears (the turnaround feature kept the
+    drawn: nose, both eyes AND both ears (the first version kept the
     near ear and, from behind, both; the multi-view reference feature hides
     them too, an ear being a landmark the pose ControlNet builds a face on)."""
     yaw, elevation = config.direction(name)

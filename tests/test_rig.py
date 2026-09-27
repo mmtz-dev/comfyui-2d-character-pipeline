@@ -469,8 +469,8 @@ def test_a_direction_suffixes_the_job_name_and_writes_every_output(knight_glb, w
 
 def test_an_explicit_job_name_is_not_suffixed(knight_glb, work_dir):
     job = rig_stage.rig(knight_glb, clip="Idle", action="idle", slug="knight",
-                        yaw=90, job_name="turnaround_n", work_dir=work_dir)
-    assert job.name == "turnaround_n"
+                        yaw=90, job_name="facing_n", work_dir=work_dir)
+    assert job.name == "facing_n"
     assert job.read_manifest()["motion_source"]["direction"] == "s90"
 
 

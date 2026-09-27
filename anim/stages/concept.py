@@ -19,7 +19,7 @@ side by side, the art that already exists.
     anim concept --unit knight --img2img base:02 --strength 0.5       # rework one attempt, keep its composition
     anim concept --unit knight --edit left:01 --instruction "make the helmet red"
     anim concept --unit knight --prompt "..." --model FILE --lora FILE:0.7 --lora FILE2:0.4
-    anim concept --unit knight --pick-view back=01 left=00 top=02     # the views the turnaround will use
+    anim concept --unit knight --pick-view back=01 left=00 top=02     # the views the matrix will use
 
     work/<slug>_concept/
       job.json               every base attempt: prompt, seed, model, LoRAs, source, parent
@@ -91,8 +91,8 @@ turns out not to keep the character.
 `--pick-view back=01 ...` copies the chosen attempts into the base job as
 `render/view_<view>.png` and records them in the base's `concept.views`
 (file, candidate, seed, sha256, `provisional` false) and in the curation
-record's `views` step (accepted); `anim turnaround` then hands each direction
-the nearest view (`config.TURNAROUND_REFERENCE_BY_DIR`). `--pick` of a new
+record's `views` step (accepted); `anim matrix` then hands each direction
+the nearest accepted view (`config.MATRIX_REFERENCE_BY_DIR`). `--pick` of a new
 base clears the views: they were drawn from the old one. The views wait
 behind the base gate (`curation.views_blocked`): a view of a base nobody has
 accepted is GPU time spent on a character that may not survive.
@@ -396,38 +396,57 @@ def attempt_file(target: str, index: int) -> str:
     return f"{index:02d}.png" if target == BASE_TARGET else f"{target}_{index:02d}.png"
 
 
-class Attempts:
-    """The attempt rows of one target and where their files live: the base's
-    in job.json + candidates/, a view's in views/views.json + views/. One
-    shape for both so the ops (txt2img, img2img, edit, views) plan and render
-    the same way whichever they land in."""
+class AttemptStore:
+    """The machinery every strip of attempts shares, whatever record it lives
+    in: numbering, hiding, the two-step delete, dropping what a failed run
+    planned. `Attempts` (the concept job: the base and the views) and the
+    animate tab feature's `animate.FrameAttempts` (one frame of an animation)
+    are the two stores; the ops - img2img, edit, in place, the
+    editor's Save - take a store and do not care which.
 
-    def __init__(self, slug: str, target: str, work_dir: Path | None = None, *,
-                 record: dict[str, Any] | None = None) -> None:
-        self.slug = slug
-        self.target = target
-        self.work_dir = work_dir
-        self.job = _open_job(slug, work_dir)
-        if target == BASE_TARGET:
-            self.dir = self.job.candidates_dir
-            self.record = record if record is not None else self.job.read_manifest()
-        else:
-            if target not in config.CONCEPT_VIEWS:
-                raise ValueError(f"no view {target!r}; one of {list(config.CONCEPT_VIEWS)}")
-            self.dir = views_dir(slug, work_dir)
-            self.dir.mkdir(parents=True, exist_ok=True)
-            path = views_path(slug, work_dir)
-            if record is not None:
-                self.record = record      # a views record shared across views
-            else:
-                self.record = migrate_views(read_json(path)) if path.exists() else empty_views(slug)
-            self.record["views"].setdefault(target, view_row(target, None))
+    A subclass sets `slug`, `target`, `work_dir`, `job`, `dir`, `record` and
+    `cli` (the command line a refusal names), and says where its rows live
+    (`rows`, `_set_rows`), what its files are called (`file_for`), which
+    attempt is accepted (`accepted_index`) and how it is written (`save`)."""
+
+    # The sources whose file comes from the GPU: a row of one of these with no
+    # `seconds` and no file is what a failed run planned.
+    RENDERED_SOURCES: tuple[str, ...] = (*GPU_SOURCES, "views")
+    # What the progress lines call this kind of store ("concept edit: ...").
+    label = "concept"
+
+    slug: str
+    target: str
+    work_dir: Path | None
+    job: Job
+    dir: Path
+    record: dict[str, Any]
+    cli: str
 
     @property
-    def rows(self) -> list[dict[str, Any]]:
-        if self.target == BASE_TARGET:
-            return self.record["candidates"]
-        return self.record["views"][self.target]["candidates"]
+    def rows(self) -> list[dict[str, Any]]:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def _set_rows(self, rows: list[dict[str, Any]]) -> None:  # pragma: no cover
+        raise NotImplementedError
+
+    def file_for(self, index: int) -> str:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def accepted_index(self) -> int | None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def save(self) -> None:  # pragma: no cover - abstract
+        raise NotImplementedError
+
+    def defaults(self) -> dict[str, Any]:
+        """The unit's model defaults per family (`--model` / `--lora` fall back
+        to them): the concept job's, which is where "save as unit default"
+        writes them."""
+        return dict(_open_job(self.slug, self.work_dir).read_manifest().get("defaults") or {})
+
+    def ref(self, index: int) -> str:
+        return f"{self.target}:{int(index):02d}"
 
     def get(self, index: int) -> dict[str, Any]:
         for row in self.rows:
@@ -441,21 +460,10 @@ class Attempts:
 
     def append(self, row: dict[str, Any]) -> dict[str, Any]:
         index = _next_index(self.rows)
-        row = {"index": index, "file": attempt_file(self.target, index), **row}
+        row = {"index": index, "file": self.file_for(index), **row}
         row.setdefault("created", _now())
         self.rows.append(row)
-        if self.target == BASE_TARGET:
-            self.record["next_index"] = index + 1
         return row
-
-    def accepted_index(self) -> int | None:
-        """The attempt this target has accepted, if any: the base's `--pick`
-        or the view's `--pick-view`. It is what every later stage reads, so
-        it is the one attempt that may not be hidden or deleted."""
-        pick = (self.record.get("pick") if self.target == BASE_TARGET
-                else self.record["views"][self.target].get("pick")) or {}
-        index = pick.get("index")
-        return None if index is None else int(index)
 
     def visible_rows(self) -> list[dict[str, Any]]:
         """The attempts a reader shows by default - what the owner kept."""
@@ -497,7 +505,7 @@ class Attempts:
                 f"attempt first, then delete this one's file")
         if not row.get("hidden"):
             raise ValueError(f"{self.target}:{index:02d} is not hidden; hide it first "
-                             f"(`anim concept --unit {self.slug} --hide {self.target}:{index:02d}`)")
+                             f"(`{self.cli} --hide {self.target}:{index:02d}`)")
         path = self.path(row)
         if path.exists():
             path.unlink()
@@ -510,17 +518,75 @@ class Attempts:
         would make the next run repeat the failure and the record claim
         attempts that do not exist. Returns the rows dropped."""
         dropped = [r for r in self.rows
-                   if r.get("seconds") is None and r.get("source") in (*GPU_SOURCES, "views")
+                   if r.get("seconds") is None and r.get("source") in self.RENDERED_SOURCES
                    and not r.get("file_deleted") and not self.path(r).exists()]
         if not dropped:
             return []
-        keep = [r for r in self.rows if r not in dropped]
-        if self.target == BASE_TARGET:
-            self.record["candidates"] = keep
-            self.record["next_index"] = _next_index(keep)
-        else:
-            self.record["views"][self.target]["candidates"] = keep
+        self._set_rows([r for r in self.rows if r not in dropped])
         return dropped
+
+
+class Attempts(AttemptStore):
+    """The attempt rows of one concept target and where their files live: the
+    base's in job.json + candidates/, a view's in views/views.json + views/.
+    One shape for both so the ops (txt2img, img2img, edit, views) plan and
+    render the same way whichever they land in."""
+
+    def __init__(self, slug: str, target: str, work_dir: Path | None = None, *,
+                 record: dict[str, Any] | None = None) -> None:
+        self.slug = slug
+        self.target = target
+        self.work_dir = work_dir
+        self.cli = f"anim concept --unit {slug}"
+        self.job = _open_job(slug, work_dir)
+        if target == BASE_TARGET:
+            self.dir = self.job.candidates_dir
+            self.record = record if record is not None else self.job.read_manifest()
+        else:
+            if target not in config.CONCEPT_VIEWS:
+                raise ValueError(f"no view {target!r}; one of {list(config.CONCEPT_VIEWS)}")
+            self.dir = views_dir(slug, work_dir)
+            self.dir.mkdir(parents=True, exist_ok=True)
+            path = views_path(slug, work_dir)
+            if record is not None:
+                self.record = record      # a views record shared across views
+            else:
+                self.record = migrate_views(read_json(path)) if path.exists() else empty_views(slug)
+            self.record["views"].setdefault(target, view_row(target, None))
+
+    @property
+    def rows(self) -> list[dict[str, Any]]:
+        if self.target == BASE_TARGET:
+            return self.record["candidates"]
+        return self.record["views"][self.target]["candidates"]
+
+    def _set_rows(self, rows: list[dict[str, Any]]) -> None:
+        if self.target == BASE_TARGET:
+            self.record["candidates"] = rows
+            self.record["next_index"] = _next_index(rows)
+        else:
+            self.record["views"][self.target]["candidates"] = rows
+
+    def file_for(self, index: int) -> str:
+        return attempt_file(self.target, index)
+
+    def defaults(self) -> dict[str, Any]:
+        return dict(self.job.read_manifest().get("defaults") or {})
+
+    def append(self, row: dict[str, Any]) -> dict[str, Any]:
+        row = super().append(row)
+        if self.target == BASE_TARGET:
+            self.record["next_index"] = int(row["index"]) + 1
+        return row
+
+    def accepted_index(self) -> int | None:
+        """The attempt this target has accepted, if any: the base's `--pick`
+        or the view's `--pick-view`. It is what every later stage reads, so
+        it is the one attempt that may not be hidden or deleted."""
+        pick = (self.record.get("pick") if self.target == BASE_TARGET
+                else self.record["views"][self.target].get("pick")) or {}
+        index = pick.get("index")
+        return None if index is None else int(index)
 
     def save(self) -> None:
         self.record["updated"] = _now()
@@ -692,50 +758,72 @@ def plan_rework(slug: str, ref: str, *, op: str, count: int | None = None,
         raise ValueError(f"op is img2img or edit, not {op!r}")
     target, index = parse_ref(ref)
     store = Attempts(slug, target, work_dir)
+    description = store.job.read_manifest().get("description") or "character"
+    parts, _avoid = base_phrases(slug, work_dir)
+
+    def img2img_text(parent: dict[str, Any]) -> str:
+        if target == BASE_TARGET:
+            # The parent's own prompt when it has a Z-Image one; a redraw of
+            # an upload is asked for as the unit's description.
+            return (parent.get("prompt") if parent.get("source") in ("txt2img", "img2img")
+                    else None) or config.concept_prompt(description)
+        # A view's prompt is written for Qwen ("from image1..."); Z-Image
+        # gets the description seen from that side instead.
+        return config.concept_view_img2img_prompt(description, target, parts)
+
+    planned = plan_rework_in(store, index, op=op, count=count, seed=seed, strength=strength,
+                             instruction=instruction, prompt=prompt, img2img_text=img2img_text,
+                             parts=parts, model=model, loras=loras, lora_strength=lora_strength,
+                             registry_path=registry_path, lock_path=lock_path)
+    if target == BASE_TARGET:
+        store.record["last_seed"] = planned[0]["seed"]
+    else:
+        store.record["seed"] = planned[0]["seed"]
+    store.save()
+    return store, planned
+
+
+def plan_rework_in(store: AttemptStore, index: int, *, op: str, count: int | None = None,
+                   seed: int | None = None, strength: float | None = None,
+                   instruction: str | None = None, prompt: str | None = None,
+                   img2img_text: Callable[[dict[str, Any]], str],
+                   parts: str | None = None,
+                   model: str | None = None,
+                   loras: Sequence[str | dict[str, Any]] | None = None,
+                   lora_strength: float | None = None, registry_path: Path | None = None,
+                   lock_path: Path | None = None) -> list[dict[str, Any]]:
+    """`count` img2img / edit rows on `store` with `parent` = that attempt,
+    appended but not saved. The store-agnostic half of `plan_rework`: the
+    caller says what an img2img is asked for when the owner gives no prompt
+    (`img2img_text(parent)`), because that is the one thing a base, a view
+    and an animate frame answer differently."""
+    if op not in ("img2img", "edit"):
+        raise ValueError(f"op is img2img or edit, not {op!r}")
     parent = store.get(index)
     if not store.path(parent).exists():
-        raise FileNotFoundError(f"{ref} has no file at {store.path(parent)}")
+        raise FileNotFoundError(f"{store.ref(index)} has no file at {store.path(parent)}")
     count = 1 if count is None else int(count)
     if count < 1:
         raise ValueError("--count must be at least 1")
     seed = random_seed() if seed is None else int(seed)
     family = family_of(op)
-    defaults = store.job.read_manifest().get("defaults")
     generation = resolve_generation(family, model=model, loras=loras,
-                                    lora_strength=lora_strength, defaults=defaults,
+                                    lora_strength=lora_strength, defaults=store.defaults(),
                                     registry_path=registry_path, lock_path=lock_path)
-    parts, _avoid = base_phrases(slug, work_dir)
-    description = store.job.read_manifest().get("description") or "character"
     if op == "img2img":
         strength = float(config.CONCEPT_IMG2IMG_STRENGTH if strength is None else strength)
         if not 0 < strength <= 1:
             raise ValueError(f"--strength is in (0, 1], not {strength}")
-        if prompt and prompt.strip():
-            text = prompt.strip()
-        elif target == BASE_TARGET:
-            # The parent's own prompt when it has a Z-Image one; a redraw of
-            # an upload is asked for as the unit's description.
-            text = (parent.get("prompt") if parent.get("source") in ("txt2img", "img2img")
-                    else None) or config.concept_prompt(description)
-        else:
-            # A view's prompt is written for Qwen ("from image1..."); Z-Image
-            # gets the description seen from that side instead.
-            text = config.concept_view_img2img_prompt(description, target, parts)
+        text = prompt.strip() if prompt and prompt.strip() else img2img_text(parent)
         extra = {"strength": strength, "instruction": None}
         workflow = IMG2IMG_WORKFLOW
     else:
         text = config.concept_edit_prompt(instruction or "", parts)
         extra = {"strength": None, "instruction": " ".join(str(instruction).split())}
         workflow = VIEW_WORKFLOW
-    planned = [store.append(attempt_row(op, prompt=text, seed=seed + i, generation=generation,
-                                        parent=(target, index), workflow=workflow, **extra))
-               for i in range(count)]
-    if target == BASE_TARGET:
-        store.record["last_seed"] = seed
-    else:
-        store.record["seed"] = seed
-    store.save()
-    return store, planned
+    return [store.append(attempt_row(op, prompt=text, seed=seed + i, generation=generation,
+                                     parent=(store.target, index), workflow=workflow, **extra))
+            for i in range(count)]
 
 
 # ---------------------------------------------------------------------------
@@ -802,16 +890,18 @@ def build_view_workflow(prompt: str, *, seed: int, base_name: str, slug: str,
                         workflow_dir: Path | None = None,
                         model: str | None = None,
                         loras: Sequence[dict[str, Any]] | None = None,
-                        prefix: str = f"views/{VIEW_WORKFLOW}") -> dict[str, Any]:
+                        prefix: str = f"views/{VIEW_WORKFLOW}",
+                        job: str | None = None) -> dict[str, Any]:
     """view_pass.json with this attempt's inputs patched in: the source as
     image1 (and the latent), the prompt, the seed, the checkpoint, the LoRAs
-    (the optional node is bypassed with none), the output prefix."""
+    (the optional node is bypassed with none), the output prefix (under
+    `job`, default the unit's concept job)."""
     workflow = comfy.load_workflow(VIEW_WORKFLOW, workflow_dir)
     comfy.patch(workflow, "base image", image=base_name)
     comfy.patch(workflow, "positive prompt", prompt=prompt)
     comfy.patch(workflow, "seed", seed=int(seed))
     comfy.patch(workflow, "output prefix",
-                filename_prefix=f"anim_pipeline/{job_name(slug)}/{prefix}")
+                filename_prefix=f"anim_pipeline/{job or job_name(slug)}/{prefix}")
     if model:
         comfy.patch_checkpoint(workflow, model)
     comfy.chain_loras(workflow, "optional LoRA", list(loras or []))
@@ -930,8 +1020,8 @@ def render_pending(store: Attempts, *, client: comfy.ComfyClient | None = None,
                     workflow = build_view_workflow(
                         row["prompt"], seed=row["seed"], base_name=name, slug=store.slug,
                         workflow_dir=workflow_dir, model=row.get("model"), loras=row.get("loras"),
-                        prefix=f"edit/{VIEW_WORKFLOW}")
-            log(f"concept {source}: {store.target}:{row['index']:02d} (seed {row['seed']}) ...")
+                        prefix=f"edit/{VIEW_WORKFLOW}", job=store.job.name)
+            log(f"{store.label} {source}: {store.target}:{row['index']:02d} (seed {row['seed']}) ...")
             prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
             path = write_bytes_in_place(store.path(row), png)
             log(f"  -> {path.name}  {elapsed:.1f} s")
@@ -1020,43 +1110,71 @@ def rework_in_place(slug: str, ref: str, *, op: str, instruction: str | None = N
         raise ValueError(f"op is img2img or edit, not {op!r}")
     target, index = parse_ref(ref)
     store = Attempts(slug, target, work_dir)
+    parts, _avoid = base_phrases(slug, work_dir)
+    description = store.job.read_manifest().get("description") or "character"
+
+    def img2img_text(row: dict[str, Any]) -> str:
+        if target == BASE_TARGET:
+            return (row.get("prompt") if row.get("source") in ("txt2img", "img2img") else None) \
+                or config.concept_prompt(description)
+        return config.concept_view_img2img_prompt(description, target, parts)
+
+    row = rework_in_place_in(store, index, op=op, instruction=instruction, prompt=prompt,
+                             strength=strength, seed=seed, model=model, loras=loras,
+                             lora_strength=lora_strength, img2img_text=img2img_text,
+                             parts=parts, registry_path=registry_path, client=client,
+                             workflow_dir=workflow_dir, lock_path=lock_path,
+                             timeout_s=timeout_s, log=log)
+    if target != BASE_TARGET:
+        _refresh_views_page(slug, store, work_dir)
+    return row
+
+
+def rework_in_place_in(store: AttemptStore, index: int, *, op: str,
+                       instruction: str | None = None, prompt: str | None = None,
+                       strength: float | None = None, seed: int | None = None,
+                       model: str | None = None,
+                       loras: Sequence[str | dict[str, Any]] | None = None,
+                       lora_strength: float | None = None,
+                       img2img_text: Callable[[dict[str, Any]], str],
+                       parts: str | None = None, registry_path: Path | None = None,
+                       client: comfy.ComfyClient | None = None,
+                       workflow_dir: Path | None = None, lock_path: Path | None = None,
+                       timeout_s: float = 900.0,
+                       log: Callable[[str], None] = lambda _: None) -> dict[str, Any]:
+    """The store-agnostic half of `rework_in_place`: run the op on the GPU
+    and write the result over that attempt, saving the store."""
+    if op not in ("img2img", "edit"):
+        raise ValueError(f"op is img2img or edit, not {op!r}")
     row = _editable(store, index)
     seed = random_seed() if seed is None else int(seed)
     family = family_of(op)
     generation = resolve_generation(family, model=model, loras=loras,
-                                    lora_strength=lora_strength,
-                                    defaults=store.job.read_manifest().get("defaults"),
+                                    lora_strength=lora_strength, defaults=store.defaults(),
                                     registry_path=registry_path, lock_path=lock_path)
-    parts, _avoid = base_phrases(slug, work_dir)
-    description = store.job.read_manifest().get("description") or "character"
     if op == "img2img":
         strength = float(config.CONCEPT_IMG2IMG_STRENGTH if strength is None else strength)
         if not 0 < strength <= 1:
             raise ValueError(f"--strength is in (0, 1], not {strength}")
-        if prompt and prompt.strip():
-            text = prompt.strip()
-        elif target == BASE_TARGET:
-            text = (row.get("prompt") if row.get("source") in ("txt2img", "img2img") else None) \
-                or config.concept_prompt(description)
-        else:
-            text = config.concept_view_img2img_prompt(description, target, parts)
+        text = prompt.strip() if prompt and prompt.strip() else img2img_text(row)
     else:
         text = config.concept_edit_prompt(instruction or "", parts)
 
     client, stats = _client(client)
     check_installed(client, family, model=generation["model"], loras=generation["loras"])
     source = client.upload_image(
-        store.path(row), name=f"anim_{store.job.name}_src_{target}_{index:02d}.png")
+        store.path(row), name=f"anim_{store.job.name}_src_{store.target}_{index:02d}.png")
     if op == "img2img":
         transient = {"prompt": text, "seed": seed, "strength": strength,
                      "model": generation["model"], "loras": generation["loras"]}
         workflow = build_img2img_workflow(transient, source_name=source, job=store.job,
                                           workflow_dir=workflow_dir)
     else:
-        workflow = build_view_workflow(text, seed=seed, base_name=source, slug=slug,
+        workflow = build_view_workflow(text, seed=seed, base_name=source, slug=store.slug,
                                        workflow_dir=workflow_dir, model=generation["model"],
-                                       loras=generation["loras"], prefix=f"edit/{VIEW_WORKFLOW}")
-    log(f"concept {op} in place: {target}:{index:02d} (seed {seed}) ...")
+                                       loras=generation["loras"], prefix=f"edit/{VIEW_WORKFLOW}",
+                                       job=store.job.name)
+    log(f"{store.label} {op} in place: {store.target}:{index:02d} (seed {seed}) ...")
     prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
     path = write_bytes_in_place(store.path(row), png)
     log(f"  -> {path.name}  {elapsed:.1f} s")
@@ -1070,8 +1188,6 @@ def rework_in_place(slug: str, ref: str, *, op: str, instruction: str | None = N
     # The bytes came straight from the model, so the text chunks are there.
     row["embedded_prompt"] = render_stage.prompt_chunk(png) is not None
     store.save()
-    if target != BASE_TARGET:
-        _refresh_views_page(slug, store, work_dir)
     return row
 
 
@@ -1137,14 +1253,14 @@ def _refresh_views_page(slug: str, store: Attempts, work_dir: Path | None) -> st
 # when and how. The generation record - seed, model, LoRAs, prompt - stays as
 # the history of what the pixels grew out of. A hidden or file-deleted attempt
 # is refused: retouching is for what you are looking at.
-def _editable(store: "Attempts", index: int) -> dict[str, Any]:
+def _editable(store: "AttemptStore", index: int) -> dict[str, Any]:
     row = store.get(index)
     if row.get("file_deleted"):
         raise ValueError(f"{store.target}:{index:02d}'s file was deleted; there is nothing "
                          f"to edit")
     if row.get("hidden"):
         raise ValueError(f"{store.target}:{index:02d} is hidden; show it first "
-                         f"(`anim concept --unit {store.slug} --show {store.target}:{index:02d}`)")
+                         f"(`{store.cli} --show {store.target}:{index:02d}`)")
     if not store.path(row).exists():
         raise FileNotFoundError(f"{store.path(row)} is missing")
     return row
@@ -1174,7 +1290,7 @@ def flatten_on_white(data: bytes) -> tuple[Image.Image, Image.Image | None]:
     return flat, (alpha if erased else None)
 
 
-def _record_edit(store: "Attempts", row: dict[str, Any], how: str, **extra: Any) -> dict[str, Any]:
+def _record_edit(store: "AttemptStore", row: dict[str, Any], how: str, **extra: Any) -> dict[str, Any]:
     """Re-hash the file and note what was done to it."""
     path = store.path(row)
     row["sha256"] = sha256_file(path)
@@ -1195,6 +1311,16 @@ def replace_attempt(slug: str, ref: str, data: bytes, *, how: str = "hand",
     """
     target, index = parse_ref(ref)
     store = Attempts(slug, target, work_dir)
+    row = replace_in(store, index, data, how=how)
+    if target != BASE_TARGET:
+        _refresh_views_page(slug, store, work_dir)
+    return row
+
+
+def replace_in(store: AttemptStore, index: int, data: bytes, *, how: str = "hand"
+               ) -> dict[str, Any]:
+    """The store-agnostic half of `replace_attempt`: check the size, flatten,
+    write over the attempt, record the edit, save the store."""
     row = _editable(store, index)
     path = store.path(row)
     flat, _mask = flatten_on_white(data)
@@ -1210,8 +1336,6 @@ def replace_attempt(slug: str, ref: str, data: bytes, *, how: str = "hand",
     write_bytes_in_place(path, out.getvalue())
     _record_edit(store, row, how)
     store.save()
-    if target != BASE_TARGET:
-        _refresh_views_page(slug, store, work_dir)
     return row
 
 
@@ -1224,8 +1348,13 @@ def stash_canvas(slug: str, ref: str, data: bytes, work_dir: Path | None = None)
     one that can be edited, and something must be erased.
     """
     target, index = parse_ref(ref)
-    store = Attempts(slug, target, work_dir)
-    row = _editable(store, index)
+    return stash_canvas_in(Attempts(slug, target, work_dir), index, data)
+
+
+def stash_canvas_in(store: AttemptStore, index: int, data: bytes) -> Path:
+    """The store-agnostic half of `stash_canvas` (the animate tab feature
+    stashes a frame's canvas the same way)."""
+    _editable(store, index)
     _source, mask = flatten_on_white(data)
     if mask is None:
         raise ValueError("nothing is erased on this canvas - rub out the area the model "
@@ -1233,7 +1362,7 @@ def stash_canvas(slug: str, ref: str, data: bytes, work_dir: Path | None = None)
     masks = store.job.root / "masks"
     masks.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S")
-    return write_bytes_in_place(masks / f"{stamp}_{target}_{index:02d}_canvas.png", data)
+    return write_bytes_in_place(masks / f"{stamp}_{store.target}_{index:02d}_canvas.png", data)
 
 
 def build_inpaint_workflow(attempt: dict[str, Any], *, canvas_name: str, prompt: str,
@@ -1272,7 +1401,31 @@ def inpaint_attempt(slug: str, ref: str, canvas: bytes | Path, *, prompt: str | 
     """
     target, index = parse_ref(ref)
     store = Attempts(slug, target, work_dir)
+    row = inpaint_in(store, index, canvas, prompt=prompt, strength=strength, seed=seed,
+                     model=model, loras=loras, registry_path=registry_path, client=client,
+                     workflow_dir=workflow_dir, lock_path=lock_path, timeout_s=timeout_s,
+                     log=log)
+    if target != BASE_TARGET:
+        _refresh_views_page(slug, store, work_dir)
+    return row
+
+
+def inpaint_in(store: AttemptStore, index: int, canvas: bytes | Path, *,
+               prompt: str | None = None, default_prompt: str | None = None,
+               strength: float | None = None, seed: int | None = None,
+               model: str | None = None,
+               loras: Sequence[str | dict[str, Any]] | None = None,
+               registry_path: Path | None = None,
+               client: comfy.ComfyClient | None = None,
+               workflow_dir: Path | None = None, lock_path: Path | None = None,
+               timeout_s: float = 900.0,
+               log: Callable[[str], None] = lambda _: None) -> dict[str, Any]:
+    """The store-agnostic half of `inpaint_attempt`: any strip of attempts -
+    a concept target or an animate frame - redrawn where the canvas is
+    erased. `default_prompt` is what Z-Image is asked for when the owner
+    types nothing and the attempt carries no prompt of its own that suits."""
     row = _editable(store, index)
+    target = store.target
     data = Path(canvas).read_bytes() if isinstance(canvas, (str, Path)) else bytes(canvas)
     source, mask = flatten_on_white(data)
     if mask is None:
@@ -1288,12 +1441,12 @@ def inpaint_attempt(slug: str, ref: str, canvas: bytes | Path, *, prompt: str | 
     if not 0 < strength <= 1:
         raise ValueError(f"--strength is in (0, 1], not {strength}")
     seed = random_seed() if seed is None else int(seed)
-    parts, _avoid = base_phrases(slug, work_dir)
-    text = (prompt or "").strip() or row.get("prompt") or config.concept_prompt(
-        store.job.read_manifest().get("description") or "character")
+    concept_manifest = _open_job(store.slug, store.work_dir).read_manifest()
+    text = (prompt or "").strip() or default_prompt or row.get("prompt") or config.concept_prompt(
+        concept_manifest.get("description") or "character")
     generation = resolve_generation(
         "zimage", model=model, loras=loras,
-        defaults=store.job.read_manifest().get("defaults"),
+        defaults=concept_manifest.get("defaults"),
         registry_path=registry_path, lock_path=lock_path)
 
     client, stats = _client(client)
@@ -1317,7 +1470,7 @@ def inpaint_attempt(slug: str, ref: str, canvas: bytes | Path, *, prompt: str | 
     workflow = build_inpaint_workflow(attempt, canvas_name=canvas_name, prompt=text, seed=seed,
                                       strength=strength, job=store.job,
                                       workflow_dir=workflow_dir)
-    log(f"concept inpaint: {target}:{index:02d} (seed {seed}, strength {strength}) ...")
+    log(f"{store.label} inpaint: {target}:{index:02d} (seed {seed}, strength {strength}) ...")
     prompt_id, entry, png, elapsed = _run_one(client, workflow, timeout_s=timeout_s)
     # Composite back: only the erased region may change.
     from io import BytesIO as _BytesIO
@@ -1341,8 +1494,6 @@ def inpaint_attempt(slug: str, ref: str, canvas: bytes | Path, *, prompt: str | 
                  workflow_sha256=comfy.workflow_sha256(workflow),
                  mask=str(kept), comfyui=stats.get("system", {}).get("comfyui_version"))
     store.save()
-    if target != BASE_TARGET:
-        _refresh_views_page(slug, store, work_dir)
     return row
 
 
@@ -1405,7 +1556,11 @@ def pick(slug: str, choice: str | int, *, parts: str | None = None,
         final = (previous.get("render") or {}).get("final")
         if final and final != PICK_FILE and (base_job.render_dir / final).exists():
             replaced = final
-    base_stage.prepare(slug, cell=size, work_dir=work_dir)
+    # The front base pose feature: a concept base is never rendered from its
+    # skeleton, but `post --parts` prompts SAM from it, and what was picked is
+    # a front view - so lay down the front skeleton, not the side profile.
+    base_stage.prepare(slug, cell=size, pose_path=base_stage.STAND_POSE_FRONT,
+                       work_dir=work_dir)
     out = write_bytes_in_place(base_job.render_dir / PICK_FILE, png)
 
     generated = candidate["source"] in GPU_SOURCES
@@ -1467,8 +1622,8 @@ def pick(slug: str, choice: str | int, *, parts: str | None = None,
     manifest["updated"] = _now()
     job.write_manifest(manifest)
     # The curation board feature: choosing the base IS the base gate. The
-    # turnaround, drawn from this base, goes back to pending - and so do the
-    # views (the multi-view reference feature).
+    # views, drawn from the old base, are cleared (the multi-view reference
+    # feature).
     gates = curation.accept_base_from_concept(slug, work_dir)["gates"]
     return {"candidate": candidate, "base_job": base_job.name,
             "file": str(out), "replaced": replaced, "gates": gates,
@@ -1736,8 +1891,6 @@ def pick_view(slug: str, picks: dict[str, int], *, provisional: bool = False,
     if record.get("base_sha256") != sha256_file(base_path):
         raise ValueError(f"{slug}'s views were drawn from an earlier base; run "
                          f"`anim concept --unit {slug} --views` again")
-    block = dict(base_manifest.get("concept") or {})
-    stored = dict(block.get("views") or {})
     written: dict[str, Any] = {}
     for view, index in picks.items():
         row = (record.get("views") or {}).get(view)
@@ -1764,24 +1917,216 @@ def pick_view(slug: str, picks: dict[str, int], *, provisional: bool = False,
                  "prompt": candidate.get("prompt") or row.get("prompt"),
                  "workflow_sha256": candidate.get("workflow_sha256"),
                  "provisional": bool(provisional), "picked": _now()}
-        stored[view] = entry
         written[view] = entry
         candidate.pop("hidden", None)
         row["pick"] = {"index": index, "file": candidate["file"], "sha256": entry["sha256"],
                        "provisional": bool(provisional), "picked": entry["picked"]}
+    states = _record_views(slug, base_job, base_manifest, written,
+                           state="pending" if provisional else "accepted", work_dir=work_dir)
+    page = _save_views(slug, record, base_path=base_path, work_dir=work_dir)
+    return {"base_job": base_job.name, "views": written, "curation": states, "page": str(page)}
+
+
+def _record_views(slug: str, base_job: Job, base_manifest: dict[str, Any],
+                  entries: dict[str, dict[str, Any]], *, state: str,
+                  work_dir: Path | None = None) -> dict[str, str]:
+    """Merge accepted view entries into the base and the curation record.
+
+    The one place a view becomes the thing later stages read: the base's
+    `concept.views` block (in the table's compass order, whatever order they
+    were accepted in), the base's provenance sidecar beside it, and the
+    curation record's `views` step. `pick_view` and `mirror_view` both land
+    here on purpose - a second copy of this would be a second answer to
+    "what does the base carry", and `matrix.base_views` reads only one.
+    """
+    block = dict(base_manifest.get("concept") or {})
+    stored = dict(block.get("views") or {}) | entries
     block["views"] = {v: stored[v] for v in config.CONCEPT_VIEWS if v in stored}
     base_job.update_manifest(concept=block)
     if base_job.provenance_path.exists():
         provenance = read_json(base_job.provenance_path)
         provenance["concept"] = {**(provenance.get("concept") or {}), "views": block["views"]}
         write_json_in_place(base_job.provenance_path, provenance)
+    return curation.set_views(slug, {v: state for v in entries}, work_dir)
+
+
+def _save_views(slug: str, record: dict[str, Any], *, base_path: Path,
+                work_dir: Path | None = None) -> Path:
+    """Save views.json and redraw the static views page over it.
+
+    The rows are put back into the table's compass order on the way out, so a
+    view accepted (or mirrored) out of order does not leave views.json and the
+    page reading back-left, right, back - `render_views` does the same at the
+    end of its run.
+    """
     record["updated"] = _now()
-    write_json_in_place(path, record)
-    states = curation.set_views(slug, {v: ("pending" if provisional else "accepted")
-                                       for v in written}, work_dir)
-    page = build_views_page(record, views_page_dir(slug, work_dir), base_path=base_path,
+    record["views"] = {v: record["views"][v] for v in config.CONCEPT_VIEWS
+                       if v in (record.get("views") or {})}
+    write_json_in_place(views_path(slug, work_dir), record)
+    return build_views_page(record, views_page_dir(slug, work_dir), base_path=base_path,
                             out_dir=views_dir(slug, work_dir))
-    return {"base_job": base_job.name, "views": written, "curation": states, "page": str(page)}
+
+
+# ---------------------------------------------------------------------------
+# The mirrored view feature: a view derived by flipping its partner
+# ---------------------------------------------------------------------------
+# Words that name a thing a character HOLDS or wears on one side. A horizontal
+# flip is the same pixels, so a mirrored view is more consistent with its
+# partner than a second Qwen pass would be - with one exception: the sword
+# moves from the right hand to the left. The list is what turns that from a
+# silent fact into one printed line. It is deliberately a word list and not a
+# parser: `config.UNIT_PROPS` is authoritative for the units whose kit is
+# settled, and for every other unit the only description of the gear is the
+# owner's own parts phrase, so "longsword" has to match "sword".
+HANDED_GEAR_WORDS: tuple[str, ...] = (
+    "sword", "shield", "bow", "quiver", "axe", "spear", "lance", "staff",
+    "wand", "dagger", "torch", "hammer", "mace", "banner", "scabbard")
+
+
+def handed_gear(slug: str, work_dir: Path | None = None) -> list[str]:
+    """The asymmetric kit this unit is known to carry - `config.UNIT_PROPS`
+    first (the rig draws these onto the skeleton, so they are the ones the
+    pipeline is sure about), then anything the base's parts phrase names."""
+    named = list(config.props_for_unit(slug))
+    parts, _avoid = base_phrases(slug, work_dir)
+    lowered = (parts or "").lower()
+    for word in HANDED_GEAR_WORDS:
+        if word in lowered and word not in named:
+            named.append(word)
+    return named
+
+
+def mirror_view(slug: str, views: str | Sequence[str], *, work_dir: Path | None = None,
+                log: Callable[[str], None] = print) -> dict[str, Any]:
+    """Derive views from their accepted partners by flipping them, no GPU.
+
+    Three of the eight views are the same picture the other way round
+    (`config.CONCEPT_MIRROR_PAIRS`, and the compass reasoning beside it):
+    right/left, back_right/back_left, front_right/front_left. Drawing the
+    second of a pair costs a Qwen-Image-Edit round trip and gives a picture
+    that is only ROUGHLY the partner reversed; flipping gives one that is
+    exactly it, which is the stronger answer to "is this one character in
+    eight facings".
+
+    THE PARTNER MUST BE ACCEPTED, not merely drawn. This is the matrix's
+    strictness (`matrix.prerequisite`) rather than `reference_for`'s: a
+    mirrored view is what a whole facing of the matrix will be rendered
+    against, and deriving it from an attempt nobody has judged would launder
+    an unjudged image into an accepted one. `hooded_archer` is the case -
+    four views drawn, none picked - and it must refuse there.
+
+    WHAT IS RECORDED. The same `concept.views` entry a `--pick-view` writes,
+    plus `mirrored: true` and a `mirror` block naming the source view, the
+    file it was flipped from and that file's sha256. The entry's own `sha256`
+    is of the flipped bytes, so the view is exactly as traceable as a
+    generated one: the pair (source sha256, "flip horizontally") reproduces it
+    byte for byte, which no seed can promise.
+
+    NOTHING IS MIRRORED BEHIND THE OWNER'S BACK. A matrix cell never is;
+    an Animate cell is only when the owner presses "Mirror from <partner>"
+    for that one animation (`animate.mirror`, the animate tab feature), and
+    the flipped frames come back to review, never approved. A left-handed
+    swing read as a right-handed one is a bug nobody would see until the
+    sheet shipped, so the choice stays a person's.
+    """
+    names = [str(v).strip().lower() for v in
+             ([views] if isinstance(views, str) else list(views)) if str(v).strip()]
+    if not names:
+        raise ValueError("--mirror-view needs at least one view name")
+    for view in names:
+        if view not in config.CONCEPT_VIEWS:
+            raise ValueError(f"no view {view!r}; one of {list(config.CONCEPT_VIEWS)}")
+        if config.mirror_of(view) is None:
+            raise ValueError(
+                f"the {view} view has no mirror partner - it looks straight down the "
+                f"symmetry plane, so flipping it would give the same facing back. "
+                f"Mirrorable: {', '.join(config.mirrorable_views())}; render {view} "
+                f"with `anim concept --unit {slug} --views {view}`")
+
+    base_job, base_path, base_manifest = base_render(slug, work_dir)
+    # `base_views` is the one reader of "what the base carries, with each
+    # view's curation state, minus the ones whose file is gone" - the same
+    # function the Board's ring and the matrix's gate use.
+    from anim.stages import matrix as matrix_stage
+
+    have = matrix_stage.base_views(slug, work_dir)
+    path = views_path(slug, work_dir)
+    record = migrate_views(read_json(path)) if path.exists() else empty_views(slug)
+    written: dict[str, Any] = {}
+    for view in names:
+        partner = config.mirror_of(view)
+        entry = have.get(partner)
+        if entry is None:
+            raise ValueError(
+                f"{slug}'s {partner} view is not on the base, so there is nothing to "
+                f"flip into {view}. Draw it (`anim concept --unit {slug} --views "
+                f"{partner}`) and accept one attempt (`--pick-view {partner}=NN`) first")
+        if entry.get("state") != "accepted":
+            raise ValueError(
+                f"{slug}'s {partner} view is {entry.get('state')}, not accepted - a "
+                f"mirrored view inherits its partner's judgement, so the partner has to "
+                f"have one. Accept it first (`anim concept --unit {slug} --pick-view "
+                f"{partner}=NN`, or the Board's views ring)")
+        if (entry.get("mirror") or {}).get("view") == view:
+            raise ValueError(
+                f"{slug}'s {partner} view is itself the flip of {view}; flipping it back "
+                f"would only re-derive the picture {view} already is")
+        source = Path(entry["path"])
+        source_sha = sha256_file(source)
+        png = _flip_horizontally(source)
+        out = write_bytes_in_place(base_job.render_dir / VIEW_FILE.format(view=view), png)
+        picked = _now()
+        written[view] = {
+            "view": view, "yaw": config.CONCEPT_VIEWS[view]["yaw"], "file": out.name,
+            # No candidate and no seed of its own: nothing was sampled. The
+            # partner's are in the `mirror` block, where they say whose they are.
+            "candidate": None, "source": entry.get("file"), "seed": None,
+            "sha256": sha256_bytes(png), "prompt": entry.get("prompt"),
+            "workflow_sha256": entry.get("workflow_sha256"),
+            "provisional": False, "picked": picked,
+            "mirrored": True,
+            "mirror": {"view": partner, "file": entry.get("file"), "sha256": source_sha,
+                       "candidate": entry.get("candidate"), "seed": entry.get("seed"),
+                       "how": "flip horizontally", "at": picked},
+        }
+        # views.json learns about it too, so the record of the views and the
+        # base cannot disagree about which are accepted. There is no candidate
+        # index to point at - the picture is not one of this view's attempts -
+        # so the pick carries `index: None` and says where it came from.
+        row = record.setdefault("views", {}).setdefault(view, view_row(view, None))
+        row["pick"] = {"index": None, "mirrored": True, "from": partner,
+                       "file": entry.get("file"), "sha256": written[view]["sha256"],
+                       "provisional": False, "picked": picked}
+        log(f"concept: view {view} <- {partner} flipped horizontally -> "
+            f"work/{base_job.name}/render/{out.name}")
+
+    states = _record_views(slug, base_job, base_manifest, written, state="accepted",
+                           work_dir=work_dir)
+    page = _save_views(slug, record, base_path=base_path, work_dir=work_dir)
+    # ONE warning per invocation, whatever it mirrored. The flip is right for
+    # the silhouette and wrong for the sword hand, and the owner decides which
+    # matters; saying it once is information, saying it per view is nagging.
+    gear = handed_gear(slug, work_dir)
+    warning: str | None = None
+    if gear:
+        warning = (f"the flip swaps handedness: {slug} carries {', '.join(gear)}, so "
+                   f"{', '.join(names)} shows them on the other side. Everything else is "
+                   f"the same pixels; render the view instead if the hand matters.")
+        log(f"concept: warning - {warning}")
+    return {"base_job": base_job.name, "views": written, "curation": states,
+            "page": str(page), "warning": warning}
+
+
+def _flip_horizontally(source: Path) -> bytes:
+    """The partner's file, mirrored left-to-right, as PNG bytes. The image
+    mode is kept (the views are RGB off Qwen, but an uploaded RGBA base must
+    not lose its alpha here)."""
+    from io import BytesIO
+
+    out = BytesIO()
+    with Image.open(source) as img:
+        ImageOps.mirror(img).save(out, format="PNG")
+    return out.getvalue()
 
 
 # ---------------------------------------------------------------------------
@@ -1838,7 +2183,12 @@ def build_views_page(record: dict[str, Any], page_dir: Path, *, base_path: Path,
                 f'<img src="img/{c["file"]}" alt="{view} {c["index"]:02d}">'
                 f'<figcaption><b>{view} {c["index"]:02d}</b>{tag} · {origin} · seed {c["seed"]} · '
                 f'{c.get("seconds")} s</figcaption></figure>')
-        sections.append(f'<h2 id="{view}">{view} — yaw {row["yaw"]}</h2>'
+        # The mirrored view feature: this view's accepted picture is not one of
+        # the attempts below - it is the partner's, flipped - so the heading
+        # says so rather than leaving every tile unmarked and unexplained.
+        mirrored = (f' · <span class="ok">accepted: the {pick["from"]} view, flipped</span>'
+                    if pick.get("mirrored") else "")
+        sections.append(f'<h2 id="{view}">{view} — yaw {row["yaw"]}{mirrored}</h2>'
                         f'<p class="caption">{row.get("prompt") or ""}</p><div class="row">{"".join(figures)}</div>')
     base = record.get("base") or {}
     html = f"""<!DOCTYPE html>
@@ -1849,8 +2199,8 @@ def build_views_page(record: dict[str, Any], page_dir: Path, *, base_path: Path,
 <p class="caption">{record.get('updated') or record.get('created', '')} · Qwen-Image-Edit 2509 (<code>{record.get('workflow')}</code>) with the base as image1 ·
 last seed <b>{record.get('seed')}</b> · parts phrase: <i>{record.get('parts_phrase') or '—'}</i> ·
 base <code>{Path(base.get('file') or base_path).name}</code> sha256 {str(record.get('base_sha256') or '')[:12]}.
-Choose with <code>anim concept --unit {slug} --pick-view back=NN left=NN top=NN</code> or the studio's Concept tab; the turnaround then hands each direction its nearest view
-(<code>config.TURNAROUND_REFERENCE_BY_DIR</code>). A view marked <span class="warn">provisional</span> was picked for a rerun and your <code>--pick-view</code> supersedes it.</p>
+Choose with <code>anim concept --unit {slug} --pick-view back=NN left=NN top=NN</code> or the studio's Concept tab; the matrix then hands each direction its nearest accepted view
+(<code>config.MATRIX_REFERENCE_BY_DIR</code>). A view marked <span class="warn">provisional</span> was picked for a rerun and your <code>--pick-view</code> supersedes it.</p>
 {''.join(sections)}
 <footer>Generated by <code>anim concept --unit {slug} --views</code>; files in <code>work/{slug}_concept/views/</code>, record <code>views.json</code>. Every attempt is kept.</footer>
 </body>
@@ -1946,7 +2296,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "head, uncovered face\"")
     parser.add_argument("--views", nargs="?", const="", default=None, metavar="LIST",
                         help="render views of the accepted base through Qwen-Image-Edit: "
-                             "no value = back,left,right,top; a comma list; or 'all' "
+                             "no value = back,left,right,top; a comma list; a group "
+                             f"({', '.join(config.CONCEPT_VIEW_GROUPS)}); or 'all' "
                              f"({', '.join(config.CONCEPT_VIEWS)}); --count per view "
                              f"(default {config.CONCEPT_VIEW_COUNT}); appends to the view")
     parser.add_argument("--view-prompt", dest="view_prompt", default=None, metavar="TEXT",
@@ -1955,7 +2306,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--pick-view", dest="pick_view", nargs="+", default=None,
                         metavar="VIEW=NN",
                         help="copy those view candidates into the base "
-                             "(render/view_<view>.png) for the turnaround to use")
+                             "(render/view_<view>.png) for the matrix to use")
+    parser.add_argument("--mirror-view", dest="mirror_view", nargs="+", default=None,
+                        metavar="VIEW",
+                        help="the mirrored view feature: derive those views by flipping "
+                             "their accepted partner instead of spending the GPU "
+                             f"({', '.join(config.mirrorable_views())}; back, top and "
+                             f"front have no partner)")
     parser.add_argument("--provisional", action="store_true",
                         help="with --pick-view: record the pick as provisional (made "
                              "for a rerun; the owner's --pick-view supersedes it)")
@@ -2009,12 +2366,25 @@ def run_stage(args: argparse.Namespace) -> int:
         print(f"  parts phrase: {result['parts_phrase']!r}"
               f"{'; avoid: ' + repr(result['avoid_phrase']) if result['avoid_phrase'] else ''}"
               f"  (--parts / --avoid change them; the views are cleared)")
-        print(f"  base gate accepted for {args.slug} (turnaround "
-              f"{result['gates']['turnaround']}) - work/{args.slug}_curation.json")
+        print(f"  base gate accepted for {args.slug} - work/{args.slug}_curation.json")
         print(f"  next: anim post {result['base_job']} [--parts], then "
               f"anim publish {result['base_job']}")
-        print(f"  the turnaround is drawn from the base: anim concept --unit {args.slug} --views, "
-              f"--pick-view, then anim turnaround {args.slug} --force re-renders all eight facings")
+        print(f"  the views are drawn from the base: anim concept --unit {args.slug} --views, "
+              f"then --pick-view and accept each one on the Board")
+        return 0
+    if args.pick_view is not None and args.mirror_view is not None:
+        raise SystemExit("anim concept: give --pick-view or --mirror-view, not both "
+                         "(a view is either one of its own attempts or its partner "
+                         "flipped)")
+    if args.mirror_view is not None:
+        try:
+            result = mirror_view(args.slug, args.mirror_view)
+        except (ValueError, FileNotFoundError, OSError) as exc:
+            raise SystemExit(f"anim concept: {exc}") from None
+        print(f"  curation views: " + ", ".join(f"{v}={s}" for v, s in result["curation"].items()))
+        print(f"  no GPU was used: the flip is the partner's own pixels, sha256 recorded")
+        print(f"  page   -> {result['page']}")
+        print(f"  then: accept it on the Board (anim curate {args.slug} --accept-view ...)")
         return 0
     if args.pick_view is not None:
         try:
@@ -2028,7 +2398,6 @@ def run_stage(args: argparse.Namespace) -> int:
                   f"{'  [provisional]' if entry['provisional'] else ''}")
         print(f"  curation views: " + ", ".join(f"{v}={s}" for v, s in result["curation"].items()))
         print(f"  page   -> {result['page']}  (cp -r {Path(result['page']).parent}/. {VIEWS_VISUALS_TARGET}/)")
-        print(f"  then: anim turnaround {args.slug} --force")
         return 0
     if args.upload is not None:
         try:
@@ -2134,8 +2503,7 @@ def run_stage(args: argparse.Namespace) -> int:
             raise SystemExit(f"anim concept: {exc}") from None
         print(f"concept: {args.slug}'s base now carries parts phrase {block['parts_phrase']!r}"
               f"{'; avoid ' + repr(block['avoid_phrase']) if block['avoid_phrase'] else ''}")
-        print(f"  every clip of {args.slug} names them from now on; anim turnaround {args.slug} "
-              f"--force re-renders the eight facings with them")
+        print(f"  every clip of {args.slug} names them from now on")
         return 0
     if not args.prompt:
         raise SystemExit("anim concept: --prompt is required (or --pick, --views, --upload, "

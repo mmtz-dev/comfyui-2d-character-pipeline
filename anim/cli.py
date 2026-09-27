@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import signal
 import sys
 
 from anim import __version__, config
@@ -31,8 +32,12 @@ stage order:
   clip renders every rig frame as one Wan 2.2 Fun-Control video; then
     pick -> post --input clip -> publish (the clip render feature)
   base is the standing-sprite variant of the same chain
+  animate draws every frame of one animation at one direction by hand, from the
+    direction's accepted view and the approved keyframes; the approved frames become
+    the cell's finished frames (the Animate tab with buttons)
   bakeoff runs one action through both in-between routes on both rigs -> one page
-  turnaround renders one idle still per direction from the base -> the identity gate page
+  matrix renders every selected (action x direction) cell of a unit once its base
+    and that direction's view are accepted: rig -> clip -> pick --phases -> post per cell
   palette installs the project palette (Lospec slug or file) and unit sub-palettes
   curate accepts / rejects / regenerates a unit's cells and gates (the curation board)
   run chains extract..strip, then render..publish if the GPU is up
@@ -50,7 +55,8 @@ where things live (override with the env vars in anim/config.py):
   assets     game-02's published PNGs and sidecars
 
 the GPU:
-  only `render`, `clip`, `base`, `concept`, `bakeoff` and `turnaround` touch it, over HTTP at $COMFYUI_URL
+  only `render`, `clip`, `base`, `concept`, `animate`, `bakeoff` and `matrix` touch it,
+  over HTTP at $COMFYUI_URL
   (default http://host.docker.internal:8188 - ComfyUI runs on the OTHER Docker
   engine, so localhost would not reach it from inside this container)
 """
@@ -90,7 +96,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _exit_on_sigterm(signum: int, _frame: object) -> None:
+    """The studio's Cancel sends SIGTERM. Python's default for it ends the
+    process on the spot, so a stage's `except BaseException` cleanup never
+    runs and an attempt it had planned stays pending forever - an Animate
+    frame then reads "generating" with nothing generating it. Raising
+    SystemExit instead unwinds through that cleanup inside the run
+    manager's grace period."""
+    raise SystemExit(128 + signum)
+
+
 def main(argv: list[str] | None = None) -> int:
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
     args = build_parser().parse_args(argv)
     # The curation board feature: a GPU stage waits for the unit's gates
     # (anim/curation.py). One check here rather than one per stage, so a

@@ -12,9 +12,8 @@ write the same `work/<unit>_curation.json` through the same functions.
     anim curate knight --accept-frame attack/s0/3
     anim curate knight --clear-frame attack/s0/3    # a cleared reject comes back into the picks
     anim curate knight --accept-gate base           # what `concept --pick` does for you
-    anim curate knight --accept-gate turnaround
     anim curate knight --accept-view back           # the views step under the base gate (#298)
-    anim curate knight --reject-view left           # the turnaround falls back to the front for it
+    anim curate knight --reject-view left           # the matrix refuses the facing that wants it
     anim curate knight --regenerate attack/s0       # records a new seed, prints the GPU line to run
     anim curate --mode every                        # the project setting (gates | every | end)
 
@@ -47,7 +46,7 @@ def _frame_ref(value: str) -> tuple[str, str, int]:
 
 def print_board(board: dict[str, Any]) -> None:
     print(f"curate: {board['unit']}  mode {board['mode']}  "
-          f"gates base={board['gates']['base']} turnaround={board['gates']['turnaround']}"
+          f"gates base={board['gates']['base']}"
           f"{'' if board['exists'] else '  (no record yet: legacy, nothing gated)'}")
     if board.get("views"):
         print("  views: " + ", ".join(
@@ -90,7 +89,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="accept a view of the base (the multi-view reference feature)")
     parser.add_argument("--reject-view", action="append", default=[],
                         choices=list(config.CONCEPT_VIEWS), metavar="VIEW",
-                        help="reject a view: the turnaround falls back past it")
+                        help="reject a view: the matrix refuses the facings that want it")
     parser.add_argument("--pending-view", action="append", default=[],
                         choices=list(config.CONCEPT_VIEWS), metavar="VIEW")
     parser.add_argument("--regenerate", action="append", default=[], metavar="KEY",

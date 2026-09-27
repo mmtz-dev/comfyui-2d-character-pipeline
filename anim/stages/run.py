@@ -85,10 +85,7 @@ def run_stage(args: argparse.Namespace) -> int:
             f"\nSTOPPED BEFORE RENDER - the GPU image service is not answering "
             f"at {client.base_url}.\n"
             f"Everything up to the strip is done and on disk in {job.root}.\n\n"
-            f"The owner starts it (needs a real TTY for the sudo password):\n"
-            f"    sudo systemctl start docker\n"
-            f"    docker --context docker-default compose -f "
-            f"tools/anim-pipeline/gpu/compose.yml up -d\n\n"
+            f"{comfy.START_HINT}\n\n"
             f"Then finish this job with:\n"
             f"    anim render {job.name} && anim post {job.name} && "
             f"anim publish {job.name}\n")

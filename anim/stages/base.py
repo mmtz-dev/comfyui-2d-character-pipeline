@@ -57,10 +57,37 @@ NAME = "base"
 HELP = "canned standing skeleton -> <slug>.png"
 
 STAND_POSE = Path(__file__).resolve().parent.parent / "data" / "stand_pose.json"
+# The front base pose feature. `anim base` renders STAND_POSE through the
+# ControlNet, so that one stays the side profile the art bible asks for. A
+# concept base is not rendered from its skeleton at all - `concept --pick`
+# copies a txt2img picture in and the skeleton is only ever read for the part
+# prompts - and CONCEPT_TXT2IMG_PROMPT asks for a FRONT view, so pointing SAM
+# at a side skeleton put every prompt in one narrow column (hooded_archer,
+# 2026-09-24: arms/torso/legs all scored below the contamination gate and
+# every direction then failed on the missing palettes).
+STAND_POSE_FRONT = (Path(__file__).resolve().parent.parent
+                    / "data" / "stand_pose_front.json")
 
 
 def stand_payload(path: Path | None = None) -> dict[str, Any]:
     return read_json(path or STAND_POSE)
+
+
+def _write_pose(job: Job, payload: dict[str, Any], cell: tuple[int, int]) -> Path:
+    """Draw the skeleton, write keypoints.json, mirror it into strip/.
+
+    The pose half of `prepare`, on its own so `repose` can redo it for a base
+    job that already exists without disturbing the rest of its manifest.
+    """
+    entry = payload["frames"][0]
+    canvas = posekit.draw(entry["keypoints"], entry["scores"],
+                          tuple(payload["source_size"]), cell,
+                          kpt_thr=float(payload.get("kpt_thr", 0.4)),
+                          props=entry.get("props"))
+    skeleton = job.pose_dir / "skel_0001.png"
+    Image.fromarray(canvas[:, :, ::-1]).save(skeleton)
+    write_json_in_place(job.keypoints_path, payload)
+    return skeleton
 
 
 def rig_payload(glb: Path, *, clip: str, frame: int, cell: tuple[int, int],
@@ -140,14 +167,7 @@ def prepare(slug: str, *, cell: tuple[int, int] | None = None,
             props=props, depth=depth, yaw=yaw, elevation=elevation)
     else:
         payload = stand_payload(pose_path)
-    entry = payload["frames"][0]
-    canvas = posekit.draw(entry["keypoints"], entry["scores"],
-                          tuple(payload["source_size"]), cell,
-                          kpt_thr=float(payload.get("kpt_thr", 0.4)),
-                          props=entry.get("props"))
-    skeleton = job.pose_dir / "skel_0001.png"
-    Image.fromarray(canvas[:, :, ::-1]).save(skeleton)
-    write_json_in_place(job.keypoints_path, payload)
+    skeleton = _write_pose(job, payload, cell)
     if depth_clip is not None:
         rig_stage.write_depths(depth_clip, job.depth_dir)
     elif job.depth_dir.is_dir():
@@ -190,6 +210,42 @@ def prepare(slug: str, *, cell: tuple[int, int] | None = None,
         "reference": None,
     })
     return job
+
+
+def repose(slug: str, *, pose_path: Path | None = None,
+           work_dir: Path | None = None) -> dict[str, Any]:
+    """Re-lay the canned skeleton on a base job that already exists.
+
+    The front base pose feature, for the units picked before it landed. Only
+    the pose artifacts and the manifest's `pose` block are rewritten - the
+    render, the concept block and the accepted views are left exactly as they
+    are, which `prepare` cannot promise because it builds the manifest from
+    scratch. Re-picking would do it too, but `concept --pick` clears the base's
+    views on the way through, and a unit whose eight views are accepted should
+    not have to earn them twice to get its part prompts fixed.
+    """
+    job = Job.open(f"{slug}_base", work_dir)
+    if not job.manifest_path.exists():
+        raise FileNotFoundError(
+            f"{slug} has no base job; `anim concept --unit {slug} --pick NN` first")
+    manifest = job.read_manifest()
+    pose = dict(manifest.get("pose") or {})
+    if pose.get("model") == "rig":
+        raise ValueError(
+            f"{job.name} was posed from a rig ({manifest.get('clip')}), not the "
+            f"canned skeleton; re-run `anim base --unit {slug} --rig ...` to "
+            f"change its pose")
+    cell = tuple(pose.get("cell") or manifest.get("frame_size") or config.BASE_CELL)
+    payload = stand_payload(pose_path or STAND_POSE_FRONT)
+    job.pose_dir.mkdir(parents=True, exist_ok=True)
+    job.strip_dir.mkdir(parents=True, exist_ok=True)
+    skeleton = _write_pose(job, payload, cell)
+    write_bytes_in_place(job.strip_dir / "skeleton_strip.png", skeleton.read_bytes())
+    job.update_manifest(pose={"rig": payload["rig"], "model": "canned",
+                              "mode": payload.get("mode", "canned"),
+                              "cell": list(cell), "detected": 1})
+    return {"job": job.name, "pose": str(pose_path or STAND_POSE_FRONT),
+            "cell": list(cell), "keypoints": str(job.keypoints_path)}
 
 
 def render_base(job: Job, *, prompt: str | None = None, seed: int | None = None,
@@ -278,6 +334,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--skeleton-only", action="store_true",
                         help="render the standing skeleton and stop - no GPU, "
                              "useful for eyeballing the rig")
+    parser.add_argument("--repose", action="store_true",
+                        help="re-lay the canned skeleton on an existing base "
+                             "job and stop - no GPU. The front base pose "
+                             "feature: fixes the part prompts of a unit picked "
+                             "before the front pose landed, without clearing "
+                             "its accepted views the way a re-pick would")
+    parser.add_argument("--pose", dest="pose", default=None, metavar="FILE",
+                        help="keypoints to lay down instead of the default "
+                             f"({STAND_POSE_FRONT.name} for --repose, "
+                             f"{STAND_POSE.name} otherwise)")
     parser.add_argument("--rig", default=None, metavar="GLB",
                         help="take the standing pose from a rig clip instead of "
                              "the canned skeleton (the rig motion input feature)")
@@ -301,6 +367,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def run_stage(args: argparse.Namespace) -> int:
+    if args.repose:
+        result = repose(args.slug,
+                        pose_path=Path(args.pose) if args.pose else None)
+        print(f"base: {Path(result['pose']).name} -> {result['keypoints']}")
+        print(f"  {result['job']} re-posed at {result['cell'][0]}x"
+              f"{result['cell'][1]}  (render and views untouched)")
+        return 0
     rig_path = Path(args.rig) if args.rig else None
     rig_stage.check_direction("anim base", yaw=args.yaw, elevation=args.elevation,
                               mirror=args.mirror)
@@ -310,6 +383,7 @@ def run_stage(args: argparse.Namespace) -> int:
     if args.skeleton_only:
         job = prepare(args.slug, rig=rig_path, clip=args.clip, frame=args.frame,
                       mirror=args.mirror, props=rig_stage.parse_props(args.props),
+                      pose_path=Path(args.pose) if args.pose else None,
                       yaw=args.yaw, elevation=args.elevation)
         what = (f"{job.read_manifest()['clip']}" if rig_path
                 else "canned standing skeleton")

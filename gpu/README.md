@@ -3,39 +3,52 @@
 ComfyUI headless, serving the two generation passes of **the pose-to-pixel
 animation pipeline feature** over HTTP on `0.0.0.0:8188`.
 
-This is the **only** part of this project that runs on the native Docker daemon.
-Everything else — the CPU pipeline, the model downloader, the Mac share — runs on
-Docker Desktop (context `desktop-linux`).
+This is the **only** part of this project that runs under Podman. Everything else
+— the CPU pipeline, the model downloader, the Mac share — runs on Docker Desktop
+(context `desktop-linux`).
 
 ---
 
-## Why the native daemon, and only here
+## Why Podman, and only here
 
-This host runs two Docker engines:
+This host runs three container engines, and only one of them can give a
+container the RTX A5000:
 
-| Engine | Context | Socket | GPU |
+| Engine | How | GPU | Used for |
 |---|---|---|---|
-| Docker Desktop (**the default**) | `desktop-linux` | `~/.docker/desktop/docker.sock` | **no** — runs in a Linux VM |
-| Native `docker.service` | `docker-default` | `/var/run/docker.sock` | **yes** — nvidia runtime |
+| Docker Desktop (**the default**) | context `desktop-linux` | **no** — runs in a Linux VM | everything except this |
+| Native `docker.service` | context `docker-default` | yes, nvidia runtime | **nothing — off-limits** |
+| **Rootless Podman** | `podman-compose` | **yes**, via CDI | this service |
 
-ComfyUI needs real CUDA on the RTX A5000, so it is the one service that must run
-on the native daemon. The native daemon is `disabled` and normally stopped.
+ComfyUI needs real CUDA. The native Docker daemon can provide it but is off
+limits on this host — it breaks the owner's setup, and every render needed
+`sudo systemctl start docker` from a real TTY first, which an agent cannot do.
+Rootless Podman reaches the same GPU through **CDI** with no daemon and no sudo,
+so this service moved there on 2026-09-25 (see `DEVLOG.md`).
+
+**How the GPU gets in:** `nvidia-ctk` writes a CDI spec describing the device
+nodes and driver libraries to inject; Podman reads it by name when a service
+asks for `devices: ["nvidia.com/gpu=all"]`. The spec lives at
+`/var/run/cdi/nvidia.yaml` and `nvidia-cdi-refresh.service` (enabled) keeps it
+current across driver updates, so there is nothing to maintain.
 
 **Rules, not suggestions:**
 
-- Never run `docker context use`. The active context stays `desktop-linux` so a
-  bare `docker ps` always shows the normal Docker Desktop stack.
-- Target this service explicitly, every time: `docker --context docker-default …`.
-- Starting the native daemon does **not** disturb the running Docker Desktop
-  containers; they are on different sockets.
-- `sudo systemctl start docker` needs a real TTY for the password. Only the owner
-  can run it — an agent cannot, and should not ask for it to be left running.
+- Never run `docker context use`, and never start `docker.service`. The active
+  Docker context stays `desktop-linux` so a bare `docker ps` always shows the
+  normal Docker Desktop stack.
+- `podman` and `docker` see **different** images and containers. `podman ps`
+  shows this service; `docker ps` never will.
+- Rootless means no sudo, which means an agent can start and stop this service
+  itself. That is the whole point of the move.
+- `label=disable` and `userns: keep-id` in the compose file are load-bearing on
+  this host — see the comments there before changing either.
 
 ---
 
 ## Owner-run sequence
 
-Run these from the repo root (`/home/workstation/Repos/game-dev`).
+Run these from the repo root (`/home/workstation/Repos/game-dev/framework-ladder`).
 
 ### 1. Pre-flight (no daemon needed)
 
@@ -43,8 +56,12 @@ Run these from the repo root (`/home/workstation/Repos/game-dev`).
 # The A5000 and a driver >= 580 (the CUDA 13 floor for this image)
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv
 
-# The compose file parses (this runs on Docker Desktop and starts nothing)
-docker --context desktop-linux compose -f tools/anim-pipeline/gpu/compose.yml config
+# The compose file parses (starts nothing)
+podman-compose -f tools/anim-pipeline/gpu/compose.yml config
+
+# Podman can really see the GPU (pulls a small CUDA image the first time)
+podman run --rm --device nvidia.com/gpu=all --security-opt label=disable \
+  docker.io/nvidia/cuda:13.0.3-runtime-ubuntu24.04 nvidia-smi
 
 # The basedir exists and is owned by uid/gid 1000 (WANTED_UID/WANTED_GID)
 ls -ld "/mnt/private/AI Data/comfyui-run" "/mnt/private/AI Data/comfyui-basedir"
@@ -53,23 +70,12 @@ ls -ld "/mnt/private/AI Data/comfyui-run" "/mnt/private/AI Data/comfyui-basedir"
 tools/anim-pipeline/gpu/download_models.sh --verify
 ```
 
-### 2. Start the native daemon — **in a real TTY**
+### 2. Bring the service up
+
+No daemon to start first, and no sudo:
 
 ```bash
-sudo systemctl start docker
-```
-
-This asks for a password, so it cannot be run through an agent. Confirm it came
-up, and confirm the nvidia runtime is registered:
-
-```bash
-docker --context docker-default info --format '{{.ServerVersion}} runtimes={{.Runtimes}}'
-```
-
-### 3. Bring the service up
-
-```bash
-docker --context docker-default compose -f tools/anim-pipeline/gpu/compose.yml up -d
+podman-compose -f tools/anim-pipeline/gpu/compose.yml up -d
 ```
 
 **The first start is slow** (10–30 min): the image builds a python venv and
@@ -77,12 +83,12 @@ installs torch into `/mnt/private/AI Data/comfyui-run`. Later starts reuse it.
 Watch it:
 
 ```bash
-docker --context docker-default compose -f tools/anim-pipeline/gpu/compose.yml logs -f
+podman-compose -f tools/anim-pipeline/gpu/compose.yml logs -f
 ```
 
 It is ready when the log says `To see the GUI go to: http://0.0.0.0:8188`.
 
-### 4. Smoke test — the GPU is really there
+### 3. Smoke test — the GPU is really there
 
 ```bash
 curl -s http://192.168.1.158:8188/system_stats | python3 -m json.tool
@@ -90,7 +96,8 @@ curl -s http://192.168.1.158:8188/system_stats | python3 -m json.tool
 
 Expect a `devices[0].name` containing **NVIDIA RTX A5000** and a `vram_total`
 around 25 GB. If it names a CPU device instead, the nvidia runtime or the
-SELinux label did not take — check `security_opt` and `runtime: nvidia`.
+SELinux label did not take — check `security_opt: [label=disable]` and that
+`devices: ["nvidia.com/gpu=all"]` resolved (`ls /var/run/cdi/nvidia.yaml`).
 
 Two more checks worth doing on the first run:
 
@@ -107,7 +114,7 @@ for n in ["ModelPatchLoader","ZImageFunControlnet","TextEncodeQwenImageEditPlus"
 curl -s http://192.168.1.158:8188/object_info/CLIPLoader | python3 -m json.tool | head -30
 ```
 
-### 5. The `nunchaku` wheel — installed for you, on every start
+### 4. The `nunchaku` wheel — installed for you, on every start
 
 `ComfyUI-nunchaku` is a thin wrapper; it imports the `nunchaku` Python package,
 which the node pack does not vendor. Without it `NunchakuQwenImageDiTLoader` is
@@ -131,7 +138,7 @@ Two things in the repo handle it, and they move together:
 Confirm after the first start:
 
 ```bash
-docker --context docker-default logs anim-pipeline-comfyui 2>&1 | grep "== nunchaku"
+podman logs anim-pipeline-comfyui 2>&1 | grep "== nunchaku"
 # == nunchaku 1.2.1+cu12.8torch2.11 | torch 2.11.0+cu129 | piexif 1.1.3
 ```
 
@@ -139,7 +146,7 @@ The A5000 is Ampere (sm_86) → the **INT4** kernels, not NVFP4 (Blackwell-only)
 Moving the pin means changing the wheel name, URL and sha256 in the script, the
 `TORCH_LOCK` line, and this paragraph, together.
 
-### 6. Generate one sprite
+### 5. Generate one sprite
 
 ```bash
 # From the CPU pipeline container (it reaches this service via host.docker.internal)
@@ -152,13 +159,13 @@ docker compose run --rm anim base --unit knight \
 First render is slow (the models page in from disk: ~2.5 min); later ones ~20 s
 per pass.
 
-### 7. Shut down when done
+### 6. Shut down when done
 
 The service holds ~20 GB of VRAM while loaded. `restart: "no"` means it never
 comes back on its own.
 
 ```bash
-docker --context docker-default compose -f tools/anim-pipeline/gpu/compose.yml down
+podman-compose -f tools/anim-pipeline/gpu/compose.yml down
 sudo systemctl stop docker      # TTY again; optional
 ```
 

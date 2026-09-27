@@ -14,9 +14,9 @@ that fails hard (a segfault in onnxruntime, a torch OOM) would take the API
 with it; and the GPU stages hold a `requests` session open for minutes, which a
 thread cannot be told to abandon but a process can be killed.
 
-THE GPU RULE. `base`, `render`, `clip`, `concept`, `bakeoff` and `run` (which
-renders when it can) reach ComfyUI, and the card is 24 GB: a second model load
-on top of a running one is an OOM twenty minutes in. So GPU stages start only
+THE GPU RULE. `base`, `render`, `clip`, `concept`, `animate`, `bakeoff`, `matrix` and
+`run` (which renders when it can) reach ComfyUI, and the card is
+24 GB: a second model load on top of a running one is an OOM twenty minutes in. So GPU stages start only
 from an explicit POST - nothing here polls or prefetches - and only ONE may be
 active at a time; a second is refused with 409 and the id of the one running.
 CPU stages run concurrently up to `cpu_slots`, then 409 as well.
@@ -25,6 +25,17 @@ Percent: a stage reports it by printing `[n/m] ...` (what `anim run` prints
 per step) or a line `progress: 42%`; the manager parses those and nothing
 else. Everything is also written under work/_runs/<id>.{json,log} so `GET
 /runs` survives a restart - a run the API no longer owns is reported `lost`.
+
+OUTCOME, NOT EXIT CODE. A batch stage (`matrix`, `bakeoff`)
+catches each cell's exception, records it and goes on to the next, because one
+bad cell must not cost the other seven. It used to exit 0 for doing that, and a
+run whose every cell failed read `done` at 100% here - see `anim.outcome` for
+the 2026-09-24 bug. Such a stage now prints a last line `outcome: done=0
+failed=8 blocked=0 of=8`; the manager keeps it on the record as `cells`, and
+the run's `status` and final `percent` come from THAT rather than from the
+process result. Hence the status `partial`: the run finished, and not every
+cell it planned did. A stage that prints no tally is unchanged - a clean exit
+is `done`, a non-zero one `failed`.
 """
 
 from __future__ import annotations
@@ -45,16 +56,26 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
-from anim import cli, config
+from anim import cli, config, outcome
 from anim.stages import STAGE_ORDER
 from anim.util import read_json, write_json_in_place
 
-GPU_STAGES = frozenset({"base", "render", "clip", "concept", "bakeoff", "turnaround", "run"})
+# The action matrix feature: `matrix` belongs here for three things at once -
+# the one-GPU-at-a-time 409, ComfyUI's /interrupt on Cancel (a matrix run is
+# minutes of Wan per cell, so a Cancel that only killed the process would
+# leave the card finishing a clip nobody wants), and the GPU badge in the panel.
+GPU_STAGES = frozenset({"base", "render", "clip", "concept", "animate", "bakeoff",
+                        "matrix", "run"})
 # `review` is a page, not a step - there is nothing to run.
 RUNNABLE = [name for name in STAGE_ORDER if name != "review"]
 
 RUNS_DIRNAME = "_runs"
 ACTIVE = ("queued", "running")
+# A run ends in exactly one of these, and `done` is the only full success.
+# `partial` is the batch stages' own: the process finished and some of the cells
+# it planned did not (`anim.outcome`, `_status_for`). `web/src/sse.ts` keeps the
+# same five in `FINISHED` and refuses a `done` event carrying anything else.
+FINISHED = ("done", "partial", "failed", "lost", "cancelled")
 # How long a cancelled stage gets to exit on SIGTERM before SIGKILL.
 CANCEL_GRACE_S = 5.0
 
@@ -73,6 +94,73 @@ class RunRefused(Exception):
 
 def _now() -> str:
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+# ---------------------------------------------------------------------------
+# What a finished process means
+# ---------------------------------------------------------------------------
+def _cells(value: Any) -> dict[str, int] | None:
+    """A `cells` tally off disk or off a stage's line, or None. Anything that
+    is not a map of ints is dropped rather than trusted - the record is a file
+    on disk that a person may have opened."""
+    if not isinstance(value, dict):
+        return None
+    counts = {str(k): int(v) for k, v in value.items()
+              if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    return counts or None
+
+
+def _status_for(cancelled: bool, returncode: int,
+                cells: dict[str, int] | None) -> str:
+    """The run's end status.
+
+    A cancel is a cancel whatever the tally says. Otherwise the TALLY WINS over
+    the exit code when there is one, because it is the finer signal and the
+    reason this field stopped lying: a batch stage exited 0 with eight
+    failed cells (DEVLOG 2026-09-24), and `partial` / `failed` there is the truth the panel needs.
+    The exit code alone answers for every stage that counts no cells.
+    """
+    if cancelled:
+        return "cancelled"
+    if cells is not None:
+        planned = cells.get("of", 0)
+        done = cells.get("done", 0)
+        if planned <= 0:
+            # A tally of nothing planned: `--dirs` matched no cell. There was
+            # no work to fail at, so the process result stands.
+            return "done" if returncode == 0 else "failed"
+        if done >= planned:
+            return "done"
+        # Not every cell finished. `failed` when none did - whether they raised
+        # or were blocked by the prerequisite gate, nothing came of the run.
+        return "partial" if done else "failed"
+    return "done" if returncode == 0 else "failed"
+
+
+def _final_percent(status: str, cells: dict[str, int] | None,
+                   percent: int | None) -> int | None:
+    """Where the bar stops.
+
+    A full success is 100 - that is the old unconditional rule, kept, and it is
+    the only case that earns it. With a tally the bar is REBASED onto the cells
+    that actually finished, so an all-failed run ends at 0 and a four-of-eight
+    run at 50. That is the one place the bar is not monotone: `matrix` advances
+    `[n/m]` per cell FINISHED, failures included, so it can climb to 100 during
+    a run that produced nothing, and the last frame corrects it. Rejected:
+    leaving the bar at 100 and letting the status colour carry the bad news -
+    the bar is what the eye reads first, and a full green bar over the word
+    "failed" is the same lie in a smaller font.
+
+    With no tally the bar is left exactly where the stage's own lines put it,
+    which is why a crashed `pick` still shows how far it got.
+    """
+    if status == "done":
+        return 100
+    if cells:
+        planned, done = cells.get("of", 0), cells.get("done", 0)
+        if planned > 0:
+            return max(0, min(100, round(100 * done / planned)))
+    return percent
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +263,10 @@ class Run:
     returncode: int | None = None
     pid: int | None = None
     log: list[str] = field(default_factory=list)
+    # The tally a batch stage printed, `{done, failed, blocked, of}`, or None
+    # for a stage that has no cells to count. It is what makes "8 of 8 cells
+    # failed" sayable where the process result alone only said "exited 0".
+    cells: dict[str, int] | None = None
     # The concept generation feature: a run can be cancelled from the studio.
     # The handle is the process itself; `cancelled` is what the exit reports.
     cancelled: bool = False
@@ -195,6 +287,7 @@ class Run:
             "started": self.started, "finished": self.finished,
             "returncode": self.returncode, "pid": self.pid,
             "cancelled": self.cancelled,
+            "cells": dict(self.cells) if self.cells else None,
             "log_lines": len(self.log), "url": f"/runs/{self.id}",
             "events": f"/runs/{self.id}/events",
         }
@@ -226,7 +319,14 @@ class RunManager:
     # --- persistence -------------------------------------------------------
     def _load(self) -> None:
         """Runs from before this process: their files are the record, and any
-        that was still active belonged to a process that no longer exists."""
+        that was still active belonged to a process that no longer exists.
+
+        Every field is read with a default, so a record written before it
+        existed still loads: a run from before the outcome tally has no `cells`
+        and is served with `cells: null`. Migrating in memory rather than
+        rewriting the files keeps `_runs/` append-only - the alternative,
+        back-filling a tally the old run never reported, would be inventing it.
+        """
         if not self.runs_dir.is_dir():
             return
         for path in sorted(self.runs_dir.glob("*.json")):
@@ -234,11 +334,17 @@ class RunManager:
                 row = read_json(path)
             except (OSError, ValueError):
                 continue
+            # A status this build does not know - a record from a newer API, or
+            # a hand-edited file - is `lost`, which is what "the API cannot
+            # account for this run" already means. Guessing would be worse.
+            status = row.get("status", "lost")
             run = Run(id=row["id"], stage=row["stage"], argv=list(row["argv"]),
-                      gpu=bool(row.get("gpu")), status=row.get("status", "lost"),
+                      gpu=bool(row.get("gpu")),
+                      status=status if status in ACTIVE + FINISHED else "lost",
                       percent=row.get("percent"), started=row.get("started", ""),
                       finished=row.get("finished"),
                       returncode=row.get("returncode"), pid=row.get("pid"),
+                      cells=_cells(row.get("cells")),
                       cancelled=bool(row.get("cancelled")), cond=self.cond)
             log_path = self.runs_dir / f"{run.id}.log"
             if log_path.exists():
@@ -359,20 +465,21 @@ class RunManager:
                 log.write(line + "\n")
                 log.flush()
                 percent = self._percent(line)
+                cells = self._outcome(line)
                 with self.cond:
                     run.log.append(line)
                     if percent is not None:
                         run.percent = percent
+                    if cells is not None:
+                        run.cells = cells
                     self.cond.notify_all()
         returncode = proc.wait()
         with self.cond:
             run.returncode = returncode
-            run.status = ("cancelled" if run.cancelled
-                          else "done" if returncode == 0 else "failed")
+            run.status = _status_for(run.cancelled, returncode, run.cells)
+            run.percent = _final_percent(run.status, run.cells, run.percent)
             run.finished = _now()
             run.proc = None
-            if run.status == "done":
-                run.percent = 100
             self.cond.notify_all()
         self._save(run)
 
@@ -413,6 +520,11 @@ class RunManager:
         return run
 
     @staticmethod
+    def _outcome(line: str) -> dict[str, int] | None:
+        """A batch stage's `outcome: done=.. failed=.. blocked=.. of=..`."""
+        return outcome.parse(line)
+
+    @staticmethod
     def _percent(line: str) -> int | None:
         step = _STEP.match(line)
         if step:
@@ -429,9 +541,12 @@ class RunManager:
 
         Yields already-written text/event-stream frames: every log line as a
         `log` event, each new percent as `progress`, and one `done` (or
-        `failed` / `lost`) when the run is over. A connection that opens after
-        the run finished still gets the whole log, then the end - so a page
-        reloaded mid-run misses nothing.
+        `partial` / `failed` / `lost`) when the run is over. A connection that
+        opens after the run finished still gets the whole log, then the end - so
+        a page reloaded mid-run misses nothing.
+
+        The final event carries `cells` as well as the status, so the panel can
+        say "0 of 8 cells done, 8 failed" without a second fetch of the record.
         """
         cursor = 0
         last_percent: int | None = None
@@ -447,6 +562,7 @@ class RunManager:
                 active = run.active
                 status = run.status
                 returncode = run.returncode
+                cells = dict(run.cells) if run.cells else None
             if not lines and percent == last_percent and active:
                 yield ": keepalive\n\n"
                 continue
@@ -457,7 +573,7 @@ class RunManager:
                 yield _event("progress", {"percent": percent})
             if not active:
                 yield _event("done", {"status": status, "returncode": returncode,
-                                      "percent": percent})
+                                      "percent": percent, "cells": cells})
                 return
 
 

@@ -56,6 +56,56 @@ export function viewLabel(view: string): string {
   return VIEW_LABELS[view] ?? view;
 }
 
+/** The cold penalty the sweep's confirm names: the FIRST render of a run that
+ * finds an empty card pays for Qwen-Image-Edit loading. Measured at 164-201 s
+ * over the runs on disk; `anim/config.py` carries the same number. */
+export const VIEW_COLD_SECONDS = 190;
+
+export interface AdvancedSweep {
+  /** The advanced views this press would render, in compass order. */
+  views: string[];
+  /** What the button says, e.g. "All advanced (3)". */
+  label: string;
+  /** Why it cannot be pressed, or null. */
+  blocked: string | null;
+}
+
+/** The advanced views sweep feature: one press for the whole fold. It renders
+ * the advanced views nobody has accepted yet - a view that is settled is left
+ * alone, so pressing it twice tops up what is unfinished instead of piling
+ * attempts onto a finished view. Mirroring is deliberately NOT folded in: a
+ * mirror needs its partner accepted first and it swaps the handedness of gear,
+ * so it stays the explicit per-view button it has always been. */
+export function advancedSweep(state: ConceptState, busy: RunRecord | null): AdvancedSweep {
+  const views = viewGroups(state).advanced
+    .filter((view) => view.pick === null)
+    .map((view) => view.view);
+  const label = `All advanced (${views.length})`;
+  const blocked = state.locked ? state.locked
+    : isActive(busy) ? `the GPU is busy with ${busy!.stage} ${busy!.id}; one at a time`
+    : !views.length ? "every advanced view is accepted - Regenerate one to redo it"
+    : null;
+  return { views, label, blocked };
+}
+
+/** What the sweep asks before it spends the card. Every other press on this
+ * tab is 1-4 renders and confirms nothing; this one is up to 20, so it says
+ * what it will cost - warm, and what a cold start adds on top. */
+export function advancedConfirm(state: ConceptState, views: string[], count: number): string {
+  const attempts = views.length * clampCount(count);
+  const per = state.estimate_seconds;
+  const warm = Math.max(1, Math.round((attempts * per) / 60));
+  const cold = Math.round(VIEW_COLD_SECONDS / 60);
+  return `Generate ${views.length} advanced view${views.length === 1 ? "" : "s"}`
+    + ` of ${state.unit}:\n\n${views.join(", ")}\n\n`
+    + `${clampCount(count)} attempt${clampCount(count) === 1 ? "" : "s"} each`
+    + ` - ${attempts} render${attempts === 1 ? "" : "s"} at about ${per.toFixed(0)} s warm,`
+    + ` so roughly ${warm} min on the card. Add ~${cold} min if it has to load`
+    + " Qwen-Image-Edit first.\n"
+    + "This is one GPU job (one at a time on the card); Cancel keeps the attempts"
+    + " that finished.\n\nContinue?";
+}
+
 /** Which family a generate op draws its model and LoRAs from. */
 export function familyOf(op: ConceptOp, listing: ModelsListing | null): ModelFamily {
   return listing?.ops[op] ?? (op === "views" || op === "edit" ? "qwen-edit" : "zimage");
@@ -171,14 +221,62 @@ export function lockedReason(state: ConceptState, target: string, attempt: Attem
   if (accepted === attempt.index) {
     return target === "base"
       ? "the accepted base - every later stage reads it; accept another first"
-      : "this view's accepted attempt - the turnaround reads it; accept another first";
+      : "this view's accepted attempt - the matrix reads it; accept another first";
   }
   return null;
+}
+
+// --- the mirrored view feature ---------------------------------------------
+/** What the "mirror from <partner>" button offers for one view. The decision
+ * lives here and not in the DOM: it is the same rule the stage enforces (the
+ * partner's own view has to be ACCEPTED, not merely drawn), so the tab can say
+ * why a press would be refused instead of sending it and showing a 400. */
+export interface MirrorOffer {
+  view: string;
+  partner: string;
+  /** The press would be accepted. */
+  can: boolean;
+  label: string;
+  /** Why not - the disabled button's title, so grey is never silent. */
+  reason: string | null;
+  title: string;
+}
+
+/** The offer for one view, or null when it has no partner at all: back, top
+ * and front look straight down the symmetry plane, and a button that flipped
+ * them would hand back the same facing under a different name. */
+export function mirrorOffer(state: ConceptState, view: ConceptView): MirrorOffer | null {
+  const partner = view.mirror_of;
+  if (!partner) return null;
+  const other = state.views[partner];
+  const name = viewLabel(partner);
+  const reason = !other
+    ? `there is no ${partner} view to flip`
+    : !other.accepted_file
+    ? `the ${name} view is not on the base yet - draw it and accept one attempt first`
+    : other.state !== "accepted"
+    ? `the ${name} view is ${other.state}, not accepted - a mirrored view inherits its partner's judgement`
+    : other.mirrored && other.mirrored_from === view.view
+    ? `the ${name} view is itself this one flipped - flipping it back would only re-derive what is here`
+    : null;
+  return {
+    view: view.view, partner, can: reason === null, label: `mirror from ${name}`, reason,
+    title: reason
+      ?? `anim concept --unit ${state.unit} --mirror-view ${view.view}: the ${partner} view `
+         + `flipped left-to-right. The same pixels, no GPU - but a sword changes hands.`,
+  };
+}
+
+/** The marker under a view that IS a flip, naming where its pixels came from. */
+export function mirroredNote(view: ConceptView): string | null {
+  if (!view.mirrored) return null;
+  return view.mirrored_from ? `mirrored from ${viewLabel(view.mirrored_from)}` : "mirrored";
 }
 
 export type ConceptAction =
   | { type: "pick"; index: number }
   | { type: "pickView"; view: string; index: number }
+  | { type: "mirrorView"; view: string }
   | { type: "viewPrompt"; view: string; prompt: string };
 
 /** The click folded into the state before the API answers, so the outline
@@ -189,7 +287,7 @@ export function reduceConcept(state: ConceptState, action: ConceptAction): Conce
       return {
         ...state,
         locked: null,
-        gates: { ...state.gates, base: "accepted", turnaround: "pending" },
+        gates: { ...state.gates, base: "accepted" },
         base: { ...state.base, pick: action.index, accepted: true },
         views: Object.fromEntries(Object.entries(state.views).map(([name, view]) =>
           [name, { ...view, candidates: [], pick: null, state: "pending" as const, accepted_file: null }])),
@@ -200,7 +298,21 @@ export function reduceConcept(state: ConceptState, action: ConceptAction): Conce
       if (!view) return state;
       return {
         ...state,
-        views: { ...state.views, [action.view]: { ...view, pick: action.index, state: "accepted" } },
+        views: { ...state.views, [action.view]: { ...view, pick: action.index, state: "accepted",
+          // Accepting one of this view's OWN attempts undoes a mirror: the
+          // picture under render/view_<view>.png is no longer a flip.
+          mirrored: false, mirrored_from: null } },
+      };
+    }
+    // The mirrored view feature: accepted with no candidate of its own, so the
+    // pick stays null and the marker appears while the POST is in flight.
+    case "mirrorView": {
+      const view = state.views[action.view];
+      if (!view || !view.mirror_of) return state;
+      return {
+        ...state,
+        views: { ...state.views, [action.view]: { ...view, pick: null, state: "accepted",
+          mirrored: true, mirrored_from: view.mirror_of } },
       };
     }
     case "viewPrompt": {
@@ -277,7 +389,7 @@ export function offerableLoras(listing: ModelsListing | null, family: ModelFamil
 
 /** The form's starting LoRA list for a family: the unit's default when it
  * has one, else the workflow's (the pixel LoRA for Z-Image, none for Qwen). */
-export function initialLoras(state: ConceptState | null, listing: ModelsListing | null, family: ModelFamily): LoraChoice[] {
+export function initialLoras(state: Pick<ConceptState, "defaults"> | null, listing: ModelsListing | null, family: ModelFamily): LoraChoice[] {
   const saved = state?.defaults[family];
   if (saved?.loras) return saved.loras.map((lora) => ({ ...lora }));
   return (listing?.default_lora[family] ?? []).map((lora) => ({ ...lora }));
@@ -298,12 +410,12 @@ export function notInstalled(listing: ModelsListing | null, family: ModelFamily,
   return missing;
 }
 
-export function initialModel(state: ConceptState | null, family: ModelFamily): string | null {
+export function initialModel(state: Pick<ConceptState, "defaults"> | null, family: ModelFamily): string | null {
   return state?.defaults[family]?.model ?? null;
 }
 
 /** Whether the form differs from the unit's saved default (the "save" button lights up). */
-export function sameAsDefault(state: ConceptState | null, family: ModelFamily, model: string | null, loras: LoraChoice[]): boolean {
+export function sameAsDefault(state: Pick<ConceptState, "defaults"> | null, family: ModelFamily, model: string | null, loras: LoraChoice[]): boolean {
   const saved = state?.defaults[family];
   if (!saved) return false;
   if ((saved.model ?? null) !== (model ?? null)) return false;

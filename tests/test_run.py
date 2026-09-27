@@ -56,8 +56,8 @@ def test_run_stops_before_render_when_the_gpu_is_off(clip, work_dir,
     out = capsys.readouterr().out
     assert code == 0, "the CPU half succeeded; this is the normal case"
     assert "STOPPED BEFORE RENDER" in out
-    assert "sudo systemctl start docker" in out
-    assert "docker-default" in out
+    assert comfy.START_HINT in out, "one hint, from anim.comfy, not a local copy"
+    assert "podman-compose" in out and "systemctl" not in out
     assert "[4/7] strip" in out and "[5/7]" not in out
     assert not (work_dir / "knight_strike" / "render").exists()
 

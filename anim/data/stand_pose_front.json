@@ -1,0 +1,41 @@
+{
+  "schema": "anim.keypoints/1",
+  "rig": "openpose18",
+  "model": "canned",
+  "mode": "canned",
+  "kpt_thr": 0.4,
+  "source_size": [768, 768],
+  "_note": "The canned FRONT-FACING standing skeleton, for a base the concept stage rendered. SYNTHESISED from joint coordinates, not traced from a photograph, so it carries no licence of any kind. Front view facing the viewer, which is what CONCEPT_TXT2IMG_PROMPT asks the model for ('front-view', 'facing forward, facing the viewer'). Its sibling stand_pose.json is a SIDE view and stays the pose `anim base` renders through the ControlNet; this one is never rendered from, it exists so the part prompts (anim.partkit.prompts_for) land on a front-facing figure. Measured 2026-09-25 against both concept bases on disk: joints sit inside the silhouette of knight_base (bbox x 80-702) and hooded_archer_base (bbox x 203-559) at every row they are placed on - the ears at +/-40 because the knight's helm is only 426px wide at y152, the ankles at +/-78 because the knight's feet run x 251-312 and x 404-518 at y706. Framed for the 768 concept cell: centre x 384, head top ~30, feet ~740. Edit the numbers here to change the front base pose.",
+  "frames": [
+    {
+      "index": 0,
+      "file": "(canned)",
+      "keypoints": [
+        [384, 150],
+        [384, 232],
+        [318, 252],
+        [288, 366],
+        [262, 470],
+        [450, 252],
+        [480, 366],
+        [506, 470],
+        [340, 452],
+        [330, 578],
+        [306, 706],
+        [428, 452],
+        [438, 578],
+        [462, 706],
+        [366, 140],
+        [402, 140],
+        [344, 152],
+        [424, 152]
+      ],
+      "scores": [
+        0.95, 0.95, 0.93, 0.9, 0.88, 0.93, 0.9, 0.88,
+        0.91, 0.89, 0.87, 0.91, 0.89, 0.87,
+        0.9, 0.9, 0.85, 0.85
+      ],
+      "person": {"score": 0.9}
+    }
+  ]
+}

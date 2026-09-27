@@ -186,6 +186,38 @@ def test_view_pick_and_defaults(api, work_dir):
     assert r.json()["defaults"]["qwen-edit"] == {"model": config.CONCEPT_MODELS["qwen-edit"], "loras": []}
 
 
+def test_the_view_pick_route_also_mirrors(api, work_dir):
+    """The mirrored view feature rides on the route the Concept tab already
+    posts to: `mirror: true` in place of an index. One accepted view comes out
+    either way, so there is one endpoint."""
+    _base(work_dir)
+    _views(work_dir)
+    # No index and no mirror is the one thing the body can't mean.
+    assert api.post("/concept/knight/views/left/pick", json={}).status_code == 400
+    # The partner is drawn but nobody has accepted it: 400, saying what to do.
+    r = api.post("/concept/knight/views/right/pick", json={"mirror": True})
+    assert r.status_code == 400 and "not on the base" in r.json()["detail"]
+    assert api.post("/concept/knight/views/left/pick", json={"index": 0}).status_code == 200
+    r = api.post("/concept/knight/views/right/pick", json={"mirror": True})
+    assert r.status_code == 200, r.text
+    row = r.json()["views"]["right"]
+    assert row["state"] == "accepted" and row["mirrored"] is True
+    assert row["mirrored_from"] == "left" and row["mirror_of"] == "left"
+    assert row["accepted_file"] == "view_right.png" and row["pick"] is None
+    assert (Job.open("knight_base", work_dir).render_dir / "view_right.png").exists()
+    # The handedness line comes back with the state so the tab can show it.
+    assert "handedness" in r.json()["warning"] and "shield" in r.json()["warning"]
+    # A view on the symmetry plane has no partner: 400, not a silent no-op.
+    r = api.post("/concept/knight/views/back/pick", json={"mirror": True})
+    assert r.status_code == 400 and "no mirror partner" in r.json()["detail"]
+    assert api.get("/concept/knight").json()["views"]["back"]["mirror_of"] is None
+    assert api.get("/concept/knight").json()["views"]["top"]["mirror_of"] is None
+    # The board's ring carries the same two facts.
+    ring = api.get("/curation/knight").json()["views"]
+    assert ring["right"]["mirrored"] is True and ring["right"]["mirrored_from"] == "left"
+    assert ring["left"]["mirrored"] is False and ring["left"]["mirror_of"] == "right"
+
+
 def test_cancel_stops_the_run_and_frees_the_gpu(api, work_dir, monkeypatch):
     monkeypatch.setenv("FAKE_DELAY", "5")
     started = api.post("/jobs", json={"stage": "concept", "args": {"slug": "knight", "prompt": "x"}})
@@ -334,3 +366,55 @@ def test_generate_in_place_carries_the_flag(api, work_dir):
     r = api.post("/concept/knight/generate",
                  json={"op": "edit", "ref": "base:00", "instruction": "red helm", "in_place": True})
     assert "--in-place" in wait_for(api, r.json()["id"])["argv"]
+
+
+def _write_view_seconds(work_dir, unit: str, seconds: list[float]) -> None:
+    """Stamp recorded render times onto a unit's views record, the way a real
+    run does. FakeComfy answers instantly, so the fixtures carry ~0 s."""
+    path = concept_stage.views_path(unit, work_dir)
+    record = json.loads(path.read_text())
+    rows = list(record["views"].values())
+    for row in rows:
+        for candidate in row.get("candidates") or []:
+            if seconds:
+                candidate["seconds"] = seconds.pop(0)
+    path.write_text(json.dumps(record))
+
+
+def test_the_state_carries_a_measured_estimate_for_the_sweep(api, work_dir):
+    """The advanced views sweep feature: the Concept tab quotes what a sweep
+    costs before the press, off this unit's own recorded renders - the warm
+    median, with a cold first render dropped rather than trebling it."""
+    _base(work_dir)
+    _views(work_dir)
+    _write_view_seconds(work_dir, "knight", [201.4, 12.0])
+    state = api.get("/concept/knight").json()
+    # Two renders recorded, one of them the cold one: the warm one is the median.
+    assert state["estimate_seconds"] == 12.0
+
+    # A unit with no records of its own borrows every unit's, so a brand-new
+    # unit still gets a real number instead of the bare constant.
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.concept("squire", description="a squire", count=1, seed=3,
+                              client=comfy.ComfyClient(fake.url), workflow_dir=WORKFLOWS,
+                              work_dir=work_dir)
+    assert api.get("/concept/squire").json()["estimate_seconds"] == 12.0
+
+
+def test_the_estimate_falls_back_to_the_measured_constant(api, work_dir):
+    """Nothing recorded anywhere - a fresh work dir - still quotes a number."""
+    assert api.get("/concept/knight").json()["estimate_seconds"] == config.CONCEPT_VIEW_SECONDS
+    _base(work_dir)
+    assert api.get("/concept/knight").json()["estimate_seconds"] == config.CONCEPT_VIEW_SECONDS
+
+
+def test_the_advanced_group_is_the_five_the_sweep_sends(api, work_dir):
+    """What the tab filters the sweep out of: the group tag on each view, and
+    the same five names `--views advanced` resolves to."""
+    _base(work_dir)
+    state = api.get("/concept/knight").json()
+    advanced = [name for name, view in state["views"].items() if view["group"] == "advanced"]
+    assert advanced == list(config.CONCEPT_ADVANCED_VIEWS)
+    assert advanced == config.concept_view_names("advanced")
+    assert [n for n, v in state["views"].items() if v["group"] == "main"] \
+        == list(config.CONCEPT_MAIN_VIEWS)

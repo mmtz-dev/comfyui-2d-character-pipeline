@@ -15,7 +15,7 @@ Routes (all JSON unless said otherwise):
     POST /jobs  {"stage", "args" | "argv"} run a stage in the background -> 202 + the run
                                            (423 when the unit's curation gate blocks it)
     GET  /runs                             every run this API knows, newest first
-    GET  /runs/{run}                       status + log
+    GET  /runs/{run}                       status + log (+ `cells`, a batch stage's tally)
     GET  /runs/{run}/events                text/event-stream: log, progress, done
     POST /runs/{run}/cancel                stop a queued or running stage -> 202 + the run (status `cancelled`)
     GET  /settings   PUT /settings         work/project.json (palette shown expanded)
@@ -28,21 +28,40 @@ Routes (all JSON unless said otherwise):
     GET  /curation/{unit}                  the board: gates, cells with their strips, what is waiting
     PUT  /curation/{unit}/cells/{action}/{dir}  {"status"} | {"frames": {n: accept|reject|null}}
     POST /curation/{unit}/cells/{action}/{dir}/regenerate   new seed + the cell's GPU stage -> 202
-    PUT  /curation/{unit}/gates/{gate}  {"state"}   base | turnaround -> pending | accepted
+    PUT  /curation/{unit}/gates/{gate}  {"state"}   base -> pending | accepted
     PUT  /curation/{unit}/views/{view}  {"state"}   a view of the base -> pending | accepted | rejected
     GET  /export/{unit}                    the last `anim export` of a unit: files, animations, warnings
-    GET  /turnaround/{unit}                the turnaround: per direction status, seconds, the stills' URLs, the identity table
+    GET  /matrix/{unit}                    the action matrix: every planned (action x direction) cell, its prerequisite
+                                           verdict, its finished frames' URLs, the seed and the #277 cap
+                                           (a matrix LAUNCHES through POST /jobs {"stage": "matrix"} like any stage)
     GET  /concept/{unit}                   the concept generation feature: the base attempts, every view's attempts, picks, defaults
     POST /concept/{unit}/generate          {"op": txt2img|views|img2img|edit, ...} -> `anim concept` in the background -> 202 + the run
                                            (423 while the base gate is pending for a view op)
     PUT  /concept/{unit}/upload            the owner's PNG (image/png body) as a base candidate
     POST /concept/{unit}/pick  {"index"}   accept that base candidate (= the base gate)
-    POST /concept/{unit}/views/{view}/pick {"index"}  accept that view attempt for the turnaround
+    POST /concept/{unit}/views/{view}/pick {"index"}  accept that view attempt (the matrix's reference for its facings)
     PUT  /concept/{unit}/attempts/{target}/{index}/image   the retouch feature: write this PNG over that attempt (the editor's Save)
     POST /concept/{unit}/attempts/{target}/{index}/inpaint the canvas (RGBA, erased = redraw) -> `anim concept --inpaint` in the background -> 202 + the run
     PUT  /concept/{unit}/attempts/{target}/{index}  {"hidden": bool}: hide one attempt from the strips (the accepted one is refused)
     DELETE /concept/{unit}/attempts/{target}/{index}  delete a hidden attempt's PNG; the row stays as its record
     PUT  /concept/{unit}/defaults          {"family", "model", "loras"}: the unit's default checkpoint + LoRAs
+    GET  /animate/{unit}/{action}/{dir}   the animate tab feature: the compass, the actions, the frame row
+                                           (per frame its status, attempts, neighbours, prompt), the mirror, the output
+    POST /animate/{unit}/{action}/{dir}/generate   {"frame"} | {"batch": all|keys|rejected|inbetweens}, + prompt,
+                                           draw_from, skeleton, skeleton_frame, count, seed, model -> `anim animate` -> 202 + the run
+    POST /animate/{unit}/{action}/{dir}/frames      {"after"}: add an in-between after frame `after` (0: first)
+    PUT  /animate/{unit}/{action}/{dir}/frames/{id} {"key", "phase"} and/or {"current"}: mark / un-mark, show an attempt
+    DELETE /animate/{unit}/{action}/{dir}/frames/{id}   take the frame out of the row (its attempts are kept)
+    POST /animate/{unit}/{action}/{dir}/frames/{id}/approve  {"index"?}   approve the current attempt (or that one)
+    POST /animate/{unit}/{action}/{dir}/frames/{id}/reject   {"index"?}   reject it
+    POST /animate/{unit}/{action}/{dir}/approve-reviewed      every frame to review -> approved
+    POST /animate/{unit}/{action}/{dir}/mirror      flip the partner direction's frames in (no GPU; to review) + `warning`
+    POST /animate/{unit}/{action}/{dir}/output      {"replace_job"?}: the approved frames -> work/<unit>_<verb>[_<dir>]/
+    PUT  /animate/{unit}/{action}/{dir}/attempts/{id}/{index}  {"hidden": bool}; DELETE deletes a hidden attempt's PNG
+    PUT  /animate/{unit}/{action}/{dir}/attempts/{id}/{index}/image    the editor's Save over that attempt
+    POST /animate/{unit}/{action}/{dir}/attempts/{id}/{index}/inpaint  the canvas (erased = redraw) -> `anim animate --inpaint` -> 202
+    GET  /animate/{unit}/{action}/{dir}/skeleton/{n}.png  scrub frame n of the rig clip at that direction (CPU, cached)
+    GET  /animate/{unit}/{action}/{dir}/game/{id}.png     the frame's current attempt at game size (CPU, cached)
     GET  /models                           the model registry by family and role (?probe=1 asks ComfyUI what is installed)
     GET  /health                           {"ok": true, "work_dir": ..., "comfyui": reachable?}
     GET  /                                 web/dist/ when built, else the jobs page
@@ -66,6 +85,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from anim import __version__, comfy, config, curation, models_lock, palettekit
+from anim.api import animate as animate_api
 from anim.api import concept as concept_api
 from anim.api import jobs as jobs_api
 from anim.api import pages, settings
@@ -74,7 +94,8 @@ from anim.api.runs import RunManager, RunRefused
 from anim.job import Job
 from anim.stages import concept as concept_stage
 from anim.stages import export as export_stage
-from anim.stages import turnaround as turnaround_stage
+from anim.stages import animate as animate_stage
+from anim.stages import matrix as matrix_stage
 from anim.stages.review import ReviewApp
 
 
@@ -190,6 +211,86 @@ class ConceptRequest(BaseModel):
         return args
 
 
+class AnimateRequest(BaseModel):
+    """`POST /animate/{unit}/{action}/{dir}/generate` (the animate tab
+    feature): one `frame` (its id, number or phase), or a `batch`. The rest
+    are `anim animate`'s flags by their `--help` names."""
+
+    frame: str | None = None
+    batch: str | None = None
+    prompt: str | None = None
+    draw_from: str | None = None
+    skeleton: bool | None = None
+    skeleton_frame: int | None = Field(default=None, ge=0)
+    count: int | None = Field(default=None, ge=1, le=4)
+    seed: int | None = None
+    model: str | None = None
+    loras: list[str | dict[str, Any]] | None = None
+    force: bool = False
+
+    def args(self, unit: str, action: str, direction: str) -> dict[str, Any]:
+        args: dict[str, Any] = {"slug": unit, "action": action, "direction": direction}
+        if self.batch is not None:
+            if self.frame:
+                raise HTTPException(400, "give a `frame` or a `batch`, not both")
+            if self.batch not in animate_stage.BATCHES:
+                raise HTTPException(400, f"batch is one of {list(animate_stage.BATCHES)}")
+            args["batch"] = self.batch
+        elif self.frame:
+            args["frame"] = str(self.frame)
+            if self.prompt and self.prompt.strip():
+                args["prompt"] = self.prompt.strip()
+            if self.skeleton_frame is not None:
+                args["skeleton_frame"] = self.skeleton_frame
+        else:
+            raise HTTPException(400, "give a `frame` or a `batch`")
+        if self.draw_from:
+            if self.draw_from not in config.ANIMATE_DRAW_FROM:
+                raise HTTPException(400, f"draw_from is one of {list(config.ANIMATE_DRAW_FROM)}")
+            args["draw_from"] = self.draw_from
+        if self.skeleton is not None and "skeleton_frame" not in args:
+            args["skeleton"] = bool(self.skeleton)
+        if self.count is not None:
+            args["count"] = self.count
+        if self.seed is not None:
+            args["seed"] = self.seed
+        if self.model:
+            args["model"] = self.model
+        if self.loras is not None:
+            specs = []
+            for spec in self.loras:
+                if isinstance(spec, dict):
+                    file = str(spec.get("file") or "").strip()
+                    if not file:
+                        raise HTTPException(400, "a LoRA needs a `file`")
+                    strength = spec.get("strength")
+                    specs.append(f"{file}:{strength}" if strength is not None else file)
+                else:
+                    specs.append(str(spec))
+            args["lora"] = specs
+        if self.force:
+            args["force"] = True
+        return args
+
+
+class FrameAddRequest(BaseModel):
+    after: int = Field(ge=0)
+
+
+class FramePutRequest(BaseModel):
+    key: bool | None = None
+    phase: str | None = None
+    current: int | None = None
+
+
+class VerdictRequest(BaseModel):
+    index: int | None = None
+
+
+class OutputRequest(BaseModel):
+    replace_job: bool = False
+
+
 class HiddenRequest(BaseModel):
     hidden: bool = True
 
@@ -198,6 +299,16 @@ class PickRequest(BaseModel):
     index: int
     parts: str | None = None
     avoid: str | None = None
+
+
+class ViewPickRequest(BaseModel):
+    """`POST /concept/{unit}/views/{view}/pick`. Either an attempt of this
+    view (`index`), or the mirrored view feature's `mirror: true`, which
+    derives it from its accepted partner and needs no index - the picture is
+    not one of this view's attempts."""
+
+    index: int | None = None
+    mirror: bool = False
 
 
 class DefaultsRequest(BaseModel):
@@ -533,22 +644,27 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
                                      f"{{\"unit\": \"{unit}\"}}}}")
         return row
 
-    # --- the turnaround feature -------------------------------------------
-    @app.get("/turnaround/{unit}")
-    def get_turnaround(unit: str) -> dict[str, Any]:
-        """What `anim turnaround <unit>` recorded: the state file with, per
-        direction, its status, seconds and the URLs of the still, the raw
-        clip frame, the control frame, the skeleton and the depth through
-        the frame-set routes above. The board reads this to show the eight
-        stills as the thing the `turnaround` gate accepts. A turnaround runs
-        like any stage: `POST /jobs {"stage": "turnaround", "args": {"unit": ...}}`."""
+    # --- the action matrix feature ----------------------------------------
+    @app.get("/matrix/{unit}")
+    def get_matrix(unit: str) -> dict[str, Any]:
+        """The matrix: every planned (action x direction) cell with its status,
+        its prerequisite verdict and the URLs of its finished frames, plus the
+        seed and the #277 cap.
+
+        Answers before anything has run - the Matrix tab greys what it cannot
+        generate on first load - so there is no "no matrix yet" 404; only a
+        name that is not a unit slug is one. A matrix RUNS like any other
+        stage: `POST /jobs {"stage": "matrix", "args": {"unit": ...,
+        "actions": "attack,walk", "dirs": "s0,s90"}}`, which already carries
+        the 423 gate, the one-GPU-at-a-time 409 and argparse's own 400 for a
+        bad selection. A second POST endpoint here would only re-implement
+        those three refusals.
+        """
         if not jobs_api.valid_name(unit):
             raise HTTPException(404, f"{unit!r} is not a unit slug")
-        row = turnaround_stage.listing(unit, work_dir)
+        row = matrix_stage.listing(unit, work_dir)
         if row is None:
-            raise HTTPException(404, f"no turnaround of {unit!r} yet; POST /jobs "
-                                     f"{{\"stage\": \"turnaround\", \"args\": "
-                                     f"{{\"unit\": \"{unit}\"}}}}")
+            raise HTTPException(404, f"no unit {unit!r}")
         return row
 
     # --- the concept generation feature -----------------------------------
@@ -614,18 +730,39 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
         return _concept_state(unit)
 
     @app.post("/concept/{unit}/views/{view}/pick")
-    def pick_concept_view(unit: str, view: str, body: PickRequest) -> dict[str, Any]:
-        """Accept one view attempt for the turnaround: `--pick-view view=NN`."""
+    def pick_concept_view(unit: str, view: str, body: ViewPickRequest) -> dict[str, Any]:
+        """Accept one view of the base: `--pick-view view=NN`, or with
+        `mirror: true` the mirrored view feature's `--mirror-view view` - the
+        horizontal flip of its accepted partner, no GPU.
+
+        One route rather than a sibling: both ways END in the same thing, one
+        accepted view under `<unit>_base/render/view_<view>.png` with the
+        curation step set, and the Concept tab already posts here. A second
+        endpoint would have had to repeat the slug check, the view check and
+        the refusal mapping to say "the other kind of accept".
+
+        A mirror's `warning` (the handedness line) rides back on the state so
+        the tab can show it; 400 carries the refusal - no partner, or a
+        partner nobody has accepted.
+        """
         if not jobs_api.valid_name(unit):
             raise HTTPException(404, f"{unit!r} is not a unit slug")
         if view not in config.CONCEPT_VIEWS:
             raise HTTPException(404, f"no view {view!r}; one of {list(config.CONCEPT_VIEWS)}")
+        warning: str | None = None
         try:
-            concept_stage.pick_view(unit, {view: body.index}, work_dir=work_dir)
+            if body.mirror:
+                warning = concept_stage.mirror_view(unit, [view], work_dir=work_dir,
+                                                    log=lambda _line: None)["warning"]
+            elif body.index is None:
+                raise HTTPException(400, "give an attempt `index`, or `mirror: true` to "
+                                         "derive this view from its accepted partner")
+            else:
+                concept_stage.pick_view(unit, {view: body.index}, work_dir=work_dir)
         except (ValueError, FileNotFoundError) as exc:
             raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
                                 str(exc)) from None
-        return _concept_state(unit)
+        return {**_concept_state(unit), "warning": warning}
 
     def _attempt_ref(unit: str, target: str, index: int) -> str:
         if not jobs_api.valid_name(unit):
@@ -728,6 +865,232 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
         except (ValueError, models_lock.RegistryError) as exc:
             raise HTTPException(400, str(exc)) from None
         return _concept_state(unit)
+
+    # --- the animate tab feature ------------------------------------------
+    def _animate_cell(unit: str, action: str, direction: str) -> tuple[str, str]:
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        try:
+            return (animate_stage.action_name(action), animate_stage.direction_name(direction))
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+
+    def _animate_state(unit: str, action: str, direction: str) -> dict[str, Any]:
+        action, direction = _animate_cell(unit, action, direction)
+        row = animate_api.state(unit, action, direction, work_dir)
+        if row is None:
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        return row
+
+    def _animate_call(call: Any, *args: Any, **kwargs: Any) -> Any:
+        try:
+            return call(*args, **kwargs)
+        except (ValueError, FileNotFoundError, palettekit.PaletteError) as exc:
+            raise HTTPException(404 if isinstance(exc, FileNotFoundError) else 400,
+                                str(exc)) from None
+
+    def _animate_run(args: dict[str, Any], response: Response) -> Any:
+        locked = _gate("animate", args, None)
+        if locked is not None:
+            return locked
+        try:
+            run = manager.start("animate", args=args)
+        except RunRefused as exc:
+            return JSONResponse(status_code=exc.status,
+                                content={"error": str(exc), **exc.extra})
+        response.headers["Location"] = f"/runs/{run.id}"
+        return run.record()
+
+    @app.get("/animate/{unit}/{action}/{direction}")
+    def get_animate(unit: str, action: str, direction: str) -> dict[str, Any]:
+        """The compass, the actions with their frame counts, the frame row
+        with each frame's status, attempts and neighbouring keyframes, the
+        rig clip, the mirror offer and the output."""
+        return _animate_state(unit, action, direction)
+
+    @app.post("/animate/{unit}/{action}/{direction}/generate", status_code=202)
+    def generate_animate(unit: str, action: str, direction: str, body: AnimateRequest,
+                         response: Response) -> Any:
+        """`anim animate ...` in the background: one frame, or a batch (Generate
+        all's two steps, keyframes only, the rejected, the in-betweens). 423
+        while the base gate is pending, 409 while the GPU is busy. A frame
+        that may not be drawn - the view is not accepted, a neighbour keyframe
+        is not approved - is refused here with 400, before the run."""
+        action, direction = _animate_cell(unit, action, direction)
+        args = body.args(unit, action, direction)
+        locked = _gate("animate", args, None)
+        if locked is not None:
+            return locked
+        if body.frame:
+            _job, record = animate_stage.open_job(unit, action, direction, work_dir,
+                                                  create=False)
+            position = _animate_call(animate_stage.find_frame, record, body.frame)
+            frame = record["frames"][position]
+            how = body.draw_from or animate_stage.default_draw_from(frame)
+            job = Job.open(animate_stage.job_name(unit, action, direction), work_dir)
+            view = (_animate_call(animate_stage.reference, unit, direction, work_dir)
+                    if how in ("view", "both") else None)
+            images = _animate_call(animate_stage.resolve_draw_from, record, job, position,
+                                   how, view)
+            skeleton = body.skeleton_frame is not None or body.skeleton is True
+            if body.skeleton is None and body.skeleton_frame is None:
+                try:
+                    animate_stage.rig_clip(action)
+                    skeleton = True
+                except (ValueError, FileNotFoundError):
+                    skeleton = False
+            if len(images) + int(skeleton) > config.ANIMATE_MAX_IMAGES:
+                raise HTTPException(400, f"{len(images) + int(skeleton)} images; Qwen-Image-Edit "
+                                         f"takes {config.ANIMATE_MAX_IMAGES} - untick the "
+                                         f"skeleton, or draw from the keys or the view alone")
+        return _animate_run(args, response)
+
+    @app.post("/animate/{unit}/{action}/{direction}/frames")
+    def add_animate_frame(unit: str, action: str, direction: str,
+                          body: FrameAddRequest) -> dict[str, Any]:
+        action, direction = _animate_cell(unit, action, direction)
+        row = _animate_call(animate_stage.add_frame, unit, action, direction, body.after,
+                            work_dir=work_dir)
+        return {**_animate_state(unit, action, direction), "added": row["id"]}
+
+    @app.put("/animate/{unit}/{action}/{direction}/frames/{frame}")
+    def put_animate_frame(unit: str, action: str, direction: str, frame: str,
+                          body: FramePutRequest) -> dict[str, Any]:
+        """Mark / un-mark a keyframe (`key`, `phase`), and/or make attempt
+        `current` the one the frame shows."""
+        action, direction = _animate_cell(unit, action, direction)
+        if body.key is None and body.current is None:
+            raise HTTPException(400, "give `key` (+ `phase`) and/or `current`")
+        if body.key is not None:
+            _animate_call(animate_stage.set_key, unit, action, direction, frame, key=body.key,
+                          phase=body.phase, work_dir=work_dir)
+        if body.current is not None:
+            _animate_call(animate_stage.select, unit, action, direction, frame, body.current,
+                          work_dir=work_dir)
+        return _animate_state(unit, action, direction)
+
+    @app.delete("/animate/{unit}/{action}/{direction}/frames/{frame}")
+    def delete_animate_frame(unit: str, action: str, direction: str,
+                             frame: str) -> dict[str, Any]:
+        action, direction = _animate_cell(unit, action, direction)
+        _animate_call(animate_stage.remove_frame, unit, action, direction, frame,
+                      work_dir=work_dir)
+        return _animate_state(unit, action, direction)
+
+    @app.post("/animate/{unit}/{action}/{direction}/frames/{frame}/{verdict}")
+    def judge_animate_frame(unit: str, action: str, direction: str, frame: str,
+                            verdict: str, body: VerdictRequest | None = None) -> dict[str, Any]:
+        """Approve or reject the frame's current attempt (or `index`). The
+        approval that completes the row writes the finished frames."""
+        action, direction = _animate_cell(unit, action, direction)
+        state = {"approve": "approved", "reject": "rejected"}.get(verdict)
+        if state is None:
+            raise HTTPException(404, f"a frame is approved or rejected, not {verdict!r}")
+        _animate_call(animate_stage.judge, unit, action, direction, frame, state,
+                      index=(body.index if body else None), work_dir=work_dir,
+                      palette=settings.palette_path(work_dir))
+        return _animate_state(unit, action, direction)
+
+    @app.post("/animate/{unit}/{action}/{direction}/approve-reviewed")
+    def approve_reviewed(unit: str, action: str, direction: str) -> dict[str, Any]:
+        action, direction = _animate_cell(unit, action, direction)
+        ids = _animate_call(animate_stage.approve_reviewed, unit, action, direction,
+                            work_dir=work_dir, palette=settings.palette_path(work_dir))
+        return {**_animate_state(unit, action, direction), "approved": ids}
+
+    @app.post("/animate/{unit}/{action}/{direction}/mirror")
+    def mirror_animate(unit: str, action: str, direction: str) -> dict[str, Any]:
+        """The partner direction's frames, flipped, as new attempts to review.
+        No GPU. Always a press; the handedness warning rides back."""
+        action, direction = _animate_cell(unit, action, direction)
+        result = _animate_call(animate_stage.mirror, unit, action, direction,
+                               work_dir=work_dir)
+        return {**_animate_state(unit, action, direction), "warning": result["warning"],
+                "mirrored": result["frames"]}
+
+    @app.post("/animate/{unit}/{action}/{direction}/output")
+    def output_animate(unit: str, action: str, direction: str,
+                       body: OutputRequest | None = None) -> dict[str, Any]:
+        action, direction = _animate_cell(unit, action, direction)
+        result = _animate_call(animate_stage.output, unit, action, direction,
+                               replace_job=bool(body and body.replace_job), work_dir=work_dir,
+                               palette=settings.palette_path(work_dir))
+        return {**_animate_state(unit, action, direction), "written": result}
+
+    @app.put("/animate/{unit}/{action}/{direction}/attempts/{frame}/{index:int}")
+    def hide_animate_attempt(unit: str, action: str, direction: str, frame: str, index: int,
+                             body: HiddenRequest) -> dict[str, Any]:
+        action, direction = _animate_cell(unit, action, direction)
+        _animate_call(animate_stage.hide, unit, action, direction, f"{frame}:{index:02d}",
+                      hidden=body.hidden, work_dir=work_dir)
+        return _animate_state(unit, action, direction)
+
+    @app.delete("/animate/{unit}/{action}/{direction}/attempts/{frame}/{index:int}")
+    def delete_animate_file(unit: str, action: str, direction: str, frame: str,
+                            index: int) -> dict[str, Any]:
+        action, direction = _animate_cell(unit, action, direction)
+        _animate_call(animate_stage.delete_file, unit, action, direction,
+                      f"{frame}:{index:02d}", work_dir=work_dir)
+        return _animate_state(unit, action, direction)
+
+    @app.put("/animate/{unit}/{action}/{direction}/attempts/{frame}/{index:int}/image")
+    async def replace_animate_image(unit: str, action: str, direction: str, frame: str,
+                                    index: int, request: Request) -> dict[str, Any]:
+        """The editor's Save over one attempt (the retouch feature's
+        `replace`, on a frame's store). A judged attempt goes back to review."""
+        action, direction = _animate_cell(unit, action, direction)
+        data = await request.body()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(415, "the body is not a PNG")
+        row = _animate_call(animate_stage.replace, unit, action, direction,
+                            f"{frame}:{index:02d}", data, work_dir=work_dir)
+        return {**_animate_state(unit, action, direction), "edited": row}
+
+    @app.post("/animate/{unit}/{action}/{direction}/attempts/{frame}/{index:int}/inpaint",
+              status_code=202)
+    async def inpaint_animate(unit: str, action: str, direction: str, frame: str, index: int,
+                              request: Request, response: Response, prompt: str | None = None,
+                              strength: float | None = None, seed: int | None = None) -> Any:
+        """The retouch feature's masked redraw on a frame's attempt: the canvas
+        is stashed under the job and `anim animate --inpaint` redraws it
+        through the run manager."""
+        action, direction = _animate_cell(unit, action, direction)
+        data = await request.body()
+        if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise HTTPException(415, "the body is not a PNG")
+        ref = f"{frame}:{index:02d}"
+        mask_path = _animate_call(animate_stage.stash_canvas, unit, action, direction, ref,
+                                  data, work_dir=work_dir)
+        args: dict[str, Any] = {"slug": unit, "action": action, "direction": direction,
+                                "inpaint": ref, "mask": str(mask_path)}
+        if prompt and prompt.strip():
+            args["prompt"] = prompt.strip()
+        if strength is not None:
+            args["strength"] = strength
+        if seed is not None:
+            args["seed"] = seed
+        return _animate_run(args, response)
+
+    @app.get("/animate/{unit}/{action}/{direction}/skeleton/{frame:int}.png")
+    def animate_skeleton(unit: str, action: str, direction: str, frame: int) -> FileResponse:
+        """One scrub frame of the rig clip at this direction's yaw, drawn by the
+        pose renderer on the CPU; the whole clip is rendered on the first ask
+        and cached under the animate job."""
+        action, direction = _animate_cell(unit, action, direction)
+        path = _animate_call(animate_stage.skeleton_file, unit, action, direction, frame,
+                             work_dir=work_dir)
+        return FileResponse(path, media_type="image/png",
+                            headers={"Cache-Control": "no-cache"})
+
+    @app.get("/animate/{unit}/{action}/{direction}/game/{frame}.png")
+    def animate_game(unit: str, action: str, direction: str, frame: str) -> FileResponse:
+        """The frame's current attempt at game size: the pipeline's own
+        matte, downscale and palette snap, cached by the source's hash."""
+        action, direction = _animate_cell(unit, action, direction)
+        path = _animate_call(animate_stage.game_file, unit, action, direction, frame,
+                             work_dir=work_dir, palette=settings.palette_path(work_dir))
+        return FileResponse(path, media_type="image/png",
+                            headers={"Cache-Control": "no-cache"})
 
     @app.get("/models")
     def get_models(probe: bool = False) -> dict[str, Any]:

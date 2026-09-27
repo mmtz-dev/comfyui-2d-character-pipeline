@@ -92,6 +92,15 @@ per stage per cell (rig / gpu / post) and the service's VRAM after the GPU
 stage are in bakeoff.json and on the page. A cell that fails is recorded with
 its error and the others still run - one bad cell must not cost the page.
 
+AND SO THE STAGE REPORTS ITS TALLY (2026-09-24). Carrying on past a failed cell
+used to mean exiting 0 whatever came of the run, which read as `done` at 100%
+in the studio - the bug `anim.outcome` documents, found on one batch stage and
+fixed for all of them at once. `bakeoff.json` now carries `summary`,
+the last line of the run is `outcome: done=1 failed=3 blocked=0 of=4`, and the
+exit code is 0 only when every selected cell is done (3 when some are, 4 when
+none are). `--page-only` rebuilds the page from disk without running a cell, so
+it reports no tally and exits 0.
+
 WHAT IT DOES NOT DO. It does not publish, does not touch OpenProject, does not
 change `pick`, `clip`, `strip`, `render` or `post` - every cell is those
 stages called as a library, and every cell job can be re-run by hand with
@@ -113,7 +122,7 @@ from typing import Any, Callable, Sequence
 import numpy as np
 from PIL import Image
 
-from anim import comfy, config, partkit, posekit, rigkit
+from anim import comfy, config, outcome, partkit, posekit, rigkit
 from anim.job import Job
 from anim.stages import clip as clip_stage
 from anim.stages import pick as pick_stage
@@ -698,6 +707,9 @@ def bakeoff(unit: str, action: str, *, cells: Sequence[str] | None = None,
     if unknown:
         raise ValueError(f"unknown cell(s) {sorted(unknown)}; the plan is "
                          f"{[c.name for c in planned]}")
+    # `plan` stays all four cells - the page draws four rows whatever this call
+    # asked for - so the tally counts `selected`, the subset `--cells` named.
+    selected = [c.name for c in planned if c.name in wanted]
 
     root = Job.open(bakeoff_name(unit, action), work_dir)
     root.root.mkdir(parents=True, exist_ok=True)
@@ -739,25 +751,35 @@ def bakeoff(unit: str, action: str, *, cells: Sequence[str] | None = None,
                     f"one figure {m['one_figure']['count']}/{m['one_figure']['of']}")
             else:
                 log(f"  {cell.name}: FAILED after {record['seconds']} s - {record['error']}")
-            state = {"schema": BAKEOFF_SCHEMA, "unit": unit, "action": action,
-                     "verb": verb, "budget": budget, "seed": seed, "matte": matte,
-                     "parts_from": str(parts_from) if parts_from else None,
-                     "routes": ROUTES, "phases": list(PHASES),
-                     "phase_keys": list(PHASE_KEYS), "updated": _now(),
-                     "plan": [c.name for c in planned], "cells": records}
+            state = _state(unit, action, verb, budget, seed, matte, parts_from,
+                           planned, selected, records)
             write_json_in_place(state_path, state)
 
-    state = {"schema": BAKEOFF_SCHEMA, "unit": unit, "action": action, "verb": verb,
-             "budget": budget, "seed": seed, "matte": matte,
-             "parts_from": str(parts_from) if parts_from else None,
-             "routes": ROUTES, "phases": list(PHASES), "phase_keys": list(PHASE_KEYS),
-             "updated": _now(), "plan": [c.name for c in planned], "cells": records}
+    state = _state(unit, action, verb, budget, seed, matte, parts_from,
+                   planned, selected, records)
     write_json_in_place(state_path, state)
     page = build_page(state, root.root / PAGE_DIR_NAME, work_dir=work_dir)
     report = write_text_in_place(root.root / "report.md", report_markdown(state))
     state["page"] = str(page)
     state["report"] = str(report)
     return state
+
+
+def _state(unit: str, action: str, verb: str, budget: int, seed: int, matte: str,
+           parts_from: Path | None, planned: Sequence[Cell],
+           selected: Sequence[str], records: dict[str, Any]) -> dict[str, Any]:
+    """`anim.bakeoff/1`, written after every cell and again at the end.
+
+    `summary` is the shared tally (`anim.outcome`): what the run accomplished in
+    cells, which is what the exit code and the studio's run status are made of.
+    """
+    return {"schema": BAKEOFF_SCHEMA, "unit": unit, "action": action, "verb": verb,
+            "budget": budget, "seed": seed, "matte": matte,
+            "parts_from": str(parts_from) if parts_from else None,
+            "routes": ROUTES, "phases": list(PHASES), "phase_keys": list(PHASE_KEYS),
+            "updated": _now(), "plan": [c.name for c in planned],
+            "selected": list(selected), "cells": records,
+            "summary": outcome.count(records, selected).counts}
 
 
 # ---------------------------------------------------------------------------
@@ -1177,15 +1199,21 @@ def run_stage(args: argparse.Namespace) -> int:
                     parts_from=Path(args.parts_from) if args.parts_from else None,
                     reference=Path(args.reference) if args.reference else None,
                     client=client)
-    done = [n for n in state["plan"] if (state["cells"].get(n) or {}).get("status") == "done"]
-    print(f"bakeoff: {len(done)}/{len(state['plan'])} cell(s) done "
+    tally = outcome.count(state["cells"], state["selected"])
+    done = [n for n in state["selected"]
+            if (state["cells"].get(n) or {}).get("status") == "done"]
+    print(f"bakeoff: {tally.done}/{tally.planned} cell(s) done "
           f"({', '.join(done) or 'none'})")
     print(f"  page   -> {state['page']}")
     print(f"  report -> {state['report']}")
     page_dir = Path(state["page"]).parent
     print(f"  publish: mkdir -p {VISUALS_TARGET} && cp -r {page_dir}/. {VISUALS_TARGET}/")
     print(f"  then:    {VISUALS_URL}")
-    return 0
+    if args.page_only:
+        # A page rebuild ran no cell; it must not inherit the verdict of the
+        # run that produced them.
+        return 0
+    return tally.report()
 
 
 run = run_stage

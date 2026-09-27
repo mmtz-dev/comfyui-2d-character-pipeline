@@ -41,6 +41,7 @@ STAGE_MARKERS: list[tuple[str, Callable[[Job, dict[str, Any]], bool]]] = [
     ("post", lambda job, m: job.report_path.exists()),
     ("publish", lambda job, m: "publish" in m),
     ("concept", lambda job, m: job.candidates_dir.is_dir()),
+    ("animate", lambda job, m: m.get("schema") == "anim.animate/1"),
     ("bakeoff", lambda job, m: "bakeoff" in m or (job.root / "bakeoff.json").exists()),
 ]
 
@@ -53,7 +54,7 @@ FRAME_STAGES: dict[str, Callable[[Job], list[Path]]] = {
     "depth": lambda job: job.depths(),
     "clip": lambda job: job.clip_frames(),
     # What `anim clip` sent as the control video, one PNG per position (the
-    # turnaround page shows it under each still).
+    # Board shows it beside each cell's frames).
     "control": lambda job: _pngs(job.clip_dir / "control"),
     "strip": lambda job: _pngs(job.strip_dir),
     "render": lambda job: _pngs(job.render_dir),
@@ -61,9 +62,11 @@ FRAME_STAGES: dict[str, Callable[[Job], list[Path]]] = {
     "candidates": lambda job: _pngs(job.candidates_dir),
     # The multi-view reference feature: the concept job's views of the base,
     # and the one reference image `anim clip` actually sent (fitted to the
-    # cell) - the turnaround page and the Board show it under each still.
+    # cell) - the Board shows it beside each cell.
     "views": lambda job: _pngs(job.root / "views"),
     "reference": lambda job: [p for p in [job.clip_dir / "reference.png"] if p.exists()],
+    # The animate tab feature: an animate job's attempts, every frame's.
+    "animate": lambda job: _pngs(job.root / "attempts"),
 }
 
 _POST_FRAME = re.compile(r"^(?P<stem>.+)_(?P<n>\d+)\.png$")

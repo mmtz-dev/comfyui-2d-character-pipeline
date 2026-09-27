@@ -13,12 +13,13 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 
 from fixtures.fakecomfy import FakeComfy, canned_png
 
 from anim import comfy, config
 from anim.job import Job
+from anim.stages import base as base_stage
 from anim.stages import clip as clip_stage
 from anim.stages import concept as concept_stage
 
@@ -441,6 +442,23 @@ def test_pick_lands_where_clip_reads_the_base_render(work_dir, workflow_dir):
     assert concept["pick"]["index"] == 1 and concept["pick"]["base_job"] == "knight_base"
 
 
+def test_pick_lays_down_the_front_skeleton_not_the_side_profile(work_dir,
+                                                                workflow_dir):
+    """The front base pose feature. A concept base is never rendered from its
+    skeleton - the picture is copied in - but `post --parts` prompts SAM from
+    it, and what txt2img was asked for is a front view. Prompting from the side
+    profile stacks every joint in a ~66px column, which is what cost
+    hooded_archer its arms, torso and legs."""
+    _concept_job(work_dir, workflow_dir)
+    concept_stage.pick("knight", "01", work_dir=work_dir)
+    base_job = Job.open("knight_base", work_dir)
+    laid = json.loads(base_job.keypoints_path.read_text())
+    front = json.loads(base_stage.STAND_POSE_FRONT.read_text())
+    assert laid["frames"][0]["keypoints"] == front["frames"][0]["keypoints"]
+    side = json.loads(base_stage.STAND_POSE.read_text())
+    assert laid["frames"][0]["keypoints"] != side["frames"][0]["keypoints"]
+
+
 def test_pick_existing_carries_no_generation_record(work_dir, workflow_dir,
                                                     reference_sprite):
     _concept_job(work_dir, workflow_dir, existing=reference_sprite)
@@ -521,7 +539,7 @@ def test_pick_stores_the_parts_phrase_and_the_avoid_phrase(work_dir, workflow_di
 
 def test_the_clip_prompt_reads_the_phrases_off_the_base(work_dir, workflow_dir):
     """`anim clip` composes the parts prompt and the negative from the base's
-    block (the turnaround's clips inherit it); a base without one is the old
+    block (the matrix's clips inherit it); a base without one is the old
     prompt, and the record says which."""
     _concept_job(work_dir, workflow_dir)
     concept_stage.pick("knight", "01", parts=PARTS, avoid="bare head", work_dir=work_dir)
@@ -604,6 +622,42 @@ def test_views_render_the_base_from_each_side_through_the_edit_path(work_dir, wo
         config.concept_view_names("under")
 
 
+def test_a_group_keyword_names_the_whole_group():
+    """The advanced views sweep feature: `--views advanced` is what the tab's
+    sweep button sends, so a script can say exactly what the button says."""
+    assert config.concept_view_names("advanced") == list(config.CONCEPT_ADVANCED_VIEWS)
+    assert config.concept_view_names("advanced") == ["right", "back_right", "back_left",
+                                                    "front_left", "front_right"]
+    assert config.concept_view_names("main") == list(config.CONCEPT_MAIN_VIEWS)
+    assert config.concept_view_names(["advanced"]) == list(config.CONCEPT_ADVANCED_VIEWS)
+    # A group sits in a list beside plain names, and the answer stays in table
+    # order with no duplicate when the two overlap.
+    assert config.concept_view_names("main,front_right") == ["back", "left", "top", "front_right"]
+    assert config.concept_view_names("advanced,right") == list(config.CONCEPT_ADVANCED_VIEWS)
+    # `all` still wins, and an unknown name is still refused - now naming the
+    # groups as well.
+    assert config.concept_view_names("advanced,all") == list(config.CONCEPT_VIEWS)
+    with pytest.raises(ValueError, match="a group"):
+        config.concept_view_names("sideways")
+
+
+def test_the_view_estimate_drops_a_cold_first_render():
+    """The measured estimate behind the sweep's confirm. A cold run's first
+    render is ~190 s while Qwen-Image-Edit loads; taking it into the median
+    would treble the number the owner is shown."""
+    # The real figures recorded for knight_concept: the 200 s one is the cold
+    # first render, so the median is of the five warm ones.
+    assert config.concept_view_seconds([200.6, 7.8, 10.3, 7.9, 10.7, 8.0]) == 8.0
+    # An even count averages the middle pair.
+    assert config.concept_view_seconds([200.6, 10.3, 7.9, 10.7, 8.0]) == 9.2
+    # Nothing but cold renders, and nothing at all, both fall back.
+    assert config.concept_view_seconds([200.6, 164.3]) == config.CONCEPT_VIEW_SECONDS
+    assert config.concept_view_seconds([]) == config.CONCEPT_VIEW_SECONDS
+    # An odd count takes the middle one; a zero or a negative is not a render.
+    assert config.concept_view_seconds([8.0, 10.0, 12.0]) == 10.0
+    assert config.concept_view_seconds([0, -1, 11.0]) == 11.0
+
+
 def test_views_of_a_second_run_keep_the_others_and_append_to_the_asked(work_dir, workflow_dir):
     """The concept generation feature: a view asked for again gets MORE
     attempts; nothing is deleted, the picks stay, --view-prompt is the
@@ -677,14 +731,15 @@ def test_pick_view_writes_into_the_base_and_the_curation_record(work_dir, workfl
     assert result["curation"] == {"back": "accepted", "right": "accepted"}
     record = curation.read("knight", work_dir)
     assert record["views"] == {"back": "accepted", "right": "accepted"}
-    assert record["gates"] == {"base": "accepted", "turnaround": "pending"}
+    assert record["gates"] == {"base": "accepted"}
     # A provisional pick (made for a rerun) lands pending and says so.
     result = concept_stage.pick_view("knight", {"left": 1}, provisional=True, work_dir=work_dir)
     assert result["views"]["left"]["provisional"] is True and result["curation"]["left"] == "pending"
     assert base_job.read_manifest()["concept"]["views"]["left"]["provisional"] is True
     # The board shows the row with the file's URL and the state.
     board = curation.board("knight", work_dir)
-    assert set(board["views"]) == {"back", "right", "left"}
+    assert set(board["views"]) == set(config.CONCEPT_VIEWS), "all eight slots on the ring"
+    assert {v for v, row in board["views"].items() if not row["missing"]} == {"back", "right", "left"}
     assert board["views"]["back"]["state"] == "accepted" and board["views"]["back"]["provisional"] is False
     assert board["views"]["left"]["state"] == "pending" and board["views"]["left"]["provisional"] is True
     assert board["views"]["back"]["url"].startswith("/jobs/knight_base/frames/render/")
@@ -701,6 +756,229 @@ def test_pick_view_writes_into_the_base_and_the_curation_record(work_dir, workfl
     assert curation.read("knight", work_dir)["views"] == {}
     with pytest.raises(ValueError, match="earlier base"):
         concept_stage.pick_view("knight", {"back": 1}, work_dir=work_dir)
+
+
+# ---------------------------------------------------------------------------
+# The mirrored view feature: a view derived by flipping its accepted partner
+# ---------------------------------------------------------------------------
+def _asymmetric(path: Path, tint: int = 40) -> None:
+    """A picture that is obviously NOT its own mirror: a stripe down the left
+    edge only, so a flip moves it to the right edge."""
+    img = Image.new("RGB", (16, 16), (255, 255, 255))
+    ImageDraw.Draw(img).rectangle([0, 0, 3, 15], fill=(tint, 20, 30))
+    img.save(path)
+
+
+def _mirror_ready(work_dir, workflow_dir, partner: str, *, slug: str = "knight",
+                  parts: str = PARTS, accept: bool = True, provisional: bool = False):
+    """`slug` with `partner` rendered, made asymmetric and (unless told not to)
+    accepted - everything `--mirror-view` of the other half of the pair needs."""
+    if slug == "knight":
+        _concept_job(work_dir, workflow_dir)
+    else:
+        with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+            concept_stage.concept(slug, description="a hooded monk", count=1, seed=3,
+                                  client=comfy.ComfyClient(fake.url),
+                                  workflow_dir=workflow_dir, work_dir=work_dir)
+    concept_stage.pick(slug, "00", parts=parts, work_dir=work_dir)
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.render_views(slug, views=partner, count=1, seed=7,
+                                   client=comfy.ComfyClient(fake.url),
+                                   workflow_dir=workflow_dir, work_dir=work_dir,
+                                   log=lambda _: None)
+    source = concept_stage.views_dir(slug, work_dir) / f"{partner}_00.png"
+    _asymmetric(source)
+    if accept:
+        concept_stage.pick_view(slug, {partner: 0}, provisional=provisional,
+                                work_dir=work_dir)
+    return source
+
+
+def test_the_mirror_pairs_come_off_the_compass_and_leave_the_plane_alone():
+    """yaw t flips to 180 - t, so three of the eight views are pairs and the
+    three that look down the symmetry plane have no partner."""
+    assert config.mirror_of("right") == "left" and config.mirror_of("left") == "right"
+    assert config.mirror_of("back_right") == "back_left"
+    assert config.mirror_of("back_left") == "back_right"
+    assert config.mirror_of("front_right") == "front_left"
+    assert config.mirror_of("front_left") == "front_right"
+    for lonely in ("back", "top", config.FRONT_VIEW, "nonsense", ""):
+        assert config.mirror_of(lonely) is None, lonely
+    # Derived from the yaws, so the pairing is exactly "the other camera at
+    # 180 - yaw, same pitch", and it is an involution.
+    for view, partner in config.CONCEPT_MIRROR_PAIRS.items():
+        spec, other = config.CONCEPT_VIEWS[view], config.CONCEPT_VIEWS[partner]
+        assert other["yaw"] == (180 - spec["yaw"]) % 360
+        assert other["elevation"] == spec["elevation"], "a flip never changes the pitch"
+        assert config.CONCEPT_MIRROR_PAIRS[partner] == view
+    assert set(config.mirrorable_views()) == set(config.CONCEPT_MIRROR_PAIRS)
+    assert len(config.mirrorable_views()) == 6, "three pairs, both ways round"
+
+
+@pytest.mark.parametrize("view,partner", sorted(config.CONCEPT_MIRROR_PAIRS.items()))
+def test_a_mirrored_view_is_its_partner_flipped_in_either_direction(
+        view, partner, work_dir, workflow_dir):
+    """All three pairs, both ways: the derived view is the partner's own
+    pixels reversed, byte for byte, and it lands exactly where `--pick-view`
+    would have put it."""
+    _mirror_ready(work_dir, workflow_dir, partner)
+    base_job = Job.open("knight_base", work_dir)
+    concept_stage.mirror_view("knight", view, work_dir=work_dir, log=lambda _: None)
+    out = base_job.render_dir / f"view_{view}.png"
+    with Image.open(base_job.render_dir / f"view_{partner}.png") as src:
+        expected = ImageOps.mirror(src).convert("RGB").tobytes()
+    with Image.open(out) as got:
+        assert got.convert("RGB").tobytes() == expected
+        assert got.convert("RGB").tobytes() != src.convert("RGB").tobytes(), \
+            "the fixture is asymmetric, so the flip has to be a different picture"
+    assert base_job.read_manifest()["concept"]["views"][view]["file"] == f"view_{view}.png"
+
+
+def test_a_mirrored_view_records_where_its_pixels_came_from(work_dir, workflow_dir):
+    """A flip is as traceable as a GPU pass: the entry says it is mirrored,
+    which view it came from, that file and its sha256, and when."""
+    source = _mirror_ready(work_dir, workflow_dir, "left")
+    base_job = Job.open("knight_base", work_dir)
+    result = concept_stage.mirror_view("knight", ["right"], work_dir=work_dir,
+                                       log=lambda _: None)
+    assert result["base_job"] == "knight_base" and set(result["views"]) == {"right"}
+    entry = base_job.read_manifest()["concept"]["views"]["right"]
+    assert entry == result["views"]["right"]
+    assert entry["mirrored"] is True and entry["provisional"] is False
+    assert entry["yaw"] == 0 and entry["file"] == "view_right.png" and entry["picked"]
+    # No candidate and no seed of its own - nothing was sampled for it.
+    assert entry["candidate"] is None and entry["seed"] is None
+    mirror = entry["mirror"]
+    assert mirror["view"] == "left" and mirror["file"] == "view_left.png"
+    assert mirror["how"] == "flip horizontally" and mirror["at"] == entry["picked"]
+    # The source hash is the file on the base, and the entry's own hash is the
+    # flipped bytes: the pair reproduces the picture with no seed at all.
+    from anim.util import sha256_file
+
+    assert mirror["sha256"] == sha256_file(base_job.render_dir / "view_left.png")
+    assert mirror["sha256"] == sha256_file(source), "the accepted copy of the partner"
+    assert entry["sha256"] == sha256_file(base_job.render_dir / "view_right.png")
+    assert entry["sha256"] != mirror["sha256"] and len(entry["sha256"]) == 64
+    assert mirror["candidate"] == 0 and mirror["seed"] == 7
+    # The block keeps the table's compass order, and the sidecar agrees.
+    assert list(base_job.read_manifest()["concept"]["views"]) == ["left", "right"]
+    provenance = json.loads(base_job.provenance_path.read_text())
+    assert provenance["concept"]["views"]["right"]["mirror"]["view"] == "left"
+    # views.json says the view is accepted with no candidate of its own, so the
+    # record of the views and the base cannot disagree about what is accepted.
+    saved = json.loads(concept_stage.views_path("knight", work_dir).read_text())
+    assert saved["views"]["right"]["pick"] == {
+        "index": None, "mirrored": True, "from": "left", "file": "view_left.png",
+        "sha256": entry["sha256"], "provisional": False, "picked": entry["picked"]}
+    assert list(saved["views"]) == ["left", "right"], "compass order"
+    # The curation step, the same one `--pick-view` writes.
+    from anim import curation
+
+    assert result["curation"]["right"] == "accepted"
+    assert curation.read("knight", work_dir)["views"]["right"] == "accepted"
+    # The board's ring and the static page both say it is a flip.
+    board = curation.board("knight", work_dir)
+    assert board["views"]["right"]["mirrored"] is True
+    assert board["views"]["right"]["mirrored_from"] == "left"
+    assert board["views"]["right"]["mirror_of"] == "left"
+    assert board["views"]["left"]["mirrored"] is False
+    assert board["views"]["back"]["mirror_of"] is None
+    assert "the left view, flipped" in Path(result["page"]).read_text(encoding="utf-8")
+
+
+def test_a_view_on_the_symmetry_plane_is_never_mirrorable(work_dir, workflow_dir):
+    """back, top and front look straight down the plane: flipping them gives
+    the same facing, so the refusal names the six that are pairs."""
+    _mirror_ready(work_dir, workflow_dir, "left")
+    for lonely in ("back", "top"):
+        with pytest.raises(ValueError, match="no mirror partner") as caught:
+            concept_stage.mirror_view("knight", lonely, work_dir=work_dir)
+        assert "Mirrorable: " in str(caught.value)
+        for name in config.mirrorable_views():
+            assert name in str(caught.value)
+        assert f"--views {lonely}" in str(caught.value), "it says how to render it instead"
+    with pytest.raises(ValueError, match="no view 'front'"):
+        concept_stage.mirror_view("knight", config.FRONT_VIEW, work_dir=work_dir)
+    with pytest.raises(ValueError, match="no view 'under'"):
+        concept_stage.mirror_view("knight", "under", work_dir=work_dir)
+    with pytest.raises(ValueError, match="at least one view"):
+        concept_stage.mirror_view("knight", [], work_dir=work_dir)
+    # Nothing was written for any of them.
+    assert not (Job.open("knight_base", work_dir).render_dir / "view_back.png").exists()
+
+
+def test_a_mirror_needs_its_partner_ACCEPTED_not_merely_drawn(work_dir, workflow_dir):
+    """The matrix's strictness, not the bare reference walk's: `hooded_archer` is four
+    views drawn and none picked, and a mirror must refuse there rather than
+    launder an unjudged attempt into an accepted view."""
+    _mirror_ready(work_dir, workflow_dir, "left", accept=False)
+    base_job = Job.open("knight_base", work_dir)
+    with pytest.raises(ValueError, match="not on the base") as caught:
+        concept_stage.mirror_view("knight", "right", work_dir=work_dir)
+    assert "--views left" in str(caught.value) and "--pick-view left=NN" in str(caught.value)
+    assert not (base_job.render_dir / "view_right.png").exists()
+    # Picked, but provisionally - the curation step is pending, so it is still
+    # a judgement nobody has made.
+    concept_stage.pick_view("knight", {"left": 0}, provisional=True, work_dir=work_dir)
+    with pytest.raises(ValueError, match="is pending, not accepted") as caught:
+        concept_stage.mirror_view("knight", "right", work_dir=work_dir)
+    assert "--pick-view left=NN" in str(caught.value)
+    # And a rejected one.
+    from anim import curation
+
+    curation.set_views("knight", {"left": "rejected"}, work_dir)
+    with pytest.raises(ValueError, match="is rejected, not accepted"):
+        concept_stage.mirror_view("knight", "right", work_dir=work_dir)
+    curation.set_views("knight", {"left": "accepted"}, work_dir)
+    assert concept_stage.mirror_view("knight", "right", work_dir=work_dir,
+                                     log=lambda _: None)["views"]["right"]
+    # A flip of a flip is a round trip: it would only re-derive what is there.
+    with pytest.raises(ValueError, match="itself the flip of"):
+        concept_stage.mirror_view("knight", "left", work_dir=work_dir)
+    # No base at all is the same refusal `--views` gives.
+    with pytest.raises(FileNotFoundError, match="no base job"):
+        concept_stage.mirror_view("orc", "right", work_dir=work_dir)
+
+
+def test_the_handedness_warning_fires_once_and_only_for_handed_gear(work_dir, workflow_dir):
+    """The one trade-off of a flip is the sword hand, so it is said once per
+    invocation - not per view, and not at all for a unit with nothing handed."""
+    _mirror_ready(work_dir, workflow_dir, "left")
+    with FakeComfy(png=canned_png(config.CONCEPT_CELL)) as fake:
+        concept_stage.render_views("knight", views="back_left", count=1, seed=11,
+                                   client=comfy.ComfyClient(fake.url),
+                                   workflow_dir=workflow_dir, work_dir=work_dir,
+                                   log=lambda _: None)
+    _asymmetric(concept_stage.views_dir("knight", work_dir) / "back_left_00.png", tint=90)
+    concept_stage.pick_view("knight", {"back_left": 0}, work_dir=work_dir)
+    logs: list[str] = []
+    result = concept_stage.mirror_view("knight", ["right", "back_right"],
+                                       work_dir=work_dir, log=logs.append)
+    assert set(result["views"]) == {"right", "back_right"}
+    assert sum(1 for line in logs if "handedness" in line) == 1, "once, not per view"
+    assert config.props_for_unit("knight") == ("sword", "shield")
+    assert "sword" in result["warning"] and "shield" in result["warning"]
+    assert "right" in result["warning"] and "back_right" in result["warning"]
+    assert concept_stage.handed_gear("knight", work_dir) == ["sword", "shield"]
+    # A unit with no props and a parts phrase that names nothing handed: the
+    # flip is the whole story, so there is nothing to warn about.
+    _mirror_ready(work_dir, workflow_dir, "left", slug="hooded_monk",
+                  parts="deep hood, long robe, rope belt")
+    assert config.props_for_unit("hooded_monk") == ()
+    assert concept_stage.handed_gear("hooded_monk", work_dir) == []
+    quiet: list[str] = []
+    result = concept_stage.mirror_view("hooded_monk", "right", work_dir=work_dir,
+                                       log=quiet.append)
+    assert result["warning"] is None
+    assert not [line for line in quiet if "handedness" in line]
+    assert [line for line in quiet if "flipped horizontally" in line], "it still says what it did"
+    # A unit the props table says nothing about, whose OWN parts phrase names a
+    # bow, is warned about the bow: the phrase is the only description there is.
+    _mirror_ready(work_dir, workflow_dir, "left", slug="hooded_monk2",
+                  parts="deep hood, short bow")
+    assert concept_stage.handed_gear("hooded_monk2", work_dir) == ["bow"]
+    assert "bow" in concept_stage.mirror_view("hooded_monk2", "right", work_dir=work_dir,
+                                              log=lambda _: None)["warning"]
 
 
 def test_views_need_a_base_and_say_so(work_dir, workflow_dir):
@@ -736,6 +1014,14 @@ def test_the_cli_knows_the_stage():
     args = build_parser().parse_args(["concept", "--unit", "knight", "--pick", "01",
                                       "--parts", "helm, cloak", "--avoid", "bare head"])
     assert args.parts == "helm, cloak" and args.avoid == "bare head"
+    # The mirrored view feature, and the one combination that has no meaning.
+    args = build_parser().parse_args(["concept", "--unit", "knight", "--mirror-view",
+                                      "right", "front_left"])
+    assert args.mirror_view == ["right", "front_left"] and args.pick_view is None
+    args = build_parser().parse_args(["concept", "--unit", "knight", "--mirror-view", "right",
+                                      "--pick-view", "left=00"])
+    with pytest.raises(SystemExit, match="not both"):
+        concept_stage.run_stage(args)
 
 
 # ---------------------------------------------------------------------------
@@ -837,7 +1123,7 @@ def test_edit_sends_the_instruction_through_the_edit_path(work_dir, workflow_dir
     assert graph[comfy.find_node(graph, "output prefix")]["inputs"]["filename_prefix"] \
         == "anim_pipeline/knight_concept/edit/view_pass"
     assert Path(result["page"]).exists() and "edit of left:00" in Path(result["page"]).read_text()
-    # The edited attempt can be picked for the turnaround like any other.
+    # The edited attempt can be picked as the view like any other.
     concept_stage.pick_view("knight", {"left": 1}, work_dir=work_dir)
     assert Job.open("knight_base", work_dir).read_manifest()["concept"]["views"]["left"]["candidate"] == 1
     with pytest.raises(ValueError, match="--instruction"):

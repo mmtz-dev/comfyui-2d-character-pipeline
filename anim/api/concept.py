@@ -80,6 +80,36 @@ def _edited_since_accepted(rows: list[dict[str, Any]], pick: dict[str, Any] | No
     return bool(edited.get("at") and picked and str(edited["at"]) > str(picked))
 
 
+def _recorded_seconds(views_record: dict[str, Any]) -> list[float]:
+    """Every view render this record clocked, in the order it wrote them."""
+    return [c["seconds"] for row in (views_record.get("views") or {}).values()
+            for c in (row.get("candidates") or [])
+            if isinstance(c.get("seconds"), (int, float))]
+
+
+def estimate_seconds(unit: str, work_dir: Path,
+                     views_record: dict[str, Any] | None = None) -> float:
+    """How long one view render takes, for the estimate the tab quotes before
+    a sweep. This unit's own warm median first; failing that every unit's, so
+    a brand-new unit still gets a real number off the runs already on disk;
+    failing that the measured constant."""
+    own = _recorded_seconds(views_record) if views_record is not None else []
+    if not own:
+        own = _recorded_seconds(_views_record(unit, work_dir))
+    warm = [s for s in own if 0 < s < config.CONCEPT_WARM_CUTOFF_S]
+    if not warm:
+        warm = [s for path in sorted(work_dir.glob("*_concept/views/views.json"))
+                for s in _recorded_seconds(read_json(path) or {})
+                if 0 < s < config.CONCEPT_WARM_CUTOFF_S]
+    return config.concept_view_seconds(warm)
+
+
+def _views_record(unit: str, work_dir: Path) -> dict[str, Any]:
+    path = concept_stage.views_path(unit, work_dir)
+    return (concept_stage.migrate_views(read_json(path)) if path.exists()
+            else concept_stage.empty_views(unit))
+
+
 def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
     """Everything the Concept tab shows for one unit, or None when the unit
     is not a slug. A unit with nothing yet answers `exists: false` with empty
@@ -104,9 +134,7 @@ def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
     gates = dict(record["gates"]) if record else {}
     view_states = dict(record.get("views") or {}) if record else {}
 
-    views_json = concept_stage.views_path(unit, work_dir)
-    views_record = (concept_stage.migrate_views(read_json(views_json))
-                    if views_json.exists() else concept_stage.empty_views(unit))
+    views_record = _views_record(unit, work_dir)
     stale_views = bool(views_record.get("base_sha256")) and final is not None and \
         (base_job.render_dir / final).exists() and \
         views_record.get("base_sha256") != concept_stage.sha256_file(base_job.render_dir / final)
@@ -130,6 +158,13 @@ def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
                 row.get("candidates") or [], row.get("pick")),
             "state": view_states.get(view) or ("accepted" if stored else "pending"),
             "accepted_file": stored.get("file"),
+            # The mirrored view feature: the partner this view can be derived
+            # from (null for back and top), and whether the picture the base
+            # carries already is that flip. The tab offers the button off the
+            # first and draws the marker off the second.
+            "mirror_of": config.mirror_of(view),
+            "mirrored": bool(stored.get("mirrored")),
+            "mirrored_from": (stored.get("mirror") or {}).get("view"),
         }
 
     return {
@@ -158,6 +193,10 @@ def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
         },
         "views": views,
         "views_stale": stale_views,
+        # What one view render costs, so the tab can quote a sweep before the
+        # press instead of guessing (the advanced views sweep feature). Warm:
+        # a cold run's first render is CONCEPT_VIEW_COLD_SECONDS on top.
+        "estimate_seconds": estimate_seconds(unit, work_dir, views_record),
         "page": str(concept_stage.views_page_dir(unit, work_dir) / "index.html"),
     }
 

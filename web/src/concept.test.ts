@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Attempt, ConceptState, ConceptView, ModelsListing, RegistryRow, RunRecord } from "./api";
 import {
+  advancedConfirm,
+  advancedSweep,
   attemptCaption,
   busyText,
   choicesFor,
@@ -20,6 +22,8 @@ import {
   sameAsDefault,
   seedFor,
   unitSlug,
+  mirrorOffer,
+  mirroredNote,
   viewGroups,
   visibleAttempts,
   viewLabel,
@@ -32,14 +36,22 @@ const attempt = (index: number, extra: Partial<Attempt> = {}): Attempt => ({
   hidden: false, file_deleted: null, rendered: true, ...extra,
 });
 
+// `mirror_of` is what the API derives from the yaws (config.CONCEPT_MIRROR_PAIRS):
+// the three pairs, and null for the views on the symmetry plane.
+const MIRROR: Record<string, string> = {
+  right: "left", left: "right", back_right: "back_left", back_left: "back_right",
+  front_right: "front_left", front_left: "front_right",
+};
+
 const view = (name: string, group: "main" | "advanced", extra: Partial<ConceptView> = {}): ConceptView => ({
   view: name, yaw: 90, elevation: name === "top" ? "top" : "side", group, prompt: `see ${name}`, default_prompt: `see ${name}`,
-  candidates: [], pick: null, hidden_count: 0, pick_stale: false, state: "pending", accepted_file: null, ...extra,
+  candidates: [], pick: null, hidden_count: 0, pick_stale: false, state: "pending", accepted_file: null,
+  mirror_of: MIRROR[name] ?? null, mirrored: false, mirrored_from: null, ...extra,
 });
 
 const state = (): ConceptState => ({
   unit: "knight", job: "knight_concept", exists: true, cell: [768, 768], locked: null,
-  gates: { base: "accepted", turnaround: "pending" }, defaults: {}, last_seed: 42, parts_phrase: "helm",
+  gates: { base: "accepted" }, defaults: {}, last_seed: 42, parts_phrase: "helm",
   base: { description: "a knight", prompt: "p", sketch: null, candidates: [attempt(0), attempt(1)], pick: 1, hidden_count: 0, pick_stale: false, accepted: true, front_url: "/f.png" },
   views: {
     back: view("back", "main", { candidates: [attempt(0, { source: "views", file: "back_00.png" })] }),
@@ -48,7 +60,7 @@ const state = (): ConceptState => ({
     top: view("top", "main"),
     back_right: view("back_right", "advanced"),
   },
-  views_stale: false, page: "work/_views/knight/index.html",
+  views_stale: false, estimate_seconds: 11, page: "work/_views/knight/index.html",
 });
 
 const form = (extra: Partial<GenerateForm> = {}): GenerateForm => ({
@@ -137,7 +149,7 @@ describe("reduceConcept", () => {
   it("a base pick accepts the gate and clears the views", () => {
     const next = reduceConcept(state(), { type: "pick", index: 0 });
     expect(next.base.pick).toBe(0);
-    expect(next.gates).toEqual({ base: "accepted", turnaround: "pending" });
+    expect(next.gates).toEqual({ base: "accepted" });
     expect(next.views.back!.candidates).toEqual([]);
     expect(next.locked).toBeNull();
     expect(state().views.back!.candidates).toHaveLength(1);
@@ -262,8 +274,163 @@ describe("hiding attempts", () => {
     expect(lockedReason(s, "base", attempt(1))).toMatch(/accepted base/);
     expect(lockedReason(s, "base", attempt(0))).toBeNull();
     const withPick = { ...s, views: { ...s.views, back: { ...s.views.back!, pick: 0 } } };
-    expect(lockedReason(withPick, "back", attempt(0))).toMatch(/turnaround/);
+    expect(lockedReason(withPick, "back", attempt(0))).toMatch(/the matrix reads it/);
     expect(lockedReason(withPick, "back", attempt(1))).toBeNull();
     expect(lockedReason(s, "nope", attempt(0))).toBeNull();
+  });
+});
+
+describe("the mirrored view feature", () => {
+  const accepted = (name: string, group: "main" | "advanced") =>
+    view(name, group, { state: "accepted" as const, accepted_file: `view_${name}.png`, pick: 0 });
+  const withLeft = (): ConceptState => {
+    const s = state();
+    return { ...s, views: { ...s.views, left: accepted("left", "main") } };
+  };
+
+  it("offers the button only for a paired view whose partner is accepted", () => {
+    const offer = mirrorOffer(withLeft(), withLeft().views.right!);
+    expect(offer).toMatchObject({ view: "right", partner: "left", can: true, reason: null });
+    expect(offer!.label).toBe("mirror from Side");
+    expect(offer!.title).toContain("--mirror-view right");
+    expect(offer!.title).toMatch(/no GPU/);
+    expect(offer!.title).toMatch(/sword changes hands/);
+    // Both ways round: the accepted one can be re-derived from the other only
+    // once that other is accepted too.
+    expect(mirrorOffer(withLeft(), withLeft().views.left!)!.can).toBe(false);
+  });
+
+  it("has no button at all for a view on the symmetry plane", () => {
+    const s = withLeft();
+    expect(mirrorOffer(s, s.views.back!)).toBeNull();
+    expect(mirrorOffer(s, s.views.top!)).toBeNull();
+    expect(s.views.back!.mirror_of).toBeNull();
+  });
+
+  it("disables it with the reason when the partner is not accepted", () => {
+    const s = state();
+    // Drawn but never picked onto the base - `hooded_archer`'s gap.
+    const drawn: ConceptState = { ...s, views: { ...s.views, left: view("left", "main", { candidates: [attempt(0)] }) } };
+    const offer = mirrorOffer(drawn, drawn.views.right!)!;
+    expect(offer.can).toBe(false);
+    expect(offer.reason).toMatch(/not on the base yet/);
+    expect(offer.title).toBe(offer.reason);
+    // On the base, but rejected or still pending: a mirror inherits the verdict.
+    const pending: ConceptState = { ...s, views: { ...s.views, left: view("left", "main", { accepted_file: "view_left.png", state: "pending" }) } };
+    expect(mirrorOffer(pending, pending.views.right!)!.reason).toMatch(/is pending, not accepted/);
+    const rejected: ConceptState = { ...s, views: { ...s.views, left: view("left", "main", { accepted_file: "view_left.png", state: "rejected" }) } };
+    expect(mirrorOffer(rejected, rejected.views.right!)!.reason).toMatch(/is rejected, not accepted/);
+    // A partner that is ITSELF this view flipped would only round-trip.
+    const round: ConceptState = { ...s, views: { ...s.views,
+      left: { ...accepted("left", "main"), mirrored: true, mirrored_from: "right" } } };
+    expect(mirrorOffer(round, round.views.right!)!.reason).toMatch(/itself this one flipped/);
+    // A partner the state does not carry at all (an older API, a trimmed set).
+    const none: ConceptState = { ...s, views: { back: s.views.back!, right: s.views.right! } };
+    expect(mirrorOffer(none, none.views.right!)!.reason).toMatch(/no left view to flip/);
+  });
+
+  it("marks a view that is a flip, naming where its pixels came from", () => {
+    const s = withLeft();
+    expect(mirroredNote(s.views.right!)).toBeNull();
+    const flipped = { ...s.views.right!, mirrored: true, mirrored_from: "left",
+                      state: "accepted" as const, accepted_file: "view_right.png" };
+    expect(mirroredNote(flipped)).toBe("mirrored from Side");
+    expect(mirroredNote({ ...flipped, mirrored_from: null })).toBe("mirrored");
+  });
+
+  it("folds the press in before the POST answers: accepted with no pick of its own", () => {
+    const s = withLeft();
+    const next = reduceConcept(s, { type: "mirrorView", view: "right" });
+    expect(next.views.right).toMatchObject({ state: "accepted", pick: null, mirrored: true, mirrored_from: "left" });
+    expect(s.views.right!.mirrored).toBe(false);
+    // Accepting one of the view's OWN attempts undoes the mirror.
+    const back = reduceConcept(next, { type: "pickView", view: "right", index: 1 });
+    expect(back.views.right).toMatchObject({ state: "accepted", pick: 1, mirrored: false, mirrored_from: null });
+    // A view with no partner, and a name that is not a view, change nothing.
+    expect(reduceConcept(s, { type: "mirrorView", view: "back" })).toBe(s);
+    expect(reduceConcept(s, { type: "mirrorView", view: "sideways" })).toBe(s);
+  });
+});
+
+describe("advancedSweep", () => {
+  // The fold as the API really sends it: all five advanced views.
+  const withFold = (extra: Record<string, Partial<ConceptView>> = {}): ConceptState => {
+    const s = state();
+    const names = ["right", "back_right", "back_left", "front_left", "front_right"];
+    return {
+      ...s,
+      views: {
+        ...s.views,
+        ...Object.fromEntries(names.map((n) => [n, view(n, "advanced", extra[n] ?? {})])),
+      },
+    };
+  };
+  const run = (extra: Partial<RunRecord> = {}) =>
+    ({ id: "r1", stage: "concept", status: "running", percent: 40, ...extra }) as RunRecord;
+
+  it("sweeps every advanced view a unit has not accepted, in compass order", () => {
+    const sweep = advancedSweep(withFold(), null);
+    expect(sweep.views).toEqual(["right", "back_right", "back_left", "front_left", "front_right"]);
+    expect(sweep.label).toBe("All advanced (5)");
+    expect(sweep.blocked).toBeNull();
+  });
+
+  it("leaves an accepted view alone, so a second press tops up the rest", () => {
+    const sweep = advancedSweep(withFold({ right: { pick: 0 }, front_left: { pick: 2 } }), null);
+    expect(sweep.views).toEqual(["back_right", "back_left", "front_right"]);
+    expect(sweep.label).toBe("All advanced (3)");
+    expect(sweep.blocked).toBeNull();
+  });
+
+  it("a mirrored view counts as unfinished until one of its own is accepted", () => {
+    // The mirrored view feature accepts a view with no pick of its own; the
+    // sweep would draw it for real, which is the point of pressing it.
+    const mirrored = { mirrored: true, mirrored_from: "left", state: "accepted" as const };
+    expect(advancedSweep(withFold({ right: mirrored }), null).views).toContain("right");
+  });
+
+  it("the base gate wins over everything else", () => {
+    const locked = { ...withFold(), locked: "the base is not accepted yet" };
+    expect(advancedSweep(locked, null).blocked).toBe("the base is not accepted yet");
+    // ... even while a run holds the card.
+    expect(advancedSweep(locked, run()).blocked).toBe("the base is not accepted yet");
+  });
+
+  it("a live run blocks it, a finished one does not", () => {
+    expect(advancedSweep(withFold(), run()).blocked).toBe("the GPU is busy with concept r1; one at a time");
+    expect(advancedSweep(withFold(), run({ status: "done" })).blocked).toBeNull();
+  });
+
+  it("says so when there is nothing left to render", () => {
+    const every = Object.fromEntries(
+      ["right", "back_right", "back_left", "front_left", "front_right"].map((n) => [n, { pick: 0 }]));
+    const sweep = advancedSweep(withFold(every), null);
+    expect(sweep.views).toEqual([]);
+    expect(sweep.label).toBe("All advanced (0)");
+    expect(sweep.blocked).toMatch(/every advanced view is accepted/);
+  });
+
+  it("the confirm names the views, the render total, the warm estimate and the cold penalty", () => {
+    const s = withFold();
+    const text = advancedConfirm(s, advancedSweep(s, null).views, 2);
+    expect(text).toContain("Generate 5 advanced views of knight");
+    expect(text).toContain("right, back_right, back_left, front_left, front_right");
+    expect(text).toContain("2 attempts each - 10 renders at about 11 s warm");
+    expect(text).toContain("roughly 2 min");      // 10 x 11 s
+    expect(text).toContain("Add ~3 min");          // the cold Qwen-Image-Edit load
+    expect(text).toContain("Cancel keeps the attempts that finished");
+  });
+
+  it("the confirm quotes the unit's own measured seconds, and counts one view singly", () => {
+    const s = { ...withFold(), estimate_seconds: 30 };
+    const text = advancedConfirm(s, ["right"], 1);
+    expect(text).toContain("Generate 1 advanced view of knight");
+    expect(text).toContain("1 attempt each - 1 render at about 30 s warm");
+    expect(text).toContain("roughly 1 min");
+  });
+
+  it("clamps a silly count the same way every other press does", () => {
+    const s = withFold();
+    expect(advancedConfirm(s, ["right"], 99)).toContain(`${4} attempts each - 4 renders`);
   });
 });

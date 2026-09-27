@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from anim import comfy, config, partkit
+from anim import comfy, config, outcome, partkit
 from anim.job import Job
 from anim.stages import bakeoff as bakeoff_stage
 from anim.stages import clip as clip_stage
@@ -242,6 +242,14 @@ def test_a_failed_cell_is_recorded_and_the_page_still_builds(ran):
     assert record["status"] == "failed" and "ComfyError" in record["error"]
     assert Path(state["page"]).exists()
     assert "failed" in Path(state["page"]).read_text(encoding="utf-8")
+    # The page still builds, and the run still says it accomplished nothing:
+    # `summary` counts the `--cells` subset, `plan` keeps every row the page
+    # draws (the fixture's plan is one rig, so two of the four).
+    assert state["selected"] == ["V-kaykit"]
+    assert state["plan"] == ["V-kaykit", "K-kaykit"]
+    assert state["summary"] == {"done": 0, "failed": 1, "blocked": 0, "of": 1}
+    assert outcome.count(state["cells"], state["selected"]).exit_code == \
+        outcome.EXIT_NOTHING
 
 
 def test_unknown_cells_are_refused(work_dir):

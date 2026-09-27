@@ -52,7 +52,22 @@ class ComfyError(RuntimeError):
 
 
 class ComfyUnreachable(ComfyError):
-    """The service did not answer at all - almost always "the daemon is off"."""
+    """The service did not answer at all - almost always "it is not running"."""
+
+
+# How the owner starts the GPU image service, in ONE place. This sentence was
+# copied into render, clip and run, so when the service moved off the native
+# Docker daemon onto rootless Podman (2026-09-25) all three told the owner to
+# run `sudo systemctl start docker` against an engine that is off-limits here.
+# Anything that catches ComfyUnreachable should print this rather than its own.
+START_HINT = ("Start it with:\n"
+              "    podman-compose -f tools/anim-pipeline/gpu/compose.yml up -d")
+
+
+def unreachable(base_url: str, exc: object) -> ComfyUnreachable:
+    """The standard "it is not answering" error, hint included."""
+    return ComfyUnreachable(
+        f"the GPU image service is not answering at {base_url}: {exc}\n{START_HINT}")
 
 
 @dataclass

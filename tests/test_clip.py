@@ -208,7 +208,7 @@ def test_a_short_batch_from_the_service_is_an_error(posed_job, batch_pngs,
 
 def test_clip_without_the_gpu_says_how_to_start_it(posed_job, workflow_dir):
     client = comfy.ComfyClient("http://127.0.0.1:9", timeout=0.5)
-    with pytest.raises(comfy.ComfyUnreachable, match="systemctl start docker"):
+    with pytest.raises(comfy.ComfyUnreachable, match="podman-compose"):
         clip_stage.clip(posed_job.name, client=client, workflow_dir=workflow_dir,
                         work_dir=posed_job.root.parent)
 

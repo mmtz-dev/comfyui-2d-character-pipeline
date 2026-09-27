@@ -8,11 +8,15 @@ filmed one; `clip` (the clip render feature) sits between rig and pick and
 replaces strip + render when the frames come from a generated clip; `base` is
 the standing-sprite variant; `concept` (the character concept feature) comes
 before `base` in the studio's chain - text or sketch to candidate base
-characters, one of which is picked as the unit's reference; `bakeoff` (the
+characters, one of which is picked as the unit's reference; `animate` (the
+animate tab feature) is the owner drawing every frame of one animation at one
+direction, approving each, and writing the approved as the cell's finished
+frames; `bakeoff` (the
 frame route bake-off feature) runs one action through both in-between routes
-on both rigs and writes the page the owner rules on; `turnaround` (the turnaround
-feature) renders one idle still per direction from the accepted base and
-writes the identity gate page; `palette` (the palette
+on both rigs and writes the page the owner rules on; `matrix` (the action
+matrix feature) - once the base is accepted it renders a whole clip per selected
+(action x direction) cell, one batched resumable run with one seed, and
+refuses any cell whose direction has no accepted view; `palette` (the palette
 feature) installs the project palette from Lospec or a file and the per-unit
 sub-palettes `post` snaps to; `export` (the spritesheet export feature) packs
 a unit's accepted frames into sheets + atlas.json + a Godot SpriteFrames, with
@@ -35,8 +39,9 @@ STAGE_ORDER = [
     "export",
     "base",
     "concept",
+    "animate",
     "bakeoff",
-    "turnaround",
+    "matrix",
     "palette",
     "curate",
     "run",

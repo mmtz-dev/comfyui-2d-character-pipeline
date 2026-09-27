@@ -2,8 +2,8 @@
 # CPU pipeline - the pose-to-pixel animation pipeline feature
 # =============================================================================
 # Runs on DOCKER DESKTOP, the default context. No GPU here by design: the only
-# GPU service is ComfyUI in gpu/compose.yml on the native daemon, which this
-# container reaches over HTTP at $COMFYUI_URL.
+# GPU service is ComfyUI in gpu/compose.yml under rootless Podman, which this
+# container reaches over HTTP at $COMFYUI_URL (host.docker.internal:8188).
 #
 #   docker --context desktop-linux compose -f tools/anim-pipeline/compose.yml build
 #   docker --context desktop-linux compose -f tools/anim-pipeline/compose.yml run --rm anim --help

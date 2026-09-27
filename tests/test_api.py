@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from anim import config, imaging, palettekit
+from anim import config, imaging, outcome, palettekit
 from anim.api import jobs as jobs_api
 from anim.api import runs as runs_api
 from anim.api import settings as settings_api
@@ -37,6 +37,10 @@ FAKE_STAGE = textwrap.dedent("""
     print("[1/2] started " + " ".join(sys.argv[1:]), flush=True)
     time.sleep(float(os.environ.get("FAKE_DELAY", "0.2")))
     print("[2/2] finished", flush=True)
+    # FAKE_OUTCOME stands in for a batch stage's last line (anim.outcome):
+    # the bar has already reached [2/2] when the tally corrects it.
+    if os.environ.get("FAKE_OUTCOME"):
+        print("outcome: " + os.environ["FAKE_OUTCOME"], flush=True)
     sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 """)
 
@@ -361,7 +365,8 @@ def test_sse_yields_log_progress_and_done(fake_api, monkeypatch):
     assert events[0][1]["line"].startswith("[1/2] started pick x")
     percents = [p["percent"] for n, p in events if n == "progress"]
     assert percents == sorted(percents) and percents[-1] == 100, percents
-    assert events[-1][1] == {"status": "done", "returncode": 0, "percent": 100}
+    assert events[-1][1] == {"status": "done", "returncode": 0, "percent": 100,
+                             "cells": None}, "a stage with no cells tallies none"
 
 
 def test_sse_after_the_run_finished_replays_the_whole_log(fake_api):
@@ -370,7 +375,7 @@ def test_sse_after_the_run_finished_replays_the_whole_log(fake_api):
     with fake_api.stream("GET", f"/runs/{run['id']}/events") as stream:
         body = "".join(stream.iter_text())
     assert body.count("event: log") == 2
-    assert body.rstrip().endswith('"percent": 100}')
+    assert body.rstrip().endswith('"percent": 100, "cells": null}')
     assert fake_api.get("/runs/nope/events").status_code == 404
 
 
@@ -425,6 +430,85 @@ def test_runs_from_a_previous_process_are_loaded_and_marked_lost(work_dir, tmp_p
                                            "args": {"job": "knight_strike"}})
         assert fresh.status_code != 409, "a lost run does not hold the GPU"
         wait_for(client, fresh.json()["id"])
+
+
+# ---------------------------------------------------------------------------
+# The outcome tally - a batch stage that went on past a failed cell
+# ---------------------------------------------------------------------------
+def test_a_run_whose_every_cell_failed_is_not_done_at_a_hundred(fake_api, monkeypatch):
+    """The 2026-09-24 bug: a batch stage on hooded_archer failed all eight
+    directions, exited cleanly because going on is deliberate, and was recorded
+    `done` at 100%. The tally is what stops that."""
+    monkeypatch.setenv("FAKE_OUTCOME", "done=0 failed=8 blocked=0 of=8")
+    monkeypatch.setenv("FAKE_EXIT", str(outcome.EXIT_NOTHING))
+    run = fake_api.post("/jobs", json={"stage": "matrix",
+                                       "args": {"unit": "hooded_archer"}}).json()
+    final = wait_for(fake_api, run["id"])
+    assert final["status"] == "failed", "not `done` - nothing was accomplished"
+    assert final["percent"] == 0, "the [2/2] line had already put the bar at 100"
+    assert final["cells"] == {"done": 0, "failed": 8, "blocked": 0, "of": 8}
+    # And it survives the restart, which reads the record back off disk.
+    on_disk = json.loads((fake_api.app.state.runs.runs_dir
+                          / f"{run['id']}.json").read_text())
+    assert on_disk["cells"] == final["cells"] and on_disk["percent"] == 0
+
+
+def test_a_partial_run_is_told_apart_from_a_full_success(fake_api, monkeypatch):
+    monkeypatch.setenv("FAKE_OUTCOME", "done=5 failed=3 blocked=0 of=8")
+    monkeypatch.setenv("FAKE_EXIT", str(outcome.EXIT_PARTIAL))
+    partial = wait_for(fake_api, fake_api.post(
+        "/jobs", json={"stage": "matrix", "args": {"unit": "knight"}}).json()["id"])
+    assert partial["status"] == "partial" and partial["returncode"] == 3
+    assert partial["percent"] == 62, "five of eight (rounded as the [n/m] bar is)"
+
+    monkeypatch.setenv("FAKE_OUTCOME", "done=8 failed=0 blocked=0 of=8")
+    monkeypatch.setenv("FAKE_EXIT", "0")
+    full = wait_for(fake_api, fake_api.post(
+        "/jobs", json={"stage": "matrix", "args": {"unit": "knight"}}).json()["id"])
+    assert full["status"] == "done" and full["percent"] == 100
+    assert full["status"] != partial["status"], \
+        "the panel can say which of the two it is without reading the log"
+
+
+def test_a_run_recorded_before_the_tally_existed_still_loads(work_dir, tmp_path):
+    """Records in work/_runs/ are migrated in memory, never rewritten: a run
+    from before `cells` has none, and keeps the verdict it was given."""
+    runs_dir = work_dir / "_runs"
+    runs_dir.mkdir()
+    (runs_dir / "old-pick-1.json").write_text(json.dumps({
+        "id": "old-pick-1", "stage": "pick", "argv": ["knight_strike"],
+        "gpu": False, "status": "done", "percent": 100,
+        "started": "2026-09-21T00:00:00+00:00", "returncode": 0}))
+    (runs_dir / "old-pick-2.json").write_text(json.dumps({
+        "id": "old-pick-2", "stage": "pick", "argv": ["x"], "gpu": False,
+        "status": "sideways", "started": "2026-09-21T00:00:00+00:00"}))
+    manager = runs_api.RunManager(work_dir, python=[sys.executable, "-c", FAKE_STAGE])
+    app = create_app(work_dir, web_dist=tmp_path / "no-dist",
+                     comfyui_url="http://127.0.0.1:1", runs=manager)
+    with TestClient(app) as client:
+        row = client.get("/runs/old-pick-1").json()
+        assert row["status"] == "done" and row["percent"] == 100
+        assert row["cells"] is None, "no tally is not a tally of zero"
+        assert client.get("/runs/old-pick-2").json()["status"] == "lost", \
+            "a status this build has never heard of is a run it cannot account for"
+    assert "cells" not in json.loads((runs_dir / "old-pick-1.json").read_text()), \
+        "a finished run's file is left alone"
+
+
+def test_the_outcome_line_is_read_off_stdout_like_the_progress_lines():
+    tally = runs_api.RunManager._outcome
+    assert tally("outcome: done=0 failed=8 blocked=0 of=8") == \
+        {"done": 0, "failed": 8, "blocked": 0, "of": 8}
+    assert tally("matrix: 0/8 cell(s) done, 8 failed, 0 blocked; seed 5") is None
+    assert tally("[1/8] s0: done") is None
+
+
+def test_the_removed_turnaround_stage_is_an_unknown_stage(fake_api):
+    """The turnaround was removed (2026-09-25): POST /jobs refuses it like any
+    name it has never heard of, and GET /turnaround/{unit} is gone."""
+    refused = fake_api.post("/jobs", json={"stage": "turnaround", "args": {"unit": "knight"}})
+    assert refused.status_code == 400 and "unknown stage" in refused.json()["error"]
+    assert fake_api.get("/turnaround/knight").status_code == 404
 
 
 def test_percent_comes_only_from_step_and_progress_lines():

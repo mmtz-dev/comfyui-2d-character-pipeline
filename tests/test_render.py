@@ -219,7 +219,7 @@ def test_the_embedded_prompt_chunk_is_noticed(striped_job, workflow_dir):
 
 
 def test_an_unreachable_service_says_how_to_start_it(striped_job, workflow_dir):
-    with pytest.raises(comfy.ComfyUnreachable, match="docker-default"):
+    with pytest.raises(comfy.ComfyUnreachable, match="podman-compose"):
         render_stage.render(striped_job.name,
                             client=comfy.ComfyClient("http://127.0.0.1:1",
                                                      timeout=1),

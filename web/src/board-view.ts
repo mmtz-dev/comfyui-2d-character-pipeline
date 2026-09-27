@@ -4,31 +4,30 @@
 // x2 nearest-neighbour with a mark per frame and accept / reject / regenerate
 // for the cell. Every write goes to the API and the whole board is fetched
 // again afterwards; board.ts folds the click in first so the page answers at
-// once. Plain DOM like panel.ts, for the same reason. Under the gates sits
-// the turnaround (the turnaround feature): the eight idle stills in compass
-// order and the one question, so accepting the `turnaround` gate is done
-// looking at the thing it is about.
+// once. Plain DOM like panel.ts, for the same reason. Under the gate sit the
+// views of the base, accepted one by one - the rest of the human gate.
 
 import {
   ApiError,
   getBoard,
   getSettings,
-  getTurnaround,
   listCuration,
   putCell,
   putGate,
   putSettings,
   putView,
   regenerateCell,
+  startRun,
   type BoardCell,
   type BoardState,
   type CurationMode,
   type RunRecord,
   type StripFrame,
-  type TurnaroundState,
 } from "./api";
 import type { ViewTile } from "./board";
-import { MODES, MODE_HELP, cycleMark, gatesText, gridOf, reduceBoard, tally, turnaroundText, turnaroundTiles, viewTiles, viewsText, waitingText } from "./board";
+import { MODES, MODE_HELP, cycleMark, gateButtons, gatesText, gridOf, partsArgs, partsOffer, reduceBoard, tally, viewTiles, viewsText, waitingText } from "./board";
+import { isActive } from "./concept";
+import { describeRun, runTone, succeeded, type RunView } from "./sse";
 
 const SCALE = 2;
 
@@ -66,7 +65,6 @@ export interface BoardHost {
 
 export class BoardView {
   private board: BoardState | null = null;
-  private turnaround: TurnaroundState | null = null;
   private units: string[] = [];
 
   readonly root = el("div", { class: "board" });
@@ -75,7 +73,9 @@ export class BoardView {
     ...MODES.map((mode) => el("option", { value: mode, title: MODE_HELP[mode] }, mode)));
   private readonly gatesLine = el("div", { class: "board-gates" });
   private readonly viewsBox = el("div", { class: "board-views" });
-  private readonly turnaroundBox = el("div", { class: "board-turnaround" });
+  /** The GPU run the panel last saw, so every `button.gpu` here waits for it
+   * the way the Concept and Matrix tabs already do. */
+  private busy: RunRecord | null = null;
   private readonly waitingLine = el("div", { class: "studio-status" });
   private readonly statusLine = el("div", { class: "studio-status" });
   private readonly grid = el("div", { class: "board-grid" });
@@ -91,7 +91,6 @@ export class BoardView {
         this.modeSelect),
       this.gatesLine,
       this.viewsBox,
-      this.turnaroundBox,
       this.waitingLine,
       this.statusLine,
       this.grid,
@@ -136,14 +135,11 @@ export class BoardView {
     const unit = this.unitSelect.value;
     if (!unit) {
       this.board = null;
-      this.turnaround = null;
       this.render();
       return;
     }
     try {
-      const [board, turnaround] = await Promise.all([getBoard(unit), getTurnaround(unit)]);
-      this.turnaround = turnaround;
-      this.apply(board);
+      this.apply(await getBoard(unit));
     } catch (error) {
       this.say(`could not read the board - ${errorText(error)}`, "bad");
     }
@@ -194,7 +190,7 @@ export class BoardView {
     this.apply(reduceBoard(board, { type: "view", view: tile.view, state: tile.next }));
     try {
       this.apply(await putView(board.unit, tile.view, tile.next));
-      this.say(`view ${tile.view}: ${tile.next}${tile.next === "rejected" ? " - the turnaround falls back past it" : ""}`, "ok");
+      this.say(`view ${tile.view}: ${tile.next}${tile.next === "rejected" ? " - the matrix refuses the facings that want it" : ""}`, "ok");
     } catch (error) {
       this.say(`could not set the ${tile.view} view - ${errorText(error)}`, "bad");
       await this.load();
@@ -262,9 +258,82 @@ export class BoardView {
     }
   }
 
-  /** The panel tells the board a run ended, so the strips reload. */
-  async runFinished(): Promise<void> {
+
+  /** The part palettes every matrix cell locks to: `post --parts` over the accepted
+   * base. A CPU stage, so it queues in a CPU slot and never waits for the card -
+   * which is why this button is NOT `.gpu` and stays pressable while a GPU run
+   * is live. */
+  private async measureParts(): Promise<void> {
+    const board = this.board;
+    if (!board) return;
+    const offer = partsOffer(board);
+    if (!offer) return;
+    if (!window.confirm(offer.confirm)) return;
+    this.say(`measuring ${offer.job}'s part palettes ...`);
+    try {
+      const result = await startRun("post", partsArgs(offer));
+      if ("refused" in result) {
+        const { refused } = result;
+        if (refused.status === 409 && refused.run) {
+          this.say(`busy with ${refused.run.id} (${refused.run.stage})`, "warn");
+          this.host.follow(refused.run);
+        } else if (refused.status === 423) {
+          this.say(`gate: ${refused.error}`, "warn");
+        } else {
+          this.say(`${refused.status}: ${refused.error}`, "bad");
+        }
+        return;
+      }
+      this.say(`measuring part palettes: run ${result.run.id} - CPU, ~45 s; `
+        + "the matrix cells unlock when it lands", "ok");
+      this.host.follow(result.run);
+    } catch (error) {
+      this.say(`could not measure the part palettes - ${errorText(error)}`, "bad");
+    } finally {
+      this.host.refreshHealth();
+    }
+  }
+
+  /** The parts button, when the base has no measured palettes. */
+  private partsButton(board: BoardState): HTMLElement | null {
+    const offer = partsOffer(board);
+    if (!offer) return null;
+    return el("button", {
+      type: "button",
+      class: "studio-button",
+      title: offer.title,
+      onclick: () => void this.measureParts(),
+    }, offer.label);
+  }
+
+  /** The panel tells the board a run ended, so the strips reload - and, when
+   * it has the finished view, what came of it: the run\'s own tally, so a
+   * batch whose every cell failed does not read as a success. */
+  async runFinished(view?: RunView): Promise<void> {
+    if (view && !succeeded(view)) this.say(describeRun(view), runTone(view.status));
     if (this.board) await this.load();
+  }
+
+  /** The panel's /health poll, pushed in. Without it the
+   * Board had no busy state at all, so its `regenerate` button stayed pressable
+   * while another stage held the card and only found out through the 409. The
+   * tab's own presses are not the problem; a run started from the CLI, the
+   * Concept tab or the Matrix tab is. */
+  setBusy(run: RunRecord | null): void {
+    this.busy = isActive(run) ? run : null;
+    this.enableGpuButtons();
+  }
+
+  private enableGpuButtons(): void {
+    const held = this.busy;
+    for (const button of this.root.querySelectorAll<HTMLButtonElement>("button.gpu")) {
+      // A button already disabled for its own reason (no job, a pending gate)
+      // stays disabled; this only adds the card being busy on top of that.
+      if (button.dataset.lockedReason) continue;
+      button.disabled = held !== null;
+      if (held) button.title = `GPU busy with ${held.stage} ${held.id} - one at a time on the card`;
+      else if (button.dataset.freeTitle) button.title = button.dataset.freeTitle;
+    }
   }
 
   // --- drawing -----------------------------------------------------------------
@@ -278,26 +347,25 @@ export class BoardView {
       this.tallyLine.textContent = "";
       return;
     }
-    const gateButton = (gate: string) => {
-      const state = board.gates[gate] ?? "pending";
-      return el("button", {
-        type: "button",
-        class: `studio-button board-gate ${state}`,
-        title: state === "accepted" ? `${gate} accepted - click to reopen` : `accept the ${gate} gate`,
-        disabled: board.mode === "end",
-        onclick: () => void this.toggleGate(gate),
-      }, `${gate}: ${state}`);
-    };
+    // board.ts decides which gate is acceptable and what it says; this only
+    // builds the node (panel.ts:1 - the pure / view split).
     this.gatesLine.replaceChildren(
-      el("span", { class: "board-gates-text", title: MODE_HELP[board.mode] }, gatesText(board.gates, board.mode)),
-      gateButton("base"),
-      gateButton("turnaround"),
+      el("span", { class: "board-gates-text", title: MODE_HELP[board.mode] },
+        gatesText(board.gates, board.mode, board.gate_blocked ?? {})),
+      ...gateButtons(board).map((gate) => el("button", {
+        type: "button",
+        class: `studio-button board-gate ${gate.state}${gate.blocked ? " blocked" : ""}`,
+        title: gate.title,
+        disabled: gate.disabled,
+        onclick: () => void this.toggleGate(gate.gate),
+      }, gate.label)),
     );
     if (!board.exists) {
       this.gatesLine.append(el("span", { class: "board-legacy", title: `${board.path} is written on the first edit` }, "legacy - no record, nothing gated"));
     }
+    const measure = this.partsButton(board);
+    if (measure) this.gatesLine.append(measure);
     this.renderViews(board);
-    this.renderTurnaround(board);
     const waiting = waitingText(board.waiting);
     this.waitingLine.textContent = waiting;
     this.waitingLine.className = `studio-status ${board.waiting.length ? "warn" : "ok"}`;
@@ -323,23 +391,40 @@ export class BoardView {
   /** The views of the base under the base gate (the multi-view reference
    * feature): one tile per view with accept / reject per view. */
   private renderViews(board: BoardState): void {
-    const tiles = viewTiles(board);
     const text = viewsText(board);
     const head = el("div", { class: "board-views-head" },
       el("span", { class: "board-views-title" }, "views of the base"),
-      el("span", { class: "studio-help", title: "anim concept --unit <unit> --views [all] then --pick-view back=NN ...; the turnaround hands each direction its nearest accepted view" }, text));
-    if (!tiles.length) {
-      this.viewsBox.replaceChildren(head);
-      return;
-    }
+      el("span", { class: "studio-help", title: "anim concept --unit <unit> --views [all] then --pick-view back=NN ...; the matrix hands each direction its nearest accepted view" }, text));
+    // All eight slots, always: a missing one is a tile that says how to make
+    // it, not an absence. One flat sentence could never name the gap, and the
+    // gap is the thing the owner has to act on (s0 wants `right`).
     const ring = el("div", { class: "board-ring" });
-    for (const tile of tiles) {
+    for (const tile of viewTiles(board)) {
+      const wants = tile.wantedBy.length ? ` · ${tile.wantedBy.join(", ")} wants it` : "";
+      if (tile.missing) {
+        // Two different gaps: an attempt nobody picked, and a view nobody
+        // drew. The tile says which, because the answers differ.
+        const what = tile.attempts ? `${tile.attempts} attempt${tile.attempts === 1 ? "" : "s"}` : "not rendered";
+        ring.append(el("figure", { class: `board-tile board-view missing${tile.attempts ? " unpicked" : ""}`, title: `${tile.view}: not on the base - ${tile.how}${wants}` },
+          el("div", { class: "board-tile-miss" }, what),
+          el("figcaption", {}, tile.view),
+          el("span", { class: "board-view-how" }, tile.attempts ? "pick on Concept" : "Concept tab"),
+        ));
+        continue;
+      }
       const label = `${tile.view}: ${tile.state}${tile.provisional ? " (provisional)" : ""}`;
-      ring.append(el("figure", { class: `board-tile board-view ${tile.state}${tile.provisional ? " provisional" : ""}`, title: `${label} · yaw ${tile.yaw} · click: ${tile.next}` },
+      // The mirrored view feature: a flip is marked, not silently shown as a
+      // rendered view - it is the same pixels as its partner with the handed
+      // gear on the other side, which is the one thing about it worth knowing.
+      const mirror = tile.mirrored
+        ? ` · the ${tile.mirroredFrom ?? "partner"} view flipped, no GPU spent on it`
+        : "";
+      ring.append(el("figure", { class: `board-tile board-view ${tile.state}${tile.provisional ? " provisional" : ""}${tile.mirrored ? " mirrored" : ""}`, title: `${label} · yaw ${tile.yaw}${wants}${mirror} · click: ${tile.next}` },
         tile.url
           ? el("img", { src: `${tile.url}?t=${board.views[tile.view]?.picked ?? ""}`, alt: `${tile.view} view`, width: String(64 * SCALE), height: String(64 * SCALE), loading: "lazy" })
           : el("div", { class: "board-tile-miss" }, "no file"),
         el("figcaption", {}, tile.view),
+        ...(tile.mirrored ? [el("span", { class: "board-view-mirror" }, `⇄ ${tile.mirroredFrom ?? "mirrored"}`)] : []),
         el("button", {
           type: "button",
           class: `studio-button board-gate ${tile.state}`,
@@ -350,46 +435,6 @@ export class BoardView {
       ));
     }
     this.viewsBox.replaceChildren(head, ring);
-  }
-
-  /** The eight idle stills the `turnaround` gate is about, in compass order,
-   * with the question and the accept button - the turnaround feature. */
-  private renderTurnaround(board: BoardState): void {
-    const state = this.turnaround;
-    const text = turnaroundText(state);
-    if (!state) {
-      this.turnaroundBox.replaceChildren(el("div", { class: "studio-help", title: "anim turnaround <unit>, or POST /jobs {stage: turnaround}" }, `turnaround: ${text}`));
-      return;
-    }
-    const gate = board.gates.turnaround ?? "pending";
-    const ring = el("div", { class: "board-ring" });
-    for (const tile of turnaroundTiles(state)) {
-      const row = state.directions[tile.direction];
-      ring.append(el("figure", { class: `board-tile ${tile.status}`, title: `${tile.job}${row?.silhouette ? ` · ${row.silhouette.width}×${row.silhouette.height} px` : ""}${row?.hidden_face?.length ? ` · face hidden: ${row.hidden_face.join(", ")}` : ""}${tile.reference ? ` · reference: ${tile.reference}` : ""}${tile.error ? ` · ${tile.error}` : ""}` },
-        tile.still
-          ? el("img", { src: `${tile.still}?t=${state.updated}`, alt: `${tile.direction} still`, width: String(64 * SCALE), height: String(64 * SCALE), loading: "lazy" })
-          : el("div", { class: "board-tile-miss" }, tile.status),
-        el("figcaption", {}, tile.direction),
-        tile.reference
-          ? el("div", { class: `board-tile-ref${tile.reference.includes("fallback") ? " fallback" : ""}`, title: row?.reference?.warning ?? row?.reference?.file ?? "" },
-              tile.referenceUrl ? el("img", { src: `${tile.referenceUrl}?t=${state.updated}`, alt: `${tile.direction} reference`, height: "32", loading: "lazy" }) : null,
-              `ref: ${tile.reference}`)
-          : null,
-      ));
-    }
-    this.turnaroundBox.replaceChildren(
-      el("div", { class: "board-turnaround-head" },
-        el("span", { class: "board-turnaround-q" }, state.question),
-        el("span", { class: "studio-help" }, text),
-        el("button", {
-          type: "button",
-          class: `studio-button board-gate ${gate}`,
-          title: gate === "accepted" ? "the turnaround is accepted - click to reopen it" : "accept the eight stills as one character: opens every direction outside s0",
-          disabled: board.mode === "end",
-          onclick: () => void this.toggleGate("turnaround"),
-        }, gate === "accepted" ? "turnaround accepted - reopen" : "accept the turnaround")),
-      ring,
-    );
   }
 
   private emptyCell(verb: string, direction: string): HTMLElement {

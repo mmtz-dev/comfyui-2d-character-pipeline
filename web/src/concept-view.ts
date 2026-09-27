@@ -20,6 +20,7 @@ import {
   hideAttempt,
   listCuration,
   listJobs,
+  mirrorConceptView,
   pickConcept,
   pickConceptView,
   putConceptDefaults,
@@ -36,6 +37,8 @@ import {
 import {
   MAIN_VIEWS,
   STRENGTH_DEFAULT,
+  advancedConfirm,
+  advancedSweep,
   STRENGTH_MAX,
   STRENGTH_MIN,
   attemptCaption,
@@ -49,6 +52,8 @@ import {
   initialModel,
   isActive,
   lockedReason,
+  mirrorOffer,
+  mirroredNote,
   notInstalled,
   offerableLoras,
   reduceConcept,
@@ -106,8 +111,12 @@ interface Selected {
   attempt: Attempt;
 }
 
+/** Whatever carries the unit's model defaults: the Concept tab's state (read
+ * from the concept job). */
+type WithDefaults = Pick<ConceptState, "defaults">;
+
 /** One family's checkpoint + LoRA rows in the settings block. */
-class FamilyPicker {
+export class FamilyPicker {
   readonly root: HTMLElement;
   private readonly modelSelect = el("select", { class: "studio-select small" });
   private readonly loraList = el("div", { class: "concept-loras" });
@@ -129,7 +138,7 @@ class FamilyPicker {
   }
 
   /** Repopulate from the registry and the unit's defaults (a new unit, or a save). */
-  reset(listing: ModelsListing | null, state: ConceptState | null): void {
+  reset(listing: ModelsListing | null, state: WithDefaults | null): void {
     this.choices = choicesFor(listing, this.family);
     this.offerable = offerableLoras(listing, this.family);
     const model = initialModel(state, this.family);
@@ -143,7 +152,7 @@ class FamilyPicker {
     this.draw(state);
   }
 
-  private draw(state: ConceptState | null): void {
+  private draw(state: WithDefaults | null): void {
     this.loraList.replaceChildren(...this.loras.map((lora, i) => this.loraRow(lora, i)));
     this.addButton.disabled = !this.offerable.length;
     this.addButton.title = this.offerable.length ? "stack another LoRA"
@@ -200,7 +209,7 @@ class FamilyPicker {
     return this.loras.map((l) => ({ ...l }));
   }
 
-  refreshSave(state: ConceptState | null): void {
+  refreshSave(state: WithDefaults | null): void {
     this.saveButton.disabled = !state || sameAsDefault(state, this.family, this.model(), this.loras);
   }
 }
@@ -268,7 +277,7 @@ export class ConceptTab {
       this.baseStrip,
       this.baseActions,
       el("h3", { class: "concept-h" }, "Views"),
-      el("p", { class: "studio-help" }, "The accepted base seen from the other sides, drawn from it through Qwen-Image-Edit. Front is the base itself; Side is the left profile (the right is mirrored in the sheet). Accept one per view and the turnaround hands each direction its nearest."),
+      el("p", { class: "studio-help" }, "The accepted base seen from the other sides, drawn from it through Qwen-Image-Edit. Front is the base itself; Side is the left profile (the right is mirrored in the sheet). Accept one per view and the matrix hands each direction its nearest accepted one."),
       this.lockLine,
       this.viewButtons,
       this.viewsBox,
@@ -412,6 +421,20 @@ export class ConceptTab {
   }
 
   // --- writes --------------------------------------------------------------------
+  /** The advanced views sweep feature: confirm what it costs, then hand the
+   * whole list to the one `op: "views"` run, which renders them in order. */
+  private async sweepAdvanced(): Promise<void> {
+    const state = this.state;
+    if (!state) return;
+    const { views, blocked } = advancedSweep(state, this.busy);
+    if (blocked) {
+      this.say(blocked, "warn");
+      return;
+    }
+    if (!window.confirm(advancedConfirm(state, views, this.form("views").count))) return;
+    await this.generate({ op: "views", views });
+  }
+
   private async generate(ask: GenerateAsk): Promise<void> {
     const state = this.state;
     if (!state) return;
@@ -505,7 +528,7 @@ export class ConceptTab {
     const { target, attempt } = selected;
     if (target === "base") {
       if (state.base.pick !== null && state.base.pick !== attempt.index
-          && !window.confirm(`accept ${refOf(target, attempt)} as the base?\n\nThe views drawn from the current base are cleared and the turnaround goes back to pending.`)) return;
+          && !window.confirm(`accept ${refOf(target, attempt)} as the base?\n\nThe views drawn from the current base are cleared.`)) return;
       this.apply(reduceConcept(state, { type: "pick", index: attempt.index }));
       try {
         this.state = await pickConcept(state.unit, attempt.index);
@@ -517,10 +540,31 @@ export class ConceptTab {
       this.apply(reduceConcept(state, { type: "pickView", view: target, index: attempt.index }));
       try {
         this.state = await pickConceptView(state.unit, target, attempt.index);
-        this.say(`${refOf(target, attempt)} accepted for the turnaround`, "ok");
+        this.say(`${refOf(target, attempt)} accepted`, "ok");
       } catch (error) {
         this.say(`could not accept - ${errorText(error)}`, "bad");
       }
+    }
+    this.selected = null;
+    this.draw();
+  }
+
+  /** The mirrored view feature: derive this view from its accepted partner.
+   * No GPU, so it does not go through the run manager and does not wait for
+   * the busy line - it is a copy with the pixels reversed. */
+  private async mirror(view: ViewRow): Promise<void> {
+    const state = this.state;
+    if (!state) return;
+    const offer = mirrorOffer(state, view);
+    if (!offer?.can) return;
+    this.apply(reduceConcept(state, { type: "mirrorView", view: view.view }));
+    try {
+      this.state = await mirrorConceptView(state.unit, view.view);
+      const warning = this.state.warning;
+      this.say(`${view.view} is now the ${offer.partner} view flipped - no GPU spent`
+               + (warning ? `. ${warning}` : ""), warning ? "warn" : "ok");
+    } catch (error) {
+      this.say(`could not mirror - ${errorText(error)}`, "bad");
     }
     this.selected = null;
     this.draw();
@@ -644,7 +688,19 @@ export class ConceptTab {
       el("div", { class: "concept-view-row" }, el("div", { class: "concept-view-head" }, el("b", {}, "Front")), el("div", { class: "concept-strip" }, frontTile)),
       ...groups.main.map((view) => this.viewRow(state, view, !!locked)));
     const summary = this.advancedBox.firstElementChild!;
-    this.advancedBox.replaceChildren(summary, ...groups.advanced.map((view) => this.viewRow(state, view, !!locked)));
+    // The advanced views sweep feature: one press for the whole fold, sitting
+    // above the rows it fills. It is a `.gpu` button like every other, so the
+    // busy handling and the gate lock come for free; `blocked` adds its own
+    // reason on top (nothing left to render) in the same `.locked` idiom.
+    const sweep = advancedSweep(state, this.busy);
+    const sweepButton = this.gpuButton(sweep.label,
+      `anim concept --views advanced${sweep.views.length ? ` (${sweep.views.join(", ")})` : ""}`,
+      () => void this.sweepAdvanced());
+    sweepButton.classList.toggle("locked", !!sweep.blocked);
+    if (sweep.blocked) sweepButton.title = sweep.blocked;
+    this.advancedBox.replaceChildren(summary,
+      el("div", { class: "concept-advanced-sweep" }, sweepButton),
+      ...groups.advanced.map((view) => this.viewRow(state, view, !!locked)));
   }
 
   private viewPromptOf(view: ViewRow): string {
@@ -661,17 +717,29 @@ export class ConceptTab {
     const reset = el("button", { type: "button", class: "studio-button", title: "back to the config sentence", onclick: () => { prompt!.value = view.default_prompt; } }, "reset");
     const generate = this.gpuButton("Generate", `anim concept --views ${view.view} --view-prompt ...`, () => void this.generate({ op: "views", views: [view.view], viewPrompt: prompt!.value }));
     generate.classList.toggle("locked", locked);
+    // The mirrored view feature: the three paired views get a second way to be
+    // filled that costs nothing. Disabled with the reason when the partner is
+    // not accepted - the same `.locked` idiom the GPU buttons use for the gate.
+    const offer = mirrorOffer(state, view);
+    const mirror = offer
+      ? el("button", { type: "button", class: `studio-button${offer.can ? "" : " locked"}`,
+          title: offer.title, disabled: !offer.can,
+          onclick: () => void this.mirror(view) }, offer.label)
+      : null;
+    const note = mirroredNote(view);
     const shown = visibleAttempts(view.candidates, this.showHidden.checked);
     const tiles = shown.map((attempt) => this.tile(view.view, attempt, view.pick === attempt.index));
     const hidden = view.hidden_count;
     const status = view.state === "accepted" ? "accepted" : view.state === "rejected" ? "rejected" : view.candidates.length ? "pick one" : "";
-    return el("div", { class: `concept-view-row ${view.state}` },
+    return el("div", { class: `concept-view-row ${view.state}${view.mirrored ? " mirrored" : ""}` },
       el("div", { class: "concept-view-head" },
         el("b", {}, viewLabel(view.view)),
         el("span", { class: "studio-help" },
           ` yaw ${view.yaw}${view.elevation === "top" ? ", from above" : ""} · ${status}`
-          + (hidden && !this.showHidden.checked ? ` · ${hidden} hidden` : ""))),
-      el("div", { class: "studio-row" }, prompt, reset, generate),
+          + (hidden && !this.showHidden.checked ? ` · ${hidden} hidden` : "")),
+        ...(note ? [el("span", { class: "concept-mirror-mark",
+          title: "the accepted picture here is that view reversed, not a generated one - the same pixels, the other hand" }, `⇄ ${note}`)] : [])),
+      el("div", { class: "studio-row" }, prompt, reset, generate, ...(mirror ? [mirror] : [])),
       el("div", { class: "concept-strip" }, ...(tiles.length ? tiles : [el("span", { class: "studio-help" }, "no attempts")])),
       ...(this.selected?.target === view.view ? [this.actionBar(state, this.selected)] : []));
   }

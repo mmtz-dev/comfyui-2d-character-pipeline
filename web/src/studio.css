@@ -16,6 +16,7 @@
   --studio-gold: #f0c070;
   --studio-ok: #8fd3a5;
   --studio-bad: #f08080;
+  --studio-busy: #8fb3f5;
 }
 
 body.studio-collapsed {
@@ -224,6 +225,10 @@ body.studio-collapsed .studio-head {
 .studio-bar-fill.failed,
 .studio-bar-fill.lost { background: var(--studio-bad); }
 .studio-bar-fill.cancelled { background: var(--studio-muted); }
+/* A batch stage that finished some of its cells (anim/outcome.py). Gold, not
+   green: the bar is also rebased onto the cells that are actually done, so a
+   half-finished run reads half-finished at a glance and in its width. */
+.studio-bar-fill.partial { background: var(--studio-gold); }
 
 .studio-log {
   margin: 6px 0 0;
@@ -256,6 +261,7 @@ body.studio-collapsed .studio-head {
   color: var(--studio-gold);
 }
 .studio-run.done a { color: var(--studio-ok); }
+.studio-run.partial a { color: var(--studio-gold); }
 .studio-run.failed a,
 .studio-run.lost a { color: var(--studio-bad); }
 .studio-run.running a,
@@ -336,24 +342,20 @@ body.studio-collapsed .studio-head {
   color: var(--studio-gold);
   border-color: #6a4a12;
 }
+/* A gate with nothing behind it: greyed, dashed like every other "not there
+ * yet" in the panel (.board-tile-miss, .matrix-cell.locked), and the reason
+ * is the button's title - never a silent grey square. */
+.board-gate.blocked {
+  color: var(--studio-muted);
+  border-color: var(--studio-line);
+  border-style: dashed;
+}
+.board-gate.blocked:disabled {
+  cursor: not-allowed;
+}
 .board-legacy {
   color: var(--studio-muted);
   font-style: italic;
-}
-/* the turnaround (the turnaround feature): the eight stills under the gates */
-.board-turnaround {
-  margin: 6px 0 2px;
-}
-.board-turnaround-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 12px;
-}
-.board-turnaround-q {
-  color: var(--studio-gold);
-  font-weight: 600;
 }
 .board-ring {
   display: flex;
@@ -409,16 +411,34 @@ body.studio-collapsed .studio-head {
 .board-view.rejected img { border-color: #a04040; opacity: 0.6; }
 .board-view.provisional figcaption::after { content: " (provisional)"; color: #e0b060; }
 .board-view .studio-button { margin-top: 2px; font-size: 10px; }
-.board-tile-ref {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  justify-content: center;
+/* the third state of a view slot: the base carries no file for it. Dashed
+ * and dim, with the way to make it under the name - the ring shows all eight
+ * slots, so the gap has to read as a gap and not as a broken thumbnail. */
+.board-view.missing {
+  border-style: dashed;
+  opacity: 0.75;
+}
+.board-view.missing figcaption { color: var(--studio-muted); }
+/* drawn but never picked onto the base: the same dashed slot, in the gold
+ * the panel uses everywhere for "your turn". */
+.board-view.missing.unpicked { border-color: #6a4a12; }
+.board-view.missing.unpicked .board-tile-miss { color: var(--studio-gold); }
+.board-view-how {
+  display: block;
+  font-size: 10px;
+  color: var(--studio-gold);
+}
+/* the mirrored view feature: a view derived by flipping its partner. A dotted
+ * left/right border says "this picture is the other one reversed" without
+ * competing with the accepted / rejected border, which still carries the
+ * verdict; the caption under it names the view it came from. */
+.board-view.mirrored img { border-style: dotted; }
+.board-view-mirror {
+  display: block;
   font-size: 9px;
   color: var(--studio-muted);
+  white-space: nowrap;
 }
-.board-tile-ref img { height: 32px; background: #fff; border: 1px solid #333; }
-.board-tile-ref.fallback { color: #e0b060; }
 .board-grid {
   margin-top: 8px;
   overflow: auto;
@@ -683,6 +703,15 @@ body.studio-collapsed .studio-head {
 }
 .concept-view-row.accepted .concept-view-head b { color: var(--studio-ok); }
 .concept-view-row.rejected .concept-view-head b { color: var(--studio-bad); }
+/* the mirrored view feature: the accepted picture for this view is its
+ * partner's, flipped, so none of the tiles below is outlined and the marker in
+ * the head is the only thing that explains that. */
+.concept-mirror-mark {
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--studio-ok);
+  white-space: nowrap;
+}
 .concept-view-head {
   font-size: 12px;
 }
@@ -692,6 +721,13 @@ body.studio-collapsed .studio-head {
   font-size: 12px;
 }
 .concept-advanced summary { cursor: pointer; }
+/* the advanced views sweep feature: the one press that fills the fold, above
+ * the rows it fills and separated from them the way a view row is. */
+.concept-advanced-sweep {
+  margin: 6px 0 2px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--studio-line);
+}
 .concept-actions-bar {
   margin: 4px 0 8px;
   padding: 6px;
@@ -709,3 +745,221 @@ body.studio-collapsed .studio-head {
 }
 .concept-range { width: 120px; }
 .studio-button.locked { opacity: 0.5; }
+
+/* The Matrix tab (the action matrix feature): the selection rows, the grid of
+ * every action × facing, and a blocked cell's reason. The grid itself reuses
+ * .board-grid / .board-table / .board-cell - it is the same five-by-eight
+ * shape as the board's, so a second set of rules would be a second thing to
+ * keep in step. `.locked` is the Concept tab's own greying (:711). */
+.matrix-picks {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  align-items: center;
+  margin: 4px 0;
+}
+.matrix-pick-label {
+  color: var(--studio-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.matrix-pick-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.matrix-pick-item.locked { opacity: 0.45; }
+.matrix-cost { margin: 2px 0 4px; }
+.matrix-cell { min-width: 150px; }
+/* blocked: dashed like .board-tile-miss, and the reason is TEXT - never a
+ * silent grey square (constraint 6 of the feature). */
+.matrix-cell.locked {
+  border-style: dashed;
+  opacity: 0.6;
+}
+.matrix-cell.done { border-color: #2f5a3d; }
+.matrix-cell.failed { border-color: #6a2f2f; }
+.matrix-cell.selected { box-shadow: inset 0 0 0 1px #6a4a12; }
+.matrix-reason {
+  font-size: 11px;
+  color: var(--studio-muted);
+  margin: 2px 0;
+}
+.matrix-reason.ready { text-align: center; font-size: 14px; }
+.matrix-film img {
+  display: block;
+  image-rendering: pixelated;
+  background: #2a2d36;
+  border: 1px solid #333;
+}
+.matrix-phases {
+  display: flex;
+  gap: 3px;
+  flex-wrap: wrap;
+  margin: 3px 0;
+}
+.matrix-phase {
+  font-size: 10px;
+  padding: 0 4px;
+  border: 1px solid var(--studio-line);
+  border-radius: 3px;
+  color: var(--studio-muted);
+}
+.matrix-closure.open { color: var(--studio-gold); }
+
+
+/* The Animate tab (the animate tab feature), laid out as the approved
+   mockup: numbered steps, the compass, the frame row with status chips (gold
+   label = keyframe), the selected frame, the player. The studio's own tokens,
+   not the mockup's colours. */
+.animate-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 6px;
+  font-weight: 600;
+}
+.animate-step > b {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--studio-fg);
+  color: var(--studio-panel);
+  font-size: 11px;
+}
+.animate-step .studio-help { font-weight: 400; }
+.animate-panel {
+  padding: 8px;
+  background: var(--studio-bg);
+  border: 1px solid var(--studio-line);
+  border-radius: 6px;
+}
+.animate-dirs { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
+.animate-compass {
+  display: grid;
+  grid-template-columns: repeat(3, 76px);
+  grid-template-rows: repeat(3, 76px);
+  gap: 5px;
+}
+.animate-dir {
+  position: relative;
+  padding: 2px;
+  border: 2px solid var(--studio-line);
+  border-radius: 6px;
+  background: var(--studio-panel);
+  color: var(--studio-muted);
+  cursor: pointer;
+  overflow: hidden;
+}
+.animate-dir img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; background: #fff; }
+.animate-dir.selected { border-color: var(--studio-gold); }
+.animate-dir.blocked { border-style: dashed; opacity: 0.6; }
+.animate-dir.center { cursor: default; display: grid; place-items: center; font-size: 10px; text-align: center; }
+.animate-dir-miss { display: grid; place-items: center; height: 100%; font-size: 11px; }
+.animate-dir-label {
+  position: absolute;
+  left: 3px;
+  bottom: 2px;
+  padding: 0 3px;
+  font-size: 10px;
+  border-radius: 3px;
+  background: var(--studio-panel);
+  color: var(--studio-fg);
+}
+.animate-elevation { display: flex; flex-direction: column; gap: 6px; }
+.animate-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.animate-act.selected { border-color: var(--studio-gold); color: var(--studio-gold); }
+.animate-act small { opacity: 0.7; }
+.animate-toolbar .studio-row { align-items: center; }
+.animate-count { margin-left: auto; color: var(--studio-muted); }
+.animate-strip { display: flex; gap: 6px; overflow-x: auto; padding: 6px 0; }
+.animate-frame {
+  flex: 0 0 108px;
+  display: flex;
+  flex-direction: column;
+  border: 2px solid var(--studio-line);
+  border-radius: 6px;
+  background: var(--studio-panel);
+  cursor: pointer;
+}
+.animate-frame.selected { border-color: var(--studio-gold); box-shadow: inset 0 0 0 1px var(--studio-gold); }
+.animate-frame-label {
+  display: flex;
+  justify-content: space-between;
+  padding: 3px 5px;
+  font-size: 11px;
+  border-bottom: 1px solid var(--studio-line);
+}
+.animate-frame.key .animate-frame-label { color: var(--studio-gold); font-weight: 700; background: rgba(240, 192, 112, 0.12); }
+.animate-frame-pic { height: 112px; display: grid; place-items: center; background: #fff; }
+.animate-frame-pic img { max-width: 100%; max-height: 100%; image-rendering: pixelated; }
+.animate-frame-buttons { display: flex; gap: 2px; padding: 0 4px 5px; }
+.animate-frame-buttons .studio-button { flex: 1; padding: 1px 0; font-size: 12px; }
+.animate-chip {
+  align-self: flex-start;
+  margin: 4px 5px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-style: normal;
+}
+.animate-chip.s-empty { background: var(--studio-line); color: var(--studio-muted); }
+.animate-chip.s-generating { background: rgba(143, 179, 245, 0.15); color: var(--studio-busy); }
+.animate-chip.s-review { background: rgba(240, 192, 112, 0.15); color: var(--studio-gold); }
+.animate-chip.s-approved { background: rgba(143, 211, 165, 0.15); color: var(--studio-ok); }
+.animate-chip.s-rejected { background: rgba(240, 128, 128, 0.15); color: var(--studio-bad); }
+.animate-legend { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 11px; color: var(--studio-muted); }
+.animate-key-note { color: var(--studio-gold); }
+.animate-spin {
+  width: 24px;
+  height: 24px;
+  border: 3px solid rgba(143, 179, 245, 0.2);
+  border-top-color: var(--studio-busy);
+  border-radius: 50%;
+  animation: animate-spin 1s linear infinite;
+}
+@keyframes animate-spin { to { transform: rotate(360deg); } }
+.animate-detail { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 900px) { .animate-detail { grid-template-columns: 1fr; } }
+.animate-big { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.animate-big figure { margin: 0; }
+.animate-box {
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--studio-line);
+  border-radius: 6px;
+}
+.animate-box.skeleton { background: #000; }
+.animate-box img { max-width: 100%; max-height: 100%; image-rendering: pixelated; }
+.animate-box img[hidden] { display: none; }
+.animate-attempts { display: flex; gap: 5px; overflow-x: auto; margin-top: 4px; }
+.animate-attempt { margin: 0; flex: 0 0 60px; text-align: center; font-size: 10px; color: var(--studio-muted); cursor: pointer; }
+.animate-attempt img { width: 56px; height: 56px; object-fit: contain; background: #fff; border: 2px solid var(--studio-line); border-radius: 4px; image-rendering: pixelated; }
+.animate-attempt.current img { border-color: var(--studio-gold); }
+.animate-detail-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-weight: 600; }
+.animate-detail-right .concept-prompt { flex: 1; min-width: 200px; }
+.animate-scrub { flex: 1; min-width: 160px; }
+.animate-player { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-end; }
+.animate-player figure { margin: 0; }
+.animate-stage {
+  width: 240px;
+  height: 240px;
+  display: grid;
+  place-items: center;
+  background: repeating-conic-gradient(#2a2f3a 0% 25%, #1c1f26 0% 50%) 50% / 16px 16px;
+  border: 1px solid var(--studio-line);
+  border-radius: 6px;
+}
+.animate-stage.small { width: 136px; height: 136px; }
+.animate-play-full { max-width: 100%; max-height: 100%; background: #fff; }
+.animate-play-game { width: 128px; height: 128px; image-rendering: pixelated; }
+.animate-play-controls { display: flex; flex-direction: column; gap: 6px; min-width: 190px; }
+.animate-output { margin: 10px 0; }

@@ -195,13 +195,11 @@ the same picture (the reflection of a profile IS the other profile), so the
 two are never combined - a direction says which way the figure faces, and
 `mirror` on top of one would say it twice.
 
-THE FACE ON THE FAR SIDE - the turnaround feature, tightened by the
-multi-view reference feature
+THE FACE ON THE FAR SIDE - the multi-view reference feature
 ----------------------------------------------------------------------
 A rig has no detector, so every joint carried confidence 1.0 in every cell -
 nose and eyes included on the back view, which told the pose ControlNet
-there was a face on the back of the head (DEVLOG 2026-09-20, left open for
-the turnaround). Now `clip_keypoints` asks `hidden_face_points` per frame:
+there was a face on the back of the head (DEVLOG 2026-09-20). Now `clip_keypoints` asks `hidden_face_points` per frame:
 once the HEAD has turned past the profile away from the camera - the head's
 forward vector against the view's near axis, `fwd . near < -FACE_HIDE_TURN`,
 half a direction step (sin 22.5 deg) so a breathing head at the profile does
@@ -212,7 +210,7 @@ picker, the part prompts) already treats such a joint as absent. The
 profile (s0, s180) and every front-facing cell (s225, s270, s315) draw
 exactly what they always did, byte for byte - a head whose forward vector
 has a component toward the camera, or lies in the near plane, is "front"
-for this rule; s45 / s90 / s135 lose the whole face. The turnaround feature
+for this rule; s45 / s90 / s135 lose the whole face. The first version
 (2026-09-21) kept the near ear on a turned-away head and both ears from
 straight behind; the first identity gate (2026-09-22) drew bare heads and
 faces on those cells, and an ear is a face landmark the pose ControlNet
@@ -1174,7 +1172,7 @@ def hidden_face_points(rig: Rig, world: np.ndarray, frame: RigFrame,
     vector within `turn` of the near plane or toward the viewer); once it
     has turned away by more than `turn`, EVERY face point - nose, both eyes
     and both ears (the multi-view reference feature, 2026-09-22: the
-    turnaround feature hid the nose, the eyes and the far ear only, and the
+    first version hid the nose, the eyes and the far ear only, and the
     near ear left on a turned-away head was still a face landmark for the
     pose ControlNet to draw a face around; a head seen from behind gets no
     face points at all now).

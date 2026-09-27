@@ -2,7 +2,7 @@
 # models.lock - the GPU image service feature
 # =====================================================================
 # RESOLVED LOCKFILE, not hand-written. Regenerate with gpu/relock_models.py.
-# Resolved 2026-09-20 from the Hugging Face API; every sha256 and size was
+# Resolved 2026-09-26 from the Hugging Face API; every sha256 and size was
 # read from BOTH /api/models/<repo>?blobs=true and
 # /api/models/<repo>/paths-info/<revision> and the two reads agreed.
 # Every repo below was confirmed ungated and Apache-2.0 via the same API.
@@ -47,16 +47,16 @@
 # Re-check whether upstream has fixed it with:
 #   curl -s https://huggingface.co/api/models/prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA?blobs=true
 # ======================================================================
-Comfy-Org/z_image_turbo	08d04455279082882deaabc8d0d09fc914c071e1	split_files/diffusion_models/z_image_turbo_int8_convrot.safetensors	diffusion_models	z_image_turbo_int8_convrot.safetensors	6201001296	be517ebd47c912a5626a588e1aeea43e6be4a43c0cdcd2b48a2a780d9f358635	apache-2.0
-Comfy-Org/z_image_turbo	08d04455279082882deaabc8d0d09fc914c071e1	split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors	text_encoders	qwen_3_4b_fp8_mixed.safetensors	5631994051	72450b19758172c5a7273cf7de729d1c17e7f434a104a00167624cba94f68f15	apache-2.0
-Comfy-Org/z_image_turbo	08d04455279082882deaabc8d0d09fc914c071e1	split_files/vae/ae.safetensors	vae	z_image_ae.safetensors	335304388	afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38	apache-2.0
+Comfy-Org/z_image_turbo	6fc90a3b1b653e935a0d175e260736de25b84df5	split_files/diffusion_models/z_image_turbo_int8_convrot.safetensors	diffusion_models	z_image_turbo_int8_convrot.safetensors	6201001296	be517ebd47c912a5626a588e1aeea43e6be4a43c0cdcd2b48a2a780d9f358635	apache-2.0
+Comfy-Org/z_image_turbo	6fc90a3b1b653e935a0d175e260736de25b84df5	split_files/text_encoders/qwen_3_4b_fp8_mixed.safetensors	text_encoders	qwen_3_4b_fp8_mixed.safetensors	5631994051	72450b19758172c5a7273cf7de729d1c17e7f434a104a00167624cba94f68f15	apache-2.0
+Comfy-Org/z_image_turbo	6fc90a3b1b653e935a0d175e260736de25b84df5	split_files/vae/ae.safetensors	vae	z_image_ae.safetensors	335304388	afc8e28272cd15db3919bacdb6918ce9c1ed22e96cb12c4d5ed0fba823529e38	apache-2.0
 alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1	5155fc56d17821007d6f62ac192c09e0f0e72016	Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors	model_patches	Z-Image-Turbo-Fun-Controlnet-Union-2.1-2602-8steps.safetensors	6712485600	d1251cc7bc3486bc61d25c3be498ef394c31c85ddf4ee9137d2e933411f4a689	apache-2.0
 alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1	5155fc56d17821007d6f62ac192c09e0f0e72016	Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors	model_patches	Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors	2016627488	3ea098db9bd145be525c7e2366920b6d76c5ffd46b3d7aa8169bbc943fdaee35	apache-2.0
 nunchaku-ai/nunchaku-qwen-image-edit-2509	e93a5fb77403d02a5a73c7cc8707b292c6ebc659	lightning-251115/svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors	diffusion_models	svdq-int4_r128-qwen-image-edit-2509-lightning-4steps-251115.safetensors	12654443144	3b438e3e8b76c79734cc9a84dc5e9b7c7c3cce68448dbb8bd9e756f0135b877d	apache-2.0
-Comfy-Org/Qwen-Image_ComfyUI	7beb7b647f04469fbe64ba8adc2bb0d7e5e9f73f	split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors	text_encoders	qwen_2.5_vl_7b_fp8_scaled.safetensors	9384670680	cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4	apache-2.0
-Comfy-Org/Qwen-Image_ComfyUI	7beb7b647f04469fbe64ba8adc2bb0d7e5e9f73f	split_files/vae/qwen_image_vae.safetensors	vae	qwen_image_vae.safetensors	253806246	a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f	apache-2.0
+Comfy-Org/Qwen-Image_ComfyUI	1f12b17be14c89b026c51a91d67c32f84bb047bc	split_files/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors	text_encoders	qwen_2.5_vl_7b_fp8_scaled.safetensors	9384670680	cb5636d852a0ea6a9075ab1bef496c0db7aef13c02350571e388aea959c5c0b4	apache-2.0
+Comfy-Org/Qwen-Image_ComfyUI	1f12b17be14c89b026c51a91d67c32f84bb047bc	split_files/vae/qwen_image_vae.safetensors	vae	qwen_image_vae.safetensors	253806246	a70580f0213e67967ee9c95f05bb400e8fb08307e017a924bf3441223e023d1f	apache-2.0
 prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA	e14eea588e8e4a9c753439e52a203d06288769c5	Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors	loras	Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors	1179885016	2a2775ac823b3704eba2f72f3be65d7b0fe3262f1822e971c16818d0c923a4b6	apache-2.0
 tarn59/pixel_art_style_lora_z_image_turbo	0a5092d1619664d94a5a36784f92db84b3ae62bd	pixel_art_style_z_image_turbo.safetensors	loras	pixel_art_style_z_image_turbo.safetensors	170128328	09b1b45ceed0202929bca528e51b50208d0160f4e9d2ba0f42cb7e739a43577f	apache-2.0
-Comfy-Org/Wan_2.2_ComfyUI_Repackaged	c4f60d30c55a624e35427060fdd217579a6c1d77	split_files/diffusion_models/wan2.2_fun_control_5B_bf16.safetensors	diffusion_models	wan2.2_fun_control_5B_bf16.safetensors	10003303280	ace4718a7c87ee3e5606a68ab79142c4395e81aece76b8120bc886f0fbbe1d16	apache-2.0
-Comfy-Org/Wan_2.2_ComfyUI_Repackaged	c4f60d30c55a624e35427060fdd217579a6c1d77	split_files/vae/wan2.2_vae.safetensors	vae	wan2.2_vae.safetensors	1409400960	e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156	apache-2.0
-Comfy-Org/Wan_2.1_ComfyUI_repackaged	617a7633e636506f850e043bc4605f290a466a8e	split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	text_encoders	umt5_xxl_fp8_e4m3fn_scaled.safetensors	6735906897	c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/diffusion_models/wan2.2_fun_control_5B_bf16.safetensors	diffusion_models	wan2.2_fun_control_5B_bf16.safetensors	10003303280	ace4718a7c87ee3e5606a68ab79142c4395e81aece76b8120bc886f0fbbe1d16	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/vae/wan2.2_vae.safetensors	vae	wan2.2_vae.safetensors	1409400960	e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156	apache-2.0
+Comfy-Org/Wan_2.1_ComfyUI_repackaged	123acf1cc74bccbb9bfff8ac1ee72edc08c2341d	split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	text_encoders	umt5_xxl_fp8_e4m3fn_scaled.safetensors	6735906897	c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68	apache-2.0

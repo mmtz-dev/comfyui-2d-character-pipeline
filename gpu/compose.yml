@@ -1,27 +1,27 @@
 # =============================================================================
-# the GPU image service feature - ComfyUI headless on the NATIVE Docker daemon
+# the GPU image service feature - ComfyUI headless under ROOTLESS PODMAN
 # =============================================================================
-# THIS IS THE ONLY THING IN THIS PROJECT THAT RUNS ON THE NATIVE DAEMON.
-# Everything else (the CPU pipeline, the model downloader, the Samba share)
-# runs on Docker Desktop (context `desktop-linux`).
+# THIS IS THE ONLY PODMAN SERVICE IN THIS PROJECT. Everything else (the CPU
+# pipeline, the model downloader, the Samba share) runs on Docker Desktop
+# (context `desktop-linux`), and the two engines do not know about each other.
 #
-# The native daemon is the only engine on this host with the nvidia runtime and
-# real GPU access. It is `disabled`/stopped by default and only the owner starts
-# it, from a real TTY:
+# Start it - no sudo, no daemon to start first:
 #
-#     sudo systemctl start docker
-#     docker --context docker-default compose -f tools/anim-pipeline/gpu/compose.yml up -d
+#     podman-compose -f tools/anim-pipeline/gpu/compose.yml up -d
+#     podman-compose -f tools/anim-pipeline/gpu/compose.yml down
 #
-# NEVER `docker context use` - the active context stays `desktop-linux`, so a
-# bare `docker ps` keeps showing the normal Docker Desktop stack. Always target
-# this file explicitly with `--context docker-default`.
+# It used to run on the native `docker.service`, which was the only engine on
+# this host with the nvidia runtime - and which is off-limits because it breaks
+# the owner's setup, so every render needed `sudo systemctl start docker` from a
+# real TTY first. Rootless Podman reaches the same GPU through CDI instead, with
+# no daemon and no sudo, so that whole step is gone (2026-09-25; see DEVLOG).
 #
-# Validate the file (parses fine on either engine, does not run):
-#     docker --context desktop-linux compose -f tools/anim-pipeline/gpu/compose.yml config
+# Validate the file without running it:
+#     podman-compose -f tools/anim-pipeline/gpu/compose.yml config
 # =============================================================================
 
-# Explicit project name: a bare `compose -f ...` would otherwise derive the
-# project from this directory and call it `gpu`.
+# Explicit project name: a bare `-f ...` would otherwise derive the project
+# from this directory and call it `gpu`.
 name: anim-pipeline-gpu
 
 services:
@@ -32,25 +32,53 @@ services:
     # MIT licence, non-root (runs as `comfy` remapped to WANTED_UID/GID).
     # To move the pin: look the tag up again on Docker Hub and replace BOTH
     # the tag and the digest, then note the change in DEVLOG.md.
-    image: mmartial/comfyui-nvidia-docker:latest@sha256:7a54a28001b65a5b13f8bf46a90a565bb7bb07759ec5b4d033308a5f27908a95
+    # Podman needs the registry spelled out; Docker's bare-name default was
+    # docker.io, Podman refuses to guess.
+    image: docker.io/mmartial/comfyui-nvidia-docker:latest@sha256:7a54a28001b65a5b13f8bf46a90a565bb7bb07759ec5b4d033308a5f27908a95
     container_name: anim-pipeline-comfyui
 
-    # tini as PID 1 so `docker stop` reaches ComfyUI instead of orphaning it.
+    # tini as PID 1 so a stop reaches ComfyUI instead of orphaning it.
     init: true
 
-    # The nvidia runtime lives in the native daemon's /etc/docker/daemon.json.
-    # This line is why the service cannot run on Docker Desktop.
-    runtime: nvidia
+    # THE GPU. Not `runtime: nvidia` - that is a daemon-level runtime the
+    # native Docker daemon declares in /etc/docker/daemon.json, and rootless
+    # Podman has no daemon to declare it in. CDI instead: nvidia-ctk writes a
+    # spec describing the device nodes and libraries to inject, Podman reads it
+    # by name. The spec lives at /var/run/cdi/nvidia.yaml and is kept current
+    # by nvidia-cdi-refresh.service (enabled), which regenerates it after a
+    # driver update - so this needs no maintenance.
+    #   Check the device exists:  ls /var/run/cdi/nvidia.yaml
+    #   Prove the GPU is visible: podman run --rm --device nvidia.com/gpu=all \
+    #       --security-opt label=disable docker.io/nvidia/cuda:13.0.3-runtime-ubuntu24.04 nvidia-smi
+    devices:
+      - "nvidia.com/gpu=all"
 
-    # Fedora SELinux: without this the container cannot open the NVIDIA device
-    # nodes and ComfyUI starts CPU-only (or fails outright).
+    # Fedora SELinux is Enforcing. `label=disable` opts this container out of
+    # SELinux confinement, which is what lets it open the injected NVIDIA
+    # device nodes AND read the bind mounts below without relabelling them.
+    # Deliberately NOT `:z` / `:Z` on the volumes: those relabel the host
+    # directory, and "/mnt/private/AI Data/models/Image Models" is a shared
+    # library other services read - relabelling it would be a side effect on
+    # their data. This is the same trade clone-studio's compose.gpu.yml makes.
     security_opt:
-      - label=type:nvidia_container_t
+      - "label=disable"
+
+    # Rootless Podman maps container UID 1000 to host UID 525287 (the owner's
+    # subuid range, /etc/subuid: 524288+999), so without this every file
+    # ComfyUI writes into the basedir would land owned by a phantom user and
+    # need a chown before the owner could touch it from the Mac share.
+    # `keep-id` pins host UID 1000 to container UID 1000, which is what
+    # WANTED_UID/WANTED_GID below already assume.
+    # The key is `userns_mode`, NOT `userns`: podman-compose reads the first
+    # (podman_compose.py, "--userns") and silently ignores the second, so the
+    # wrong spelling looks fine in `config` output and still writes every file
+    # as the phantom uid.
+    userns_mode: keep-id
 
     # LAN-visible on purpose, like every other service on this host: the CPU
     # pipeline container runs on the Docker Desktop VM and reaches this service
-    # at host.docker.internal:8188. A 127.0.0.1 bind would be invisible from
-    # that VM, and from the owner's Mac.
+    # at host.docker.internal:8188, which resolves to this host's gateway. A
+    # 127.0.0.1 bind would be invisible from that VM, and from the owner's Mac.
     ports:
       - "0.0.0.0:8188:8188"
 
@@ -77,7 +105,8 @@ services:
       - USE_UV=true
       # Host user, so every file ComfyUI writes into the basedir is owned by
       # the owner and editable from the Mac share without a chown dance.
-      # From `id -u` / `id -g` on this host (both 1000).
+      # From `id -u` / `id -g` on this host (both 1000). Only true because of
+      # `userns: keep-id` above - see the note there.
       - WANTED_UID=1000
       - WANTED_GID=1000
       - BASE_DIRECTORY=/basedir
@@ -93,6 +122,8 @@ services:
       # which is the same version as the pinned node pack. Move this and
       # userscripts/10-nunchaku.sh together, never one without the other.
       - TORCH_LOCK=torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0
+      # Belt and braces beside the CDI device: the toolkit reads these when it
+      # injects, and some node packs check them to decide they have a GPU.
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
       # --extra-model-paths-config  : pick up the shared read-only checkpoints.

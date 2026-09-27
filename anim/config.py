@@ -252,8 +252,8 @@ STUDIO_ACTIONS: dict[str, dict[str, Any]] = {
     "attack": {"verb": "strike",
                "clips": {"kaykit": "1H_Melee_Attack_Chop", "quaternius": "Sword_Attack"}},
     # `Idle_Loop` is the neutral stand - sword hanging, shield at the side -
-    # which is the pose the concept pick shows and so the one the turnaround
-    # feature's identity gate compares like with like; the UAL's other idle,
+    # which is the pose the concept pick shows, so an idle cell compares like
+    # with like against its reference view; the UAL's other idle,
     # `Sword_Idle`, is a combat crouch with the blade raised.
     "idle": {"verb": "idle", "clips": {"kaykit": "Idle", "quaternius": "Idle_Loop"}},
     "walk": {"verb": "walk", "clips": {"kaykit": "Walking_A", "quaternius": "Walk_Loop"}},
@@ -389,8 +389,12 @@ DEFAULT_UNIT_HEIGHT = 53
 UNIT_HEIGHT: dict[str, int] = {
     # low / bestial 34-40
     "hound": 37,
-    # light 46-50
-    "archer": 48, "chanter": 48, "lurker": 48, "mage": 48,
+    # light 46-50. `hooded_archer` is spelled out beside `archer` because
+    # `height_for_unit` matches the whole slug, not a word in it: the studio's
+    # first archer is named `hooded_archer` and was silently taking
+    # DEFAULT_UNIT_HEIGHT (53, the standard body) until 2026-09-24.
+    "archer": 48, "hooded_archer": 48,
+    "chanter": 48, "lurker": 48, "mage": 48,
     # standard 50-56
     "knight": 53, "pikeman": 53, "raider": 53, "ranger": 53, "shaman": 53,
     "vanguard": 53, "warden": 53, "wight": 53, "wizard": 53,
@@ -441,7 +445,7 @@ def direction_name(yaw: int = DEFAULT_YAW, elevation: str = DEFAULT_ELEVATION) -
     """The cell name for a (yaw, elevation) pair: (45, "side") -> "s45".
 
     Refuses anything outside the table, so a stage cannot write a direction
-    the turnaround and the action matrix will never ask for.
+    the action matrix will never ask for.
     """
     elevation = str(elevation).strip().lower()
     if elevation not in DIRECTION_ELEVATIONS:
@@ -498,7 +502,7 @@ CLIP_CELL = BASE_CELL
 CLIP_FRAME_STEP = 4
 # One prompt for every action; the action-specific phrase is looked up below
 # and the unit is the reference image, not the words. `--prompt` replaces it.
-# The view phrase names the direction cell (the turnaround feature): the
+# The view phrase names the direction cell (the camera direction feature): the
 # default cell's is the sentence every s0 clip was rendered with, word for
 # word, and any other cell says which way the figure faces instead of
 # "facing right".
@@ -530,6 +534,18 @@ CLIP_ACTION_PHRASES: dict[str, str] = {
     "walk": "walking",
     "shoot": "drawing and loosing a bow",
     "cast": "casting a spell",
+    # The action matrix feature (#278). Two of the five studio actions had no
+    # row, so `clip_prompt` fell through to "performing a run" / "performing a
+    # jump" - grammatical, and a weaker description than every other action
+    # gets. The matrix renders all five, so the two gaps stop being theoretical.
+    # Keyed by the PIPELINE VERB, like every row above (`run` and `jump` happen
+    # to be the same word as their studio action; `attack` is `strike`).
+    # Wording follows the rows above: a present participle naming the motion,
+    # no camera and no style - the view phrase and the style come from
+    # CLIP_PROMPT, and a phrase that repeated them would fight the view
+    # sentence on a back-facing cell.
+    "run": "running at full stride",
+    "jump": "leaping, feet off the ground",
 }
 
 
@@ -614,29 +630,20 @@ def clip_negative(template: str, avoid: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The turnaround feature - `anim turnaround`, one idle still per direction
+# The action matrix feature (#278) - `anim matrix`, every (action x direction)
 # ---------------------------------------------------------------------------
-# sprite-studio.md S2: from the accepted base, one idle still per direction,
-# and the identity gate sits on those stills before any clip is spent. v1 is
-# the eight side facings; `--elevation top` is accepted by the code (the same
-# eight yaws) and left to the top-down pitch feature (#285) to run.
-TURNAROUND_ACTION = "idle"
-TURNAROUND_RIG = "quaternius"          # the bake-off ruling (2026-09-21): Quaternius UAL
-# The still is frame 0 of the idle clip, sampled TURNAROUND_CLIP_FRAMES times
-# at t=0 so `anim clip` renders a 4n+1 video (Wan's latent holds 4 frames per
-# slot; 5 is n=1, the shortest clip with a temporal window) of one held pose,
-# and the frame in the middle of it becomes the still - the first frame of a
-# Wan clip is the one the VAE encodes on its own and the one that leans on
-# the reference most, the last is the padding end.
-TURNAROUND_CLIP_FRAMES = 5
-TURNAROUND_STILL_INDEX = TURNAROUND_CLIP_FRAMES // 2
-# Route V as the bake-off ran it: skeleton over full-body depth at gain 0.35.
-TURNAROUND_CONTROL = "blend"
-TURNAROUND_DEPTH_GAIN = 0.35
-TURNAROUND_CELL = CLIP_CELL
-# A direction that has not answered in this long is recorded as failed and
-# the run goes on to the next (the brief's budget: ~1 min of GPU, 5 at most).
-TURNAROUND_TIMEOUT_S = float(os.environ.get("ANIM_TURNAROUND_TIMEOUT", "300"))
+# One clip per (action, direction) cell through route V as the bake-off ruled
+# it (2026-09-21): the Quaternius UAL rig, skeleton over full-body depth at
+# gain 0.35, the clip cell.
+MATRIX_RIG = "quaternius"
+# All five of the studio's actions. Not a copy of the names: the matrix renders
+# whatever `STUDIO_ACTIONS` holds, so a sixth action is a row in that table and
+# nothing here. v1 adds none (sprite-studio.md S2).
+MATRIX_ACTIONS: tuple[str, ...] = tuple(STUDIO_ACTIONS)
+MATRIX_CONTROL = "blend"
+MATRIX_DEPTH_GAIN = 0.35
+MATRIX_CELL = CLIP_CELL
+MATRIX_CLIP_FPS = EXTRACT_FPS
 # The multi-view reference feature (#298): which of the base's views each
 # direction hands Wan as `ref_image`, best first. "front" is the base itself
 # (the concept pick, a front view). By the compass above: yaw 0 shows the
@@ -649,8 +656,9 @@ TURNAROUND_TIMEOUT_S = float(os.environ.get("ANIM_TURNAROUND_TIMEOUT", "300"))
 # that is not itself generated from a reference). The alternative for an
 # oblique - the nearest profile - is one entry away. A view that is not on
 # the base falls back down this list and finally to the front, with a
-# warning in the record and on the page. Top cells use their yaw's row.
-TURNAROUND_REFERENCE_BY_DIR: dict[str, tuple[str, ...]] = {
+# warning in the record (the matrix refuses instead). Top cells use their
+# yaw's row.
+MATRIX_REFERENCE_BY_DIR: dict[str, tuple[str, ...]] = {
     "s0": ("right", "front"),
     "s45": ("back_right", "back", "front"),
     "s90": ("back", "front"),
@@ -662,12 +670,43 @@ TURNAROUND_REFERENCE_BY_DIR: dict[str, tuple[str, ...]] = {
 }
 
 
-def turnaround_reference_views(direction_cell: str) -> tuple[str, ...]:
+def matrix_reference_views(direction_cell: str) -> tuple[str, ...]:
     """The views to try for one cell, best first; the last is always "front".
     A top cell tries the top-down view first, then its yaw's row."""
     yaw, elevation = direction(direction_cell)
-    row = TURNAROUND_REFERENCE_BY_DIR[f"s{yaw}"]
+    row = MATRIX_REFERENCE_BY_DIR[f"s{yaw}"]
     return ("top", *row) if elevation == "top" else row
+
+
+# A matrix cell is a whole rig clip, whose frame count is its duration x
+# MATRIX_CLIP_FPS and so unbounded - the UAL's Idle_Loop is 2.5 s, which is 31
+# frames, padded to 33. Wan's cost is linear in the frame count, so an uncapped
+# matrix cell is an uncapped bill. Past this many frames the rig is sampled at
+# this many evenly-spaced instants instead of at fps (`matrix.clip_times`):
+# fewer, wider samples of the same motion rather than a truncated clip, because
+# a truncated clip would drop the recovery and `pick --phases` needs the whole arc.
+MATRIX_CLIP_MAX_FRAMES = int(os.environ.get("ANIM_MATRIX_MAX_FRAMES", "25"))
+# One cell's GPU job: a whole clip.
+MATRIX_TIMEOUT_S = float(os.environ.get("ANIM_MATRIX_TIMEOUT", "600"))
+# The #277 hold. The motion exaggeration feature is ordered BEFORE this one in
+# sprite-studio.md so the matrix renders once rather than twice; until it
+# lands the stage refuses a selection wider than this, before any GPU call.
+# 8 = one action across all eight facings, ~10 minutes of warm GPU. `--max-cells
+# 0` (or ANIM_MATRIX_MAX_CELLS=0) is the owner accepting the re-render.
+# When #277 lands, `git grep MATRIX_MAX_CELLS` finds everything to delete.
+MATRIX_MAX_CELLS = int(os.environ.get("ANIM_MATRIX_MAX_CELLS", "8"))
+# A capped sample must still feed the picker: `pick --phases` wants one frame
+# per budgeted frame of the longest action (attack, 12) plus the endpoint, so
+# a cap under that would hand the picker fewer frames than the plan asks for
+# and every cell would come back short. Checked here rather than at the first
+# render, so a bad ANIM_MATRIX_MAX_FRAMES fails on import and not 90 seconds in.
+_MATRIX_MIN_FRAMES = max(row["budget"] for row in ACTION_PHASES.values()) + 1
+if MATRIX_CLIP_MAX_FRAMES < _MATRIX_MIN_FRAMES:
+    raise ValueError(
+        f"ANIM_MATRIX_MAX_FRAMES is {MATRIX_CLIP_MAX_FRAMES}; a matrix cell needs "
+        f"at least {_MATRIX_MIN_FRAMES} frames so `pick --phases` can meet the "
+        f"largest action budget ({max(row['budget'] for row in ACTION_PHASES.values())} "
+        f"frames, plus the clip's end)")
 
 
 # ---------------------------------------------------------------------------
@@ -717,7 +756,7 @@ def concept_prompt(description: str, trigger: str | None = None) -> str:
 
 
 # The multi-view reference feature (#298): `anim concept --views` renders the
-# accepted base from other sides so the turnaround can hand Wan a reference
+# accepted base from other sides so the matrix can hand Wan a reference
 # that already shows that side. The views are named for the SIDE OF THE
 # CHARACTER the camera sees, which is what the compass in DIRECTIONS calls
 # them: "right" is the right profile (yaw 0, facing screen right), "left" the
@@ -725,7 +764,7 @@ def concept_prompt(description: str, trigger: str | None = None) -> str:
 # they show. "front" is the base itself and is never rendered.
 # `elevation` is "side" for the seven eye-level views and "top" for the
 # top-down one (the concept generation feature, #285): the top cells of the
-# turnaround take the top view first, then their yaw's row.
+# matrix take the top view first, then their yaw's row.
 CONCEPT_VIEWS: dict[str, dict[str, Any]] = {
     "back": {"yaw": 90, "elevation": "side",
              "sentence": "from directly behind, turned all the way round: "
@@ -763,6 +802,26 @@ CONCEPT_ADVANCED_VIEWS: tuple[str, ...] = ("right", "back_right", "back_left",
                                            "front_left", "front_right")
 CONCEPT_VIEW_COUNT = 2
 FRONT_VIEW = "front"
+# The `--views` keywords that name a whole group, so a script and the Concept
+# tab's buttons can say the same thing: `all` (every view), `main` and
+# `advanced` (the two the tab groups by). `advanced` is what the tab's sweep
+# button sends. Note `right` is in CORE - the no-arg default - AND in ADVANCED:
+# the two splits answer different questions and are deliberately not the same
+# set. See CONTEXT.md, "core / main / advanced".
+CONCEPT_VIEW_GROUPS: dict[str, tuple[str, ...]] = {
+    "main": CONCEPT_MAIN_VIEWS,
+    "advanced": CONCEPT_ADVANCED_VIEWS,
+}
+# How long one view render takes, for the estimate the Concept tab quotes
+# before a sweep. Measured on the A5000 over the 32 view renders recorded in
+# work/*_concept/views/views.json (2026-09-24): a warm render is ~10.8 s
+# median, a second candidate of the same view ~8 s, and the FIRST render of a
+# cold run is 164-201 s while Qwen-Image-Edit pages into VRAM. A recorded
+# figure above the cutoff is that cold first render and is dropped from the
+# median rather than dragging it up by a factor of three.
+CONCEPT_VIEW_SECONDS = 11.0
+CONCEPT_VIEW_COLD_SECONDS = 190.0
+CONCEPT_WARM_CUTOFF_S = 60.0
 # The edit prompt for Qwen-Image-Edit (gpu/workflows/view_pass.json): image1
 # is the base; the output is the same character, same size, from the view.
 CONCEPT_VIEW_PROMPT = (
@@ -773,8 +832,9 @@ CONCEPT_VIEW_PROMPT = (
 
 
 def concept_view_names(spec: str | Sequence[str] | None) -> list[str]:
-    """`--views back,left,right` | `all` | None (the core three) -> names in
-    table order; an unknown name is refused."""
+    """`--views back,left,right` | `all` | `main` | `advanced` | None (the
+    core four) -> names in table order; an unknown name is refused. A group
+    keyword may sit in a list with plain names (`main,front_right`)."""
     if spec is None or (isinstance(spec, str) and spec.strip() == ""):
         wanted = list(CONCEPT_CORE_VIEWS)
     elif isinstance(spec, str):
@@ -783,16 +843,101 @@ def concept_view_names(spec: str | Sequence[str] | None) -> list[str]:
         wanted = [str(v).strip().lower() for v in spec if str(v).strip()]
     if "all" in wanted:
         return list(CONCEPT_VIEWS)
+    wanted = [name for v in wanted for name in CONCEPT_VIEW_GROUPS.get(v, (v,))]
     unknown = [v for v in wanted if v not in CONCEPT_VIEWS]
     if unknown:
-        raise ValueError(f"unknown view(s) {unknown}; one of {list(CONCEPT_VIEWS)} or 'all'")
+        raise ValueError(f"unknown view(s) {unknown}; one of {list(CONCEPT_VIEWS)}, "
+                         f"a group ({', '.join(CONCEPT_VIEW_GROUPS)}) or 'all'")
     return [v for v in CONCEPT_VIEWS if v in wanted]
+
+
+def concept_view_seconds(recorded: Sequence[float]) -> float:
+    """The warm median of recorded view-render seconds, cold first renders
+    dropped; CONCEPT_VIEW_SECONDS when nothing warm was recorded."""
+    warm = sorted(s for s in recorded if 0 < s < CONCEPT_WARM_CUTOFF_S)
+    if not warm:
+        return CONCEPT_VIEW_SECONDS
+    middle = len(warm) // 2
+    if len(warm) % 2:
+        return round(warm[middle], 1)
+    return round((warm[middle - 1] + warm[middle]) / 2, 1)
 
 
 def concept_view_prompt(view: str, parts: str | None) -> str:
     sentence = CONCEPT_VIEWS[view]["sentence"]
     parts = (parts or "").strip().rstrip(",.") or "outfit"
     return CONCEPT_VIEW_PROMPT.format(sentence=sentence, parts=parts)
+
+
+# ---------------------------------------------------------------------------
+# The mirrored view feature - three of the eight views are a flip of another
+# ---------------------------------------------------------------------------
+# Every view above costs one Qwen-Image-Edit round trip. Three of them need
+# not: by the compass this file has used since the camera direction feature
+# (DIRECTIONS, and MATRIX_REFERENCE_BY_DIR's own note) yaw 0 shows the
+# character's RIGHT profile, 180 the left, 90 the back and 270 the front. A
+# horizontal flip of the picture is a reflection through the vertical plane
+# that contains the camera axis, and it takes a camera at yaw t to the camera
+# at yaw 180 - t. So:
+#
+#     right (0)        <-> left (180)
+#     back_right (45)  <-> back_left (135)
+#     front_right(315) <-> front_left (225)
+#
+# and `back` (90), `top` (yaw 270 from above) and `front` (270, the base
+# itself) map to THEMSELVES - they sit on the symmetry plane and have no
+# partner. They must never be offered as mirrorable: flipping the back view
+# gives the back view, so the "derived" image would be a copy claiming to be
+# a different facing.
+#
+# DERIVED, NOT LISTED. The pairs below are computed from the yaws in
+# CONCEPT_VIEWS rather than typed out, so a view added or re-aimed there
+# cannot leave a stale second table behind; the self-mapping ones drop out on
+# their own, which is why `back` / `top` need no special case. `elevation` is
+# part of the key because a top-down camera flipped horizontally is still a
+# top-down camera - a flip never changes the pitch.
+#
+# The rejected alternative was to mirror at RENDER time instead - have the
+# matrix ask for "left, flipped" and never store the file. That would
+# save a few hundred KB and cost the thing this codebase is built on: a view
+# on disk with a sha256 and a source. A stored flip is as traceable as a
+# generated one, and everything downstream (`reference_for`, the matrix's
+# prerequisite, the board's ring) keeps reading one shape.
+def _mirror_pairs() -> dict[str, str]:
+    by_camera = {(spec["yaw"], spec.get("elevation", "side")): name
+                 for name, spec in CONCEPT_VIEWS.items()}
+    pairs: dict[str, str] = {}
+    for name, spec in CONCEPT_VIEWS.items():
+        partner = by_camera.get(((180 - int(spec["yaw"])) % 360,
+                                 spec.get("elevation", "side")))
+        if partner is not None and partner != name:
+            pairs[name] = partner
+    # The pairing has to be an involution - if `right` mirrors from `left` then
+    # `left` mirrors from `right` - or one of the two would derive from a view
+    # that cannot derive back, and the UI would offer a one-way button. Checked
+    # on import rather than at the first flip, so a bad yaw in CONCEPT_VIEWS
+    # fails here and not in front of the owner.
+    for view, partner in pairs.items():
+        if pairs.get(partner) != view:
+            raise ValueError(f"CONCEPT_VIEWS: {view!r} mirrors to {partner!r} but not back; "
+                             f"a view's yaw must have its 180 - yaw twin in the table")
+    return pairs
+
+
+CONCEPT_MIRROR_PAIRS: dict[str, str] = _mirror_pairs()
+
+
+def mirror_of(view: str) -> str | None:
+    """The view this one is the horizontal flip of, or None when it has no
+    partner - `back`, `top` and `front` sit on the symmetry plane, and so
+    does any name that is not a view at all."""
+    return CONCEPT_MIRROR_PAIRS.get(str(view or "").strip().lower())
+
+
+def mirrorable_views() -> tuple[str, ...]:
+    """The views that can be derived from another, in table order - what a
+    refusal names so the owner does not have to guess."""
+    return tuple(v for v in CONCEPT_VIEWS if v in CONCEPT_MIRROR_PAIRS)
 
 
 # The concept generation feature: an instruction edit of one attempt through
@@ -846,6 +991,225 @@ CONCEPT_IMG2IMG_STRENGTH = 0.55
 CONCEPT_INPAINT_STRENGTH = 0.9
 
 
+# ---------------------------------------------------------------------------
+# The animate tab feature - the owner directs every frame, direction by direction
+# ---------------------------------------------------------------------------
+# One animation is one (unit, action, direction) cell: a row of frames the
+# owner generates, judges and fixes one at a time, with approval as the gate
+# and the approved frames written as the cell's finished frames. The row
+# starts as the phase template (`ACTION_PHASES[action]["budget"]` frames, the
+# phase keys marked as keyframes at `PhasePlan.keys()`) and the owner adds,
+# removes and marks frames from there.
+#
+# Side-on only for now: the eight side cells, each drawn from its OWN
+# accepted view (s270 is the front, the accepted base itself). Top-down is a
+# later milestone and is refused rather than half-supported.
+ANIMATE_ELEVATION = "side"
+# What a frame attempt is drawn from, besides the optional skeleton:
+# `view` - the direction's accepted view; `keys` - the two nearest APPROVED
+# keyframes either side of the frame; `both` - the view and the two keys.
+# Keyframes default to `view`, in-betweens to `keys`.
+ANIMATE_DRAW_FROM: tuple[str, ...] = ("view", "keys", "both")
+# Qwen-Image-Edit-2509's TextEncodeQwenImageEditPlus takes image1..image3.
+ANIMATE_MAX_IMAGES = 3
+# The pose slider scrubs the rig clip at this rate - finer than the 12 fps the
+# animation plays at, so a pose between two game frames can still be chosen.
+# Rendered on the CPU once per (unit, action, direction) and cached.
+ANIMATE_SCRUB_FPS = 24
+# How many frames a row may grow to. The studio's contract caps a finished
+# clip at PHASE_CAP; the owner may go past it by hand, but not without limit.
+ANIMATE_MAX_FRAMES = 24
+# The play-back rate and the one tick every frame holds in the output timing.
+ANIMATE_FPS = PHASE_FPS
+# Per action, per phase: what the pose is, in the owner's words. Pre-fills a
+# keyframe's prompt; the owner edits it and each attempt remembers its own.
+ANIMATE_PHASE_PROMPTS: dict[str, dict[str, str]] = {
+    "attack": {
+        "start": "standing ready at rest, the sword lowered, weight even on both feet",
+        "wind-up": "winding up a sword swing, the sword pulled back over the shoulder, "
+                   "weight on the back foot",
+        "action": "mid-swing, the sword slashing forward across the body, weight "
+                  "lunging onto the front foot",
+        "wind-down": "recovering after the swing, the sword lowered and following "
+                     "through, settling back toward a stand",
+        "end": "back to standing ready at rest, the sword lowered",
+    },
+    "idle": {
+        "start": "standing relaxed at rest, the weapon held loosely",
+        "wind-up": "breathing in at rest, the chest lifting a little, the shoulders slightly raised",
+        "action": "at the top of the breath, standing relaxed, the weapon held loosely",
+        "wind-down": "breathing out at rest, the shoulders settling back down",
+        "end": "standing relaxed at rest again, about to breathe in",
+    },
+    "walk": {
+        "start": "walking, the contact pose, the right foot forward and the left arm swinging forward",
+        "wind-up": "walking, mid-stride, the left foot stepping forward and the right arm swinging forward",
+        "action": "walking, the passing pose, one foot under the body and the other lifting past it",
+        "wind-down": "walking, mid-stride, the right foot stepping forward and the left arm swinging forward",
+        "end": "walking, about to repeat the contact pose, the right foot reaching forward",
+    },
+    "run": {
+        "start": "running, the contact pose, leaning forward, the right foot striking the ground",
+        "wind-up": "running, leaning forward, the left knee driving up and the right arm pumping forward",
+        "action": "running, both feet off the ground, the body leaning forward",
+        "wind-down": "running, leaning forward, the right knee driving up and the left arm pumping forward",
+        "end": "running, about to strike the ground again with the right foot",
+    },
+    "jump": {
+        "start": "standing ready to jump, the knees slightly bent",
+        "wind-up": "crouching to jump, the knees bent deep and the arms swung back",
+        "action": "in the air at the top of a jump, the legs tucked and the arms raised",
+        "wind-down": "landing from a jump, the knees bent to take the impact, the arms out for balance",
+        "end": "standing again after the landing, the weight settled",
+    },
+}
+# The whole Qwen-Image-Edit prompt around the owner's pose sentence. Which
+# image is which depends on what the attempt was drawn from, so the roles are
+# a sentence of their own (`animate_prompt`).
+ANIMATE_PROMPT = (
+    "Redraw the same pixel art character from image1, {pose}. {roles}The same character: "
+    "the same {parts}, the same colours, the same outline weight, the same proportions and "
+    "the same size, seen from the same side as image1. One figure only, full body in frame, "
+    "feet at the bottom edge, plain flat white background, no ground shadow, no floor"
+    "{no_lines}.")
+
+
+def phase_label(phase: str | None) -> str:
+    """"wind-up" -> "Wind-up"; what a keyframe is called on the tab."""
+    text = str(phase or "")
+    return text[:1].upper() + text[1:]
+
+
+# A unit whose art does not fit the default sentences gets its own, per action
+# and phase; a phase it leaves out falls back to ANIMATE_PHASE_PROMPTS. The
+# archer's art carries no weapon at all (no bow on the base or any view - see
+# UNIT_PARTS), so the owner ruled its attack a spell cast from the hands rather
+# than a sword the design does not have (2026-09-26).
+ANIMATE_UNIT_PHASE_PROMPTS: dict[str, dict[str, dict[str, str]]] = {
+    "hooded_archer": {
+        "attack": {
+            "start": "standing ready at rest, both hands low at the sides, empty-handed",
+            "wind-up": "gathering a spell, both hands drawn back to the chest, the body "
+                       "coiled and leaning back, weight on the back foot, empty-handed",
+            "action": "casting a spell, both arms thrust forward with the palms out and a "
+                      "small burst of green magic at the hands, weight lunging onto the "
+                      "front foot",
+            "wind-down": "recovering after the cast, the arms lowering, the magic gone, "
+                         "settling back toward a stand, empty-handed",
+            "end": "back to standing ready at rest, both hands low at the sides, "
+                   "empty-handed",
+        },
+    },
+}
+
+
+def animate_phase_prompt(action: str, phase: str, unit: str | None = None) -> str:
+    """A keyframe's pre-filled pose sentence - the unit's own when it has one
+    for that action and phase; a phase with none gets its name."""
+    name = studio_action(action) or action
+    own = ((ANIMATE_UNIT_PHASE_PROMPTS.get(unit or "") or {}).get(name) or {}).get(phase)
+    return (own or (ANIMATE_PHASE_PROMPTS.get(name) or {}).get(phase)
+            or f"{phase.replace('-', ' ')} of the {name}")
+
+
+def animate_inbetween_prompt(action: str, before: str | None, after: str | None) -> str:
+    """An in-between's pre-filled pose sentence: moving from the keyframe
+    before it toward the keyframe after it."""
+    name = studio_action(action) or action
+    if before and after and before != after:
+        return (f"{name}, in between two key poses, moving from the {before} toward "
+                f"the {after}")
+    if before or after:
+        return f"{name}, in between two key poses, moving on from the {before or after}"
+    return f"{name}, in motion"
+
+
+# Camera words the unit's description may carry ("facing forward" - it was
+# written for the front view the concept tab rendered). Pasted into a frame
+# drawn at another direction they contradict image1, so a frame's copy of the
+# description drops them; the direction is image1's to say.
+ANIMATE_CAMERA_WORDS = (
+    r"(?:facing|turned|looking)\s+(?:forward|forwards|the\s+viewer|the\s+camera|front|left|right|away|back|backwards)",
+    r"(?:front|side|back|rear|profile|three[-\s]quarter)\s+view",
+    r"(?:seen|viewed)\s+from\s+(?:the\s+)?(?:front|side|back|behind|left|right|above)",
+    r"from\s+(?:the\s+)?(?:front|behind)",
+    r"in\s+profile",
+)
+
+
+def strip_camera_words(text: str | None) -> str:
+    """The description with its camera words and the empty sentences they
+    leave taken out: "a hooded green archer. a fantasy ranger. facing forward"
+    -> "a hooded green archer, a fantasy ranger"."""
+    import re
+
+    out = str(text or "")
+    for pattern in ANIMATE_CAMERA_WORDS:
+        out = re.sub(pattern, "", out, flags=re.IGNORECASE)
+    pieces = [" ".join(p.split()).strip(" ,") for p in re.split(r"[.;]", out)]
+    return ", ".join(p for p in pieces if p)
+
+
+def animate_prompt(pose: str, roles: Sequence[str], parts: str | None,
+                   avoid: str | None = None) -> str:
+    """The prompt as sent: the pose sentence, what each image is (`roles`, one
+    of `view` / `before` / `after` / `skeleton` per image, in image order),
+    the parts (camera words stripped), and the unit's avoid phrase as a
+    sentence of its own - the Qwen-Image-Edit graph runs at cfg 1, where a
+    negative prompt does nothing, so "what must not appear" has to be said in
+    the positive one."""
+    pose = " ".join(str(pose or "").split()).strip().rstrip(".")
+    if not pose:
+        raise ValueError("a frame needs a prompt: what the pose is")
+    said: list[str] = []
+    roles = list(roles)
+    if "before" in roles and "after" in roles:
+        b, a = roles.index("before") + 1, roles.index("after") + 1
+        said.append(f"image{b} is the same character a moment earlier and image{a} a moment "
+                    f"later in the same motion; draw the pose in between them.")
+    elif "before" in roles or "after" in roles:
+        n = (roles.index("before") if "before" in roles else roles.index("after")) + 1
+        said.append(f"image{n} is the same character a moment "
+                    f"{'earlier' if 'before' in roles else 'later'} in the same motion; carry "
+                    f"the motion on from it.")
+    if "skeleton" in roles:
+        n = roles.index("skeleton") + 1
+        said.append(f"Put the character in the exact body pose of the stick-figure skeleton "
+                    f"in image{n}: follow every limb - the arms, the legs, the torso lean and "
+                    f"the head.")
+    parts = strip_camera_words(parts).rstrip(",.") or "outfit"
+    avoid = " ".join(str(avoid or "").split()).strip().rstrip(",.")
+    text = ANIMATE_PROMPT.format(
+        pose=pose, roles="".join(f"{s} " for s in said), parts=parts,
+        no_lines=", no skeleton lines" if "skeleton" in roles else "")
+    return f"{text} Do not add: {avoid}." if avoid else text
+
+
+def view_for_direction(direction_cell: str) -> str:
+    """The view a side direction is drawn from: its own camera. s270 is the
+    front - the accepted base itself."""
+    yaw, elevation = direction(direction_cell)
+    if yaw == 270 and elevation == "side":
+        return FRONT_VIEW
+    for view, spec in CONCEPT_VIEWS.items():
+        if int(spec["yaw"]) == yaw and spec.get("elevation", "side") == elevation:
+            return view
+    raise ValueError(f"no view looks from {direction_cell!r}")
+
+
+def mirror_direction(direction_cell: str) -> str | None:
+    """The direction whose animation flips into this one - the camera at
+    yaw 180 - t, the same pairs as the views (right<->left, back_right<->
+    back_left, front_left<->front_right) - or None for s90 and s270, which
+    look straight down the symmetry plane."""
+    yaw, elevation = direction(direction_cell)
+    partner = (180 - yaw) % 360
+    if partner == yaw:
+        return None
+    return direction_name(partner, elevation)
+
+
+# ---------------------------------------------------------------------------
 # The part palette lock feature - what each unit is made of, and where it is
 # ---------------------------------------------------------------------------
 # `anim post --parts` masks each finished frame into these parts (SAM 2.1,
@@ -879,6 +1243,39 @@ UNIT_PARTS: dict[str, tuple[Part, ...]] = {
                    ("left_knee", "left_ankle", 0.5),
                    ("right_knee", "right_ankle", 0.95),
                    ("left_knee", "left_ankle", 0.95))),
+    ),
+    # The studio's second unit. NOT the knight's regions: this one wears one
+    # full-length cloak, so `arms` / `torso` / `legs` name nothing a segmenter
+    # can find - measured on the accepted base 2026-09-24, every candidate that
+    # held one of the three held the other two as well and all three scored
+    # below the contamination gate. What the art actually separates into is the
+    # hood, the two gloves, the two boots and the cloak that covers the rest;
+    # the cloak is last because priority resolves an overlap to the earlier row
+    # and it is the one that would otherwise swallow the small parts. There is
+    # deliberately no bow: a `prop=` part is a rigkit polygon drawn from
+    # UNIT_PROPS onto the skeleton, and the ruled Quaternius rig carries a
+    # sword, so a bow part would ask for a region that is never in the control
+    # image. The bow's colours ride in `gloves` until a rig ships one.
+    "hooded_archer": (
+        # The hood is the whole mass over the skull, its dark face opening
+        # included - the crown at 2.0 rather than the knight's 1.35 because the
+        # opening is large enough that 1.35 lands inside it, and SAM then
+        # returns the opening instead of the hood (2026-09-24: an 11k px face
+        # blob beat the 26k px hood, and the palette came out all shadow).
+        Part("hood", joints=("nose", "right_eye", "left_eye", "right_ear",
+                             "left_ear"),
+             mids=(("neck", "nose", 2.0),
+                   ("neck", "right_ear", 1.35), ("neck", "left_ear", 1.35))),
+        Part("gloves", joints=("right_wrist", "left_wrist"),
+             mids=(("right_elbow", "right_wrist", 1.12),
+                   ("left_elbow", "left_wrist", 1.12))),
+        Part("boots", joints=("right_ankle", "left_ankle"),
+             mids=(("right_knee", "right_ankle", 1.06),
+                   ("left_knee", "left_ankle", 1.06))),
+        Part("cloak", joints=("neck", "right_hip", "left_hip"),
+             mids=(("neck", "right_hip", 0.5), ("neck", "left_hip", 0.5),
+                   ("right_hip", "right_knee", 0.6),
+                   ("left_hip", "left_knee", 0.6))),
     ),
 }
 

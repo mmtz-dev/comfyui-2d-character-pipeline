@@ -344,11 +344,7 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
     try:
         stats = client.system_stats()
     except comfy.ComfyError as exc:
-        raise comfy.ComfyUnreachable(
-            f"the GPU image service is not answering at {client.base_url}: {exc}\n"
-            f"Start it with: sudo systemctl start docker  (owner, in a TTY), then\n"
-            f"  docker --context docker-default compose -f "
-            f"tools/anim-pipeline/gpu/compose.yml up -d") from exc
+        raise comfy.unreachable(client.base_url, exc) from exc
 
     job.clip_dir.mkdir(parents=True, exist_ok=True)
     control_frames, mapping = build_control_frames(job, mode, length, cell, depth_gain)
@@ -368,7 +364,7 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
     comfy.patch(workflow, "seed", seed=seed)
     comfy.patch(workflow, "output prefix",
                 filename_prefix=f"anim_pipeline/{job.name}/clip/frame")
-    # The prompt names the cell's view (the turnaround feature): s0 is the
+    # The prompt names the cell's view (the camera direction feature): s0 is the
     # sentence every clip so far was rendered with; any other cell says which
     # way the figure faces instead of "facing right". When the unit's base
     # carries a parts phrase (the multi-view reference feature) the prompt

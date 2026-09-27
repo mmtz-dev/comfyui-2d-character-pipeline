@@ -4,6 +4,720 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-26 — Animate prompts: the costume without the camera, and the avoid list said aloud
+
+**What.** Every Animate frame's prompt now (1) drops camera words from the unit's description
+(`config.strip_camera_words`: "facing forward", "front view", "seen from the side", ...) and (2)
+ends with `Do not add: <avoid phrase>.` The archer's base now carries a real parts phrase (hood
+with a shadowed face opening, ankle-length cloak with wide sleeves, dark gloves, dark brown
+boots) and an avoid phrase (armour, shoulder pads, a visible face, hair, trousers, bare arms or
+legs, a belt), set with `anim concept --unit hooded_archer --parts ... --avoid ...`. Two tests.
+
+**Why.** The first Animate wind-up was sent "the same a hooded green archer. a fantasy ranger.
+facing forward" — the archer had no parts phrase, so the whole front-view description stood in
+for one, and "facing forward" went into a `left` frame against its own image1. Nothing named the
+costume and nothing ruled out what drifted (a face, blue trousers, the bake-off's pauldrons).
+The avoid phrase has to ride in the positive prompt: the Qwen-Image-Edit graph samples at cfg 1,
+where a negative prompt has no effect.
+
+**The archer's attack is a spell.** Its art carries no weapon at all (no bow on the base or any
+view, deliberately, per `config.UNIT_PARTS`), and the owner ruled against inventing one per
+frame: `config.ANIMATE_UNIT_PHASE_PROMPTS` gives a unit its own pose sentences per action and
+phase (the archer's attack: gather a spell at the chest, thrust both palms out with a small
+burst of green magic, recover, all empty-handed), falling back to `ANIMATE_PHASE_PROMPTS` for
+anything it leaves out. The wind-up frame's stored sword prompt from the smoke run was cleared
+so it takes the new default; its attempt keeps the prompt it was actually sent. Note the rig's
+attack clip is still `Sword_Attack`, so a ticked skeleton poses a sword swing - untick it or
+scrub the slider for a cast. pytest 732 passed, 4 skipped.
+
+---
+
+## 2026-09-26 — Cancel no longer strands a frame on "generating"
+
+**What.** `anim/cli.py` installs a SIGTERM handler that raises `SystemExit(128 + signum)`;
+one test in `tests/test_cli.py` pins it.
+
+**Why.** The studio's Cancel (`POST /runs/{id}/cancel`) sends SIGTERM to the stage. Python's
+default for SIGTERM ends the process on the spot, so `render_pending`'s `except BaseException`
+cleanup never ran and the attempt it had planned stayed in the record with `seconds: null`.
+`animate.frame_status` reads such a row as `generating`, so a frame cancelled mid-draw showed a
+spinner forever and **Generate all** skipped it, until someone pressed ↻ on that one frame (whose
+`plan` drops the leftover). Raising `SystemExit` unwinds through the cleanup inside the run
+manager's 5 s grace. The Concept tab gains the same fix for free. pytest 729 passed, 4 skipped.
+
+**Not changed.** How a press is sent: one run per press, frames drawn one after another inside
+it, one ComfyUI prompt each, and one GPU run at a time (`409` for a second). Frames finished
+before a Cancel keep their attempts.
+
+---
+
+## 2026-09-26 — the animate tab feature (#317)
+
+**What.** An **Animate** tab in the studio and `anim animate` under it, built to the mockup the
+owner approved (`~/.cache/claude/visuals/sprite-studio/keyframe-mockup/`), in the studio's own
+colours. One animation = one (unit, action, direction) cell, drawn frame by frame:
+
+- **Direction** — a compass of the unit's eight side-on views; each direction draws from **its
+  own** accepted view (the base itself at `s270`) and is shown blocked with the reason otherwise.
+  Top-down disabled, "later". **Animation** — the five studio actions with their frame counts.
+- **The frame row** — starts as the phase template (attack: 12 frames, keyframes at 0/2/6/9/11 —
+  Start / Wind-up / Action / Wind-down / End, gold labels; the cycles take `PhasePlan.keys()`).
+  Frames can be added (sampling the clip halfway between their neighbours), removed (attempts
+  kept in the record's `removed`) and marked / unmarked as keyframes with a phase. Stable ids
+  (`f03`) so attempt files never collide. Statuses: empty / generating / to review / approved /
+  rejected. Toolbar: **Generate all** (two steps, below), keyframes only, regenerate rejected,
+  approve all reviewed, mirror, "N / M approved".
+- **The selected frame** — big picture + its skeleton, every attempt (click = current), prompt
+  (per phase for a keyframe; "moving from the wind-up toward the action" for an in-between),
+  draw from, the pose slider (the rig clip at 24 fps, default = the frame's template instant,
+  remembered on the frame and recorded per attempt), the installed qwen-edit models, Generate /
+  Approve / Reject / Pixel edit / Inpaint. **Play** — full size and game size (48 px for
+  `hooded_archer`), 4–24 fps (default 12), approved only, loop.
+- **Output** — the approval that completes the row writes the frames through the post chain
+  (matte, downscale, palette snap) into `work/<unit>_<verb>[_<dir>]/`: `job.json`
+  (`motion_source.kind: animate`), `post/<unit>_<verb>_<n>.png`, `post/report.json`, and a
+  `picks.json` whose timing block carries one tick per frame at 12 fps, each frame's phase and
+  the keyframe positions. `export.find_animations` reads it unchanged and the Board's cell is set
+  accepted.
+
+Code: `anim/stages/animate.py` (the stage; the reusable half of the old `keyframe.py` moved here —
+the rig clip, the cached scrub skeletons, the multi-image Qwen graph, the game-size frame),
+`anim/api/animate.py` + 14 routes in `app.py`, `anim/stages/concept.py` (`inpaint_in`,
+`stash_canvas_in`: the retouch feature's masked redraw on any attempt store), `web/src/animate.ts`
+(pure), `web/src/animate-view.ts`, `panel.ts` (the tab; Pixel edit and Inpaint open a frame's
+attempt in Piskel and save / inpaint back to the Animate routes), `studio.css`. `curation.regenerate`
+refuses a cell the Animate tab wrote (there is no clip behind it to re-roll).
+
+**Why — the owner's decisions, built as given.** The owner rejected the video routes and the
+Keyframes tab (only three slots — not the vision). He directs every frame by hand, direction by
+direction; approval is the gate; approved frames ship. Decided: keyframes draw from the
+direction's accepted view (+ skeleton); in-betweens from the two nearest **approved** keyframes
+either side (both images to Qwen-Image-Edit-2509) + the skeleton, refused with a clear message
+until both are approved; draw-from overridable per frame and recorded per attempt; **Generate
+all generates every keyframe without an approved attempt, then stops** — once all keyframes are
+approved the same button fills the in-betweens, labelled so the next step is obvious; mirror per
+animation from the partner direction, flip, no GPU, to review, handedness warning, never
+automatic; when every frame is approved, write them in the job layout the Board and export
+read. The matrix / video route stays until Animate ships one real animation (#318 removes it
+after).
+
+**Choices made along the way.**
+
+- **Generate all skips frames waiting for review.** "Every keyframe without an approved attempt"
+  read literally would re-draw a keyframe the owner has not looked at yet; like the Concept tab's
+  sweeps, a second press tops up (empty or rejected) instead of piling attempts on unjudged work.
+  "Generate keyframes only" is the literal press — a new attempt on every unapproved keyframe.
+- **A direction draws only from its own view**, never the matrix's fallback down
+  `MATRIX_REFERENCE_BY_DIR` — the mockup's "each direction draws from its approved view".
+- **`both` + skeleton is refused**, not trimmed: view + two keys + skeleton is four images and
+  Qwen takes three. Dropping one silently would make the record lie about what was sent.
+- **A cycle's in-between wraps round** for its neighbours (after the last keyframe comes the
+  first); a one-shot's frame with no keyframe on one side is refused.
+- **An edit of the approved attempt (Pixel edit / Inpaint) clears the approval** — the owner
+  approved other pixels — and makes a written output stale.
+- **Output never overwrites another route's job.** If `work/<unit>_<verb>[_<dir>]/` holds a matrix
+  cell, the output is refused (kept on the record for the tab to show) until `--replace-job` /
+  the tab's confirm moves the old job to `work/_replaced/`.
+- **Output timing is one tick per frame at 12 fps**, not the phase template's hold rule: the
+  owner chose the frame count himself, so an added frame is more motion, not a slower clip.
+  In-betweens carry the phase of the keyframe before them.
+- **The row is capped at 24 frames** (`ANIMATE_MAX_FRAMES`), past the studio's 12 (attack
+  already fills 12, and the owner may add frames) but not unbounded.
+- **Game-size frames load lazily** (`GET …/game/{id}.png`, cached by hash) rather than in the
+  state GET, so opening the tab never waits on twelve post-chain runs.
+
+**Smoke run** (2026-09-26, A5000 via rootless Podman, cold card):
+`anim animate --unit hooded_archer --action attack --dir left --frame wind-up --draw-from view
+--skeleton` — `work/hooded_archer_animate_attack_s180/attempts/f03_00.png`, 768×768,
+**196.3 s on the card** (the first call pays the Qwen-Image-Edit load), 203 s wall; skeleton
+frame 11 (Sword_Attack at 24 fps). The first try OOM'd at the model load: another project's
+ComfyUI and then its LoRA training held 14–17.5 GB of the card (unleased in the GPU
+gatekeeper); the retry ran once they let go. The picture is the hooded archer in profile, facing
+left, winding up with the bow; the bow and feet run off the frame. Not approved, nothing else
+generated — that is the owner's.
+
+**Not changed.** The matrix / video route, the Matrix tab, `anim clip` (removal is #318, after
+Animate ships). The Concept tab's behaviour and API (its inpaint now calls the shared
+`inpaint_in`, same messages). The `anim-api` container still runs the old code until it is
+restarted — it was not restarted; `web/dist` is rebuilt, so until then the Animate tab's calls
+404.
+
+Tests: pytest (Docker, `anim-pipeline`) **728 passed, 4 skipped** (718 − 20 keyframe + 30 new in
+`tests/test_animate.py`); vitest **129 passed** (130 − 15 keyframe + 14 new in
+`animate.test.ts`), `tsc --noEmit` clean.
+
+---
+
+## 2026-09-26 — the keyframe tab feature removed; the bake-off cleaned up (#316, #314)
+
+**What.** The Keyframes tab is gone: `web/src/keyframe{,-view,.test}.ts`, `anim/stages/keyframe.py`,
+`anim/api/keyframe.py` and its six routes, `anim keyframe`, its run-manager GPU stage, its jobs
+marker and frame sets, `tests/test_keyframe.py`, its README section, and `CONTEXT.md`'s "slot"
+(and "draw from", rewritten for Animate). Kept and moved rather than deleted: the shared
+`concept.AttemptStore` (the Concept tab uses it), and into `animate.py` the rig-clip skeleton
+scrub, the multi-image Qwen-Image-Edit graph and the game-size preview. The bake-off:
+`experiments/keyframe-bakeoff/` deleted; its three rows (Wan 2.2 Fun-InP 5B, Wan 2.1 VACE 14B, Wan
+2.1 VAE) out of `gpu/relock_models.py`'s WANT list and `gpu/models.registry.tsv`; `gpu/models.lock`
+re-locked in the container (`python gpu/relock_models.py`: 13 files, 58.38 GiB, as before the
+bake-off; only the Hugging Face revisions moved).
+
+**Why.** The owner replaced the Keyframes tab with the Animate tab (above) and rejected every arm
+of the bake-off. Nothing else reads the three weights: route V / the matrix / `anim clip` load
+`wan2.2_fun_control_5B_bf16`, `wan2.2_vae` and `umt5_xxl` only (`gpu/workflows/*.json` checked).
+
+**Not changed.** The Wan weight files themselves are still under
+`/mnt/private/AI Data/comfyui-basedir/models/` (`diffusion_models/wan2.2_fun_inpaint_5B_bf16.safetensors`
+10.0 GB, `diffusion_models/wan2.1_vace_14B_fp16.safetensors` 34.7 GB, `vae/wan_2.1_vae.safetensors`
+0.25 GB) — deleting them is the owner's call. `work/hooded_archer_keyframes_attack_s270/` (the
+Keyframes tab's data) is left on disk; nothing reads it. The results page copy under
+`~/.cache/claude/visuals/sprite-studio/keyframe-bakeoff/` is outside the repo and untouched.
+
+---
+
+## 2026-09-26 — the keyframe tab feature (#316)
+
+**What.** A **Keyframes** tab in the studio beside Concept, and `anim keyframe` under it. Pick a
+unit, an action and a direction; each **slot** of the action (its phases minus start and end —
+attack: wind-up, action, wind-down) gets a pose prompt, a **draw from** menu, an optional
+skeleton with a scrub slider, Generate, a strip of attempts kept forever, and one accepted. A
+**flip-book** plays base → the accepted keyframes → base at full size and at game size.
+
+- `anim/stages/keyframe.py` — slots (`slots_for`), the rig clip and the scrub skeletons
+  (`skeletons`, cached under `work/<unit>_keyframes_<action>_<dir>/skeletons/`), the reference
+  (`reference`: the base at s270, the accepted view the matrix would use elsewhere),
+  `resolve_draw_from`, `plan` / `render_pending` (Qwen-Image-Edit-2509 through
+  `view_pass.json` with image2 / image3 wired in: `build_workflow`), `pick`, and `flipbook`
+  (game size via `post.matte_chroma` + `post.process_cell`, cached by hash). Record schema
+  `anim.keyframes/1`, keys `unit` / `studio_action` / `cell` so the Board never reads a keyframe
+  job as a matrix cell.
+- `anim/stages/concept.py` — the attempt machinery **generalised, not copied**: `AttemptStore`
+  (numbering, hide, two-step delete, dropping what a failed run planned) with `Attempts` and
+  `keyframe.SlotAttempts` as its two stores; `plan_rework_in`, `rework_in_place_in` and
+  `replace_in` take any store. The concept functions are thin wrappers over them, same
+  behaviour, same messages.
+- `anim/api/keyframe.py` + six routes in `app.py` mirroring the concept ones (state, generate →
+  run manager, pick, hide/delete, the editor's Save, and the scrub skeleton PNG). `keyframe` is
+  a GPU stage in the run manager and waits behind the base gate for a GPU line only.
+- `web/src/keyframe.ts` (pure: the generate body, draw-from rules, the flip-book clock),
+  `keyframe-view.ts` (reusing the Concept tab's `FamilyPicker`, captions, busy handling),
+  `panel.ts` (the tab; Edit pixels saves a keyframe back to its own route).
+
+**Why — the owner's decisions, built as given.** The turnaround and every video-model route were
+rejected (all bake-off arms looked bad, #314). The owner directs the key poses by hand instead:
+from the approved base, per action, generate the keyframes and edit / regenerate them like views.
+Proving that is the goal; in-betweens come later. Decided: generic over every studio action and
+direction, proven on `hooded_archer` / `attack` / front; slots = phases minus start and end, the
+base standing in for both; the prompt pre-filled per phase, editable, remembered per attempt;
+draw from `base` | `previous` (wind-up's previous is the base; refused when that slot has no
+pick) | `both`, recorded per attempt so they can be compared; the skeleton optional — the clip
+the matrix rigs, at the direction's yaw, default frame = the phase's instant from the timing
+template, a slider to scrub it with the skeleton drawn live on the CPU and cached, the frame
+recorded; the model picker from the registry; Accept / hide / delete / Edit pixels / img2img /
+Edit / in place from the Concept tab's machinery; **no inpaint here yet** (#315 follows this);
+the flip-book at 12 fps holds from the timing template, game size through the pipeline's own
+downscale + palette snap without the part lock.
+
+**Choices made along the way.**
+
+- **Scrub at 24 fps** (`config.KEYFRAME_SCRUB_FPS`), not the 12 the clip plays at, so a pose
+  between two game frames can be chosen. The default frame is the nearest scrub frame to the
+  phase's instant.
+- **`previous` / `both` on the first slot send the base once**, not twice — its previous *is*
+  the base.
+- **The skeleton is the last image**, the base (or the previous keyframe) is image1 and so the
+  latent: a keyframe comes out the base's size.
+- **Game size mattes with `matte_chroma`, not rembg** — it runs on a page load, and the prompt
+  asks for flat white; a frame that cannot be matted reports its error on the flip-book rather
+  than failing the page.
+
+**Smoke run** (2026-09-26, A5000 via rootless Podman, cold card):
+`anim keyframe --unit hooded_archer --action attack --slot wind-up --draw-from base --skeleton`
+— one attempt, `wind-up_00.png`, 768×768, **194.2 s on the card** (the first call pays the
+Qwen-Image-Edit load), 199.1 s wall; skeleton frame 11 of 38 (Sword_Attack, ~1.54 s at 24 fps).
+It followed the skeleton's twisted wind-up and turned the figure to a profile swordsman, keeping
+the green hood and cloak; whether that is good is the owner's call. No other slot was generated
+and nothing was picked — that is the owner's, by hand.
+
+**Not changed.** The Concept tab's behaviour and its API. `curation`'s gates (the keyframe line
+reuses `views_blocked`). The matrix still renders whole clips; the keyframes do not feed it yet.
+The `anim-api` container still runs the old code until it is restarted — it was not restarted.
+
+Tests: pytest (Docker, `anim-pipeline`) **718 passed, 4 skipped** (698 + 20 new in
+`tests/test_keyframe.py`); vitest **130 passed** (115 + 15 new in
+`keyframe.test.ts`), `tsc --noEmit` clean.
+
+---
+
+## 2026-09-25 — the keyframe route bake-off feature (#314)
+
+**What ran.** `experiments/keyframe-bakeoff/bakeoff.py`, self-contained, not wired into the
+pipeline. `hooded_archer`, `attack` (UAL `Sword_Attack`, 12 frames at the
+`pick.phase_instants` of `config.ACTION_PHASES["attack"]`, keys 0/2/6/9/11), direction s180
+with the accepted `left` view as the reference, seed 20260925 everywhere, 768×768 cell, then the
+pipeline's own `post --parts` (rembg, downscale, palette snap, lock to the base's parts.json).
+Each arm started from a cold card (`POST /free`).
+
+| arm | GPU calls | on the card, cold | first call | warm calls | peak VRAM | post |
+|---|---|---|---|---|---|---|
+| A — Qwen-Edit-2509 every frame (view + skeleton) | 12 | 486.7 s | 218.2 s | 18–38 s | 20.5 GiB | 52.4 s |
+| B — 5 Qwen keys + Wan 2.2 Fun-InP 5B in-betweens (9-frame segments) | 9 | 372.7 s | 92.2 s (Qwen) · 156.2 s (first Wan) | Qwen 18–20 s · Wan 14–16 s | 20.5 GiB | 52.6 s |
+| C — route V with Wan 2.1 VACE 14B `reference_image` (fp16 loaded as fp8) | 1 | 611.4 s | 610.9 s | — | 21.0 GiB | 46.6 s |
+| V0 — route V as it runs today (Fun-Control 5B `ref_image`), comparator | 1 | 157.4 s | 155.9 s | — | 18.9 GiB | 46.4 s |
+
+VRAM is the device's used memory (all processes), polled each second. Downloads for B and C, via
+`gpu/download_models.sh --only wan` after adding three WANT rows to `gpu/relock_models.py`
+(marked as experiment weights) and relocking: `wan2.2_fun_inpaint_5B_bf16` 10.00 GB,
+`wan2.1_vace_14B_fp16` 34.68 GB, `wan_2.1_vae` 0.25 GB — 44.93 GB, sha256-verified. The three
+also got `gpu/models.registry.tsv` rows, because `test_models_registry` requires every locked
+file to have one. No ComfyUI node was missing: `WanFunInpaintToVideo`, `WanVaceToVideo`,
+`TrimVideoLatent` and `TextEncodeQwenImageEditPlus` are all core in 0.35.0.
+
+**What surprised me** (no verdict — the owner rules on
+<http://192.168.1.158:8090/sprite-studio/keyframe-bakeoff/>):
+
+- V0 reproduces the turnaround's drift on an action: a thin, armoured figure with a blade, not
+  the cloak. C keeps more of the hood and green but draws a dark close-fitting body and a curved
+  sword. The blade comes from the rig's depth (the unit's props render into the full-body
+  depth), not from the reference — C does not isolate the reference node from the depth channel
+  or from the 5B → 14B model change.
+- A and B keep the cloak, hood, gloves and boots from the view in every frame. Qwen often
+  frames the figure with the feet at or past the bottom edge.
+- B's first Wan call cost 156 s (a cold 5B load after Qwen); the other three were 14–16 s. Its
+  in-betweens are visible as soft, cross-faded frames between crisp keys.
+- Warm Qwen at 768² with two images was 18–38 s per frame, not the ~11 s measured for a
+  one-image view pass.
+- At game size every arm's cloak collapses toward the same few teals — the pre-existing
+  downscale/palette issue noted on 2026-09-24, not arm-specific.
+
+**Not changed.** Nothing in `anim/`, `web/` or `work/`: the arms write only under
+`experiments/keyframe-bakeoff/` (`work/` gitignored) and ComfyUI's output folder. Deleting the
+losing arms means deleting their WANT/registry rows and files — the experiment README says how.
+
+---
+
+## 2026-09-25 — the turnaround removal feature
+
+**What.** The `turnaround` stage is gone, end to end: `anim turnaround`,
+`anim/stages/turnaround.py` and `tests/test_turnaround.py`; `GET /turnaround/{unit}` and the
+`turnaround` stage in `POST /jobs` / the run manager's GPU set (a `POST /jobs
+{"stage": "turnaround"}` is now the ordinary `400 unknown stage`); the Board's turnaround box,
+its run button, `getTurnaround` and the `Turnaround*` types in the web panel; and the curation
+`turnaround` gate. `curation.GATES` is `("base",)` and `TURNAROUND_GATED` is deleted, so in the
+`gates` and `every` modes a cell outside `s0` — and every matrix cell, `s0` included — no
+longer waits on a second gate. The Board's "measure part palettes" button survived (it moved
+next to the gate line): the matrix needs those palettes now. README's turnaround section became
+"The approval gate — the views, then the keyframes"; CONTEXT.md's glossary no longer names the
+stage.
+
+**Why.** The owner rejected it. On `hooded_archer` it ran 8/8, but the stills drifted from the
+approved concept views: route V's video model drew pauldrons, sleeves and a knight's body over a
+plain hooded cloak, because it follows the mannequin's depth shape, and
+`Wan22FunControlToVideo` treats the reference as a start-image hint rather than attending to it
+the way VACE's `reference_image` does. It was also redundant with the Concept tab's views, which
+already are "the character from every side", approved by a person. The owner's gate from here
+is human approval of stills — the views, then the keyframes of each action × direction cell,
+with single-keyframe redo — so a separate identity check has nothing left to decide.
+
+**What changed for the matrix, exactly.**
+
+- **Constants.** `config.MATRIX_RIG` (`"quaternius"`), `MATRIX_CONTROL` (`"blend"`) and
+  `MATRIX_DEPTH_GAIN` (`0.35`) hold their values directly instead of aliasing
+  `TURNAROUND_*`; `TURNAROUND_REFERENCE_BY_DIR` / `turnaround_reference_views` are
+  `MATRIX_REFERENCE_BY_DIR` / `matrix_reference_views`, same table. `TURNAROUND_ACTION`,
+  `_CLIP_FRAMES`, `_STILL_INDEX`, `_CELL`, `_TIMEOUT_S` (and `ANIM_TURNAROUND_TIMEOUT`) are gone.
+- **Helpers.** `directions_for`, `base_reference`, `base_views` and `reference_for` moved from
+  the turnaround module into `anim/stages/matrix.py`, unchanged; `curation.views_of` and
+  `concept`'s mirror check import them from there.
+- **Part palettes — the one behaviour change.** A cell used to lock to *that direction's*
+  turnaround still (`work/<unit>_idle_<dir>/post/parts.json`) and was blocked when that file was
+  missing. It now locks to the **base's** palettes, `work/<unit>_base/post/parts.json`, in every
+  direction, and is blocked (before any GPU call) only when the base has none — "run `anim post
+  <unit>_base --parts`". The trade: a part the front view never shows (the back of a cloak)
+  locks to the front's colours for it.
+- **Gates.** The matrix's own "turnaround gate is pending" block is gone; the base gate and
+  the accepted-view check are what remain, plus the rig-clip check.
+- **`GET /matrix/{unit}`** no longer carries `turnaround: {done, of}`, and the Matrix tab's
+  banner no longer prints "turnaround N / 8 facings".
+
+**Not changed, deliberately.** Nothing under `work/` was touched: the eight
+`work/hooded_archer_idle_<dir>/` jobs, `work/hooded_archer_turnaround.json`,
+`work/_turnaround/` and the log stay on disk. Old curation records keep their
+`gates.turnaround` key as written — `curation.read` still loads them, the board reports only
+`base`, no gate check reads it, and `PUT …/gates/turnaround` is a `404`. The face-point hiding
+in `rigkit` and the per-direction view table stay: they came in with the turnaround but serve
+the matrix. Historical mentions in this file are left as they were.
+
+**One thing to know.** The old turnaround jobs were named `<unit>_idle_<dir>` — the same name
+the matrix gives its idle cells outside `s0` (`curation.canonical_job`). They still show on the
+Board as idle cells, and a matrix run of `idle/s45` would re-rig into
+`work/hooded_archer_idle_s45/`, overwriting that old still. Nothing does that on its own.
+
+Tests: pytest (Docker, `anim-pipeline`) **698 passed, 4 skipped** (with the bake-off's
+registry rows in); vitest 128 → **115 passed** (the turnaround tiles, text and run
+offer went; waiting / gate-button / parts-waiting cases came in), `tsc --noEmit` clean. The
+`anim-api` container runs the old code until it is restarted; it was not restarted.
+
+---
+
+## 2026-09-25 — the GPU on Podman: ComfyUI off the native Docker daemon
+
+**What.** `gpu/compose.yml` now runs under **rootless Podman** instead of the native
+`docker.service`. `runtime: nvidia` became `devices: ["nvidia.com/gpu=all"]`,
+`security_opt: label=type:nvidia_container_t` became `label=disable`, and
+`userns_mode: keep-id` was added. Start it with
+`podman-compose -f tools/anim-pipeline/gpu/compose.yml up -d` — no daemon, no sudo.
+`gpu/README.md`, the root `README.md` engine table and `compose.yml`'s header follow.
+
+**Why.** The native daemon is off-limits on this host: it breaks the owner's setup, and
+reaching it needed `sudo systemctl start docker` from a real TTY, which no agent and no
+script can do. That made the GPU half of this pipeline permanently owner-gated — the
+turnaround's eight directions failed on `ComfyUnreachable` with the stage politely printing
+instructions nobody present could follow. Rootless Podman reaches the same RTX A5000 through
+**CDI**, so the daemon requirement disappears rather than being worked around.
+
+**Verified before changing anything** (2026-09-25): `podman run --rm --device
+nvidia.com/gpu=all --security-opt label=disable nvidia/cuda:13.0.3-runtime-ubuntu24.04
+nvidia-smi` prints `NVIDIA RTX A5000, 24564 MiB, 580.159.03` from a rootless container.
+podman 5.8.2, podman-compose 1.6.0, nvidia-container-toolkit 1.19.0 were all already
+installed, and `nvidia-cdi-refresh.service` is **enabled**, so `/var/run/cdi/nvidia.yaml`
+regenerates itself after a driver update and this needs no maintenance. The pattern is not
+new on this host — `~/Repos/apps/clone-studio/compose.gpu.yml` has run three GPU services
+this way for some time, and this change follows it deliberately.
+
+**The three things that are load-bearing, and why:**
+
+- `devices: ["nvidia.com/gpu=all"]` — CDI, not a runtime. `runtime: nvidia` is a *daemon*
+  level registration living in `/etc/docker/daemon.json`; rootless Podman has no daemon to
+  register it in, so the device is named directly and the toolkit's CDI spec says what to
+  inject.
+- `security_opt: ["label=disable"]` — SELinux is Enforcing here. Without it the container
+  cannot open the injected device nodes. Deliberately **not** `:z`/`:Z` on the volumes:
+  those relabel the host directory, and `/mnt/private/AI Data/models/Image Models` is a
+  shared library other services read, so relabelling it would reach outside this project.
+- `userns_mode: keep-id` — rootless Podman maps container UID 1000 to host UID **525287**
+  (`/etc/subuid`: `workstation:524288:65536`), so without it every file ComfyUI writes into
+  the basedir lands owned by a phantom user and the Mac share cannot edit it. The compose
+  file's existing `WANTED_UID=1000` only tells the truth with this set. **The key is
+  `userns_mode`, not `userns`** — podman-compose reads the first
+  (`podman_compose.py:1409`) and silently ignores the second, which means the wrong
+  spelling still renders correctly in `podman-compose config` and still writes every file
+  as the phantom uid. Caught before the first start, not after.
+
+**Also.** The "here is how to start it" sentence had been copied into `render.py`,
+`clip.py` and `run.py`, so all three told the owner to run `sudo systemctl start docker` and
+all three were wrong the moment the service moved. It is now `comfy.START_HINT` plus
+`comfy.unreachable(base_url, exc)`, one place, and the three tests that pinned the old
+wording assert against the constant instead of a copy of the string.
+
+**Not changed.** The CPU pipeline, the model downloader and the Mac share stay on Docker
+Desktop; `COMFYUI_URL` still defaults to `host.docker.internal:8188`, which resolves from
+the Docker Desktop VM to this host, where Podman publishes `0.0.0.0:8188`. `share/compose.yml`
+and `spike3d/compose.yml` still carry native-daemon comments — neither is the GPU image
+service and neither was in scope, but they are now the only two files in the repo that
+mention it.
+
+---
+
+## 2026-09-25 — the front base pose feature: point SAM at the picture that was actually rendered
+
+**What.** `anim/data/stand_pose_front.json`, a second canned OpenPose-18 skeleton, front-facing,
+synthesised like its sibling so it carries no licence. `concept.pick` now lays *that* down
+instead of `stand_pose.json` (`anim/stages/concept.py`), and `base.repose(slug)` +
+`anim base --unit <slug> --repose` re-lay it on a base job that already exists. `base.prepare`'s
+pose half came out into `base._write_pose` so both callers share it. `config.UNIT_PARTS`'s
+`hooded_archer` row is replaced: hood / gloves / boots / cloak, not the knight's hood / arms /
+torso / legs.
+
+**Why.** The reported symptom was `anim turnaround hooded_archer` failing all eight directions
+on `FileNotFoundError: no part palettes`. The missing file was the surface, not the cause.
+
+`concept --pick` lays a canned skeleton into `<unit>_base/pose/keypoints.json` even though a
+concept base is never rendered from it — the picture is copied in — because `post --parts`
+prompts SAM from that file and there is no rig to ask. The skeleton it laid was
+`stand_pose.json`, whose own `_note` says *"Side view facing right"*, while
+`CONCEPT_TXT2IMG_PROMPT` asks for *"front-view … facing forward, facing the viewer"*. Measured
+on the accepted archer base: the side skeleton's joints span **66 px** of x where the rendered
+figure spans **357**, so all six `arms` points, all five `torso` points and six of eight `legs`
+points landed on the same flat cloak colour `rgb(9,127,52)`, and two `legs` points landed on
+white background between the boots. Every SAM candidate holding one part's points held the
+others' too, so all three failed the contamination gate (`partkit.py`, cap 0.25 — arms 0.53,
+torso 0.60, legs 0.29) and were dropped with 0 px. `hood` passed only because the head is ~75 px
+clear of everything else — and even it captured the wrong region, an 11 k px face-opening blob
+beating the 26 k px hood because `choose_candidate` tie-breaks eligible candidates on SAM's
+predicted IoU. So the archer's `parts.json` existed but held one part, whose palette was the
+shadow inside the hood.
+
+The second cause: the `hooded_archer` part table had been copied from the knight. This unit
+wears one full-length cloak — `arms`, `torso` and `legs` are not separable regions in its art at
+any prompt quality, so the gate was right to refuse them. What the art does separate into is the
+hood, the two gloves, the two boots and the cloak; `cloak` is last because priority resolves an
+overlap to the earlier row.
+
+**Measured, before and after**, real SAM 2.1 on the accepted base render:
+
+| part | side pose + knight's table | front pose + the new table |
+|---|---|---|
+| hood | 0.833, but the 11 k px face opening | 0.875, 15 590 px, x 317–447 y 22–220 — the hood |
+| arms / torso / legs | −1.05 / −1.20 / −0.59, all 0 px | *not named any more* |
+| gloves | — | **1.000**, 6 713 px, both hands |
+| boots | — | **1.000**, 14 405 px |
+| cloak | — | 0.857, 50 837 px, and its colours are the greens |
+
+`anim post hooded_archer_base --parts` now writes four palettes — hood 92 px, gloves 42 px,
+boots 67 px, cloak 319 px, 520 of the sprite's 708 opaque pixels — where it used to write one.
+
+**Why `repose` and not a re-pick.** `concept --pick` clears the base's views on the way through
+(they were drawn from a different character), and the archer has eight accepted ones. Making a
+unit earn its views twice to fix its part prompts is the wrong trade, so `repose` rewrites the
+pose artifacts and the manifest's `pose` block and nothing else. It refuses a rig-posed base,
+whose pose belongs to its motion source.
+
+**Not changed, on purpose.** `anim base` still renders `stand_pose.json`: that one *is* fed to
+the ControlNet, so changing it would change what the skeleton route draws. That leaves the two
+routes disagreeing about a unit's rest facing — `anim base` side-on, `concept` front-on — which
+is worth settling but is not this change. The knight's base was **not** re-posed either, though
+the same measurement shows it would gain (helmet 0.667 → 1.000, torso 0.100 → 0.900, legs
+0.750 → 1.000, and `arms` finally spanning both sleeves instead of the centre column): its
+sidecar is published and its turnaround cells lock to it, so re-extracting its palettes moves
+ground under accepted work. It needs its own pass.
+
+**Also found, not fixed.** The archer's 64×64 sprite is 708 opaque pixels in essentially three
+dark teals: the cloak's `rgb(9,127,52)` green survives as only 17 px of `(4,144,80)` while 58 %
+of the sprite is `(0,80,80)`. The palette *has* a good green (distance 33 versus the 55 that won),
+so this is the 355×725 → 24×48 downscale averaging the dark outline into the fill before the
+remap, not a missing colour. It makes the part lock much less useful for this unit than the part
+count suggests — every part's palette is drawn from the same three teals. Separate problem.
+
+Also fixed in passing: `tests/test_partkit.py`'s opt-in real-SAM smoke test could never have
+run — it passed `payload["names"]`, absent from a canned payload, and read `base_sprite.png`,
+which a concept base does not have. It now resolves names the way `post._mask_cells` does and
+reads `render.final` from the manifest.
+
+**Verification.** 718 passed, 4 skipped (the full suite, in the container, 2026-09-25). Nine new
+tests. The turnaround itself is **not** re-run: ComfyUI is unreachable from the container
+(`GET /health?probe=1` → `"comfyui": false`), so the eight directions still need a GPU pass.
+
+---
+
+## 2026-09-24 — the advanced views sweep feature: one press for the fold ([#313](http://192.168.1.158:8700/work_packages/313))
+
+**What.** The Concept tab's advanced fold (`details.concept-advanced`) holds five views —
+`right`, `back_right`, `back_left`, `front_left`, `front_right` — and filling them meant five
+separate presses. `web/src/concept.ts` gained `advancedSweep(state, busy)`, returning the
+views a press would render (whatever advanced views have no accepted `pick` yet), a label
+(`All advanced (N)`) and why it is blocked, in order: the base gate, the GPU being busy, or
+every advanced view already accepted; and `advancedConfirm(state, views, count)`, the text of
+a `window.confirm`. `web/src/concept-view.ts` puts the button — a `.gpu` button, styled by a
+new `.concept-advanced-sweep` rule in `studio.css` — between the fold's `<summary>` and the
+view rows, so it inherits the tab's existing busy/`409`/`423`/`host.follow`/`setBusy` handling;
+its `sweepAdvanced()` confirms, then calls the existing `generate({op: "views", views})` at the
+tab's own attempts-per-view count. No new endpoint: `POST /concept/{unit}/generate` with
+`op: "views"` already takes a list and renders it sequentially in one backgrounded run.
+`anim/config.py` gained `CONCEPT_VIEW_GROUPS` (`{"main": CONCEPT_MAIN_VIEWS, "advanced":
+CONCEPT_ADVANCED_VIEWS}`), so `concept_view_names` — and so `anim concept --views` — now
+accepts `main` and `advanced` as group keywords beside `all` and a comma list, mixable with
+plain names (`--views main,front_right`), answer in table order, no duplicates.
+`anim/stages/concept.py`'s `--views` help now names the groups.
+
+For the confirm's number: three new constants, `CONCEPT_VIEW_SECONDS = 11.0`,
+`CONCEPT_VIEW_COLD_SECONDS = 190.0`, `CONCEPT_WARM_CUTOFF_S = 60.0`, and
+`concept_view_seconds(recorded)` — the warm median of a list of render times, cold renders
+dropped. `GET /concept/{unit}` now carries `estimate_seconds`: the warm median of this unit's
+own recorded view renders (`work/<unit>_concept/views/views.json`), falling back to every
+unit's records, then to the constant (new helpers `estimate_seconds()`, `_recorded_seconds()`,
+`_views_record()` in `anim/api/concept.py`); `web/src/api.ts`'s `ConceptState` gained the
+field. `web/src/concept.ts` also gained `VIEW_COLD_SECONDS = 190`, the cold-start penalty the
+confirm names separately from the warm estimate.
+
+The measurements behind those constants (measured 2026-09-24 from the 32 view renders already
+recorded on disk, A5000): a warm view render is 10.8 s median, a second candidate of the same
+view ~8 s, and the *first* render of a cold run is 164–201 s while Qwen-Image-Edit pages into
+VRAM. A 5-view × 2-attempt sweep is ~95 s warm and ~4.5 min cold — one blended number would be
+wrong at both ends, so the confirm quotes the warm figure and names the cold penalty apart.
+`docker compose run --rm anim-pipeline pytest` → 709 passed, 4 skipped; `cd web && npm test` →
+128 passed.
+
+**Why mirroring stays out of the press.** Three of the five advanced views are mirrorable
+(`right`↔`left`, `back_right`↔`back_left`, `front_left`↔`front_right`), so a clever sweep could
+render two and flip three — 2 GPU renders instead of 5. It does not, for two reasons: a mirror
+needs its partner's pick *accepted* first, which is a human decision the pipeline deliberately
+keeps human (the mirrored view feature), and a flip swaps the handedness of handed gear —
+sword, shield. The existing per-view mirror button stays the only way to do it.
+
+**Why a settled view is skipped.** So the count in the label tells the owner what the press
+will actually cost, the way the Matrix tab's "Generate N cells" does — and so a second press,
+after picking some views by hand, tops up only what is still unfinished instead of piling more
+attempts onto views already accepted.
+
+**Why it confirms.** Every other press on the Concept tab is 1–4 renders and cheap; this one is
+up to 20. It is the only press on the tab that asks first.
+
+**Why the estimate is measured, not hardcoded.** A number typed into a doc or a constant and
+never revisited is exactly what this repo's `CLAUDE.md` warns drifts from reality. Reading it
+off the render records on disk means the figure the owner sees is the figure that actually
+happened, not a guess frozen at write time.
+
+**One pre-existing wart, left alone and written down.** `CONCEPT_CORE_VIEWS` (what a bare
+`--views` renders) contains `right`, which the UI tiers as *advanced*. The two splits answer
+different questions — one is "what a plain `--views` renders by default", the other is "what
+the advanced fold shows" — and realigning them would change what a bare `--views` does. Left
+as-is, and written down in the new `CONTEXT.md` instead.
+
+**The project's first `CONTEXT.md`.** This feature needed three words that sound like one thing
+and are not — *view* (a camera angle on a standing character, a reference image), *direction* /
+*cell* (where the camera stands for an action, the 16-cell compass) and *pose* (a skeleton) —
+plus the fact that *core*, *main* and *advanced* are three overlapping sets of the same eight
+views. Those are glossary facts, not implementation facts, so they now live in `CONTEXT.md`: a
+glossary and nothing else, with how-it-works staying in `README.md`, why-it-happened here, and
+status in OpenProject. It also records *mirrorable* and the handedness swap, and *warm* vs
+*cold*, so any duration quoted anywhere says which one it means.
+
+---
+
+## 2026-09-24 — the run outcome feature: a batch stage that failed everything no longer reads `done`
+
+**What.** `anim turnaround hooded_archer` ran, all eight directions raised
+`ValueError: no part table for unit 'hooded_archer'`, and the run record said
+`status: done, percent: 100`. New module `anim/outcome.py`: a batch stage
+(`turnaround`, `matrix`, `bakeoff`) now ends by printing one line the run manager parses —
+`outcome: done=0 failed=8 blocked=0 of=8` — and exits `0` only when every planned cell is
+done, `3` (`EXIT_PARTIAL`) when some are, `4` (`EXIT_NOTHING`) when none are. `anim/api/runs.py`
+keeps the tally on the record as `cells`, adds the status **`partial`** to the vocabulary, and
+derives both the status and the final percent from the tally instead of from the exit code
+(`_status_for`, `_final_percent`). Each state file gained `selected` (the cells *this* run
+planned) and `summary` (the tally); `matrix` already had `summary` and it is now the shared
+one. On the web side `RunStatus` gained `partial`, `RunRecord`/`RunView` gained `cells`, and
+`sse.ts` gained `describeCells`, `succeeded` and `runTone` — the panel's run line, the Board
+and the Matrix tab all say *"turnaround: failed — 0 of 8 cells done, 8 failed"*.
+`docker compose run --rm anim-pipeline pytest` → 703 passed, 4 skipped (was 694 passed, 4
+skipped); `cd web && npm test` → 112 passed, 7 files (was 106); `npx tsc --noEmit` and
+`npm run build` both clean. No GPU was spent.
+
+**Why — two facts were being carried as one.** Going on past a failed cell is deliberate and
+correct: forty cells must not cost each other, and `tests/test_turnaround.py` and
+`tests/test_matrix.py` pin it. But `_drive` read a clean subprocess exit as success, so
+"the process exited" and "the work succeeded" collapsed into one bit, and the bit said yes.
+The fix is to send the second fact separately rather than to make the stage die on the first
+bad cell.
+
+**Why a printed line.** The API runs a stage as a *subprocess* on purpose (a hard failure in
+onnxruntime must not take the API with it, and a minutes-long `requests` session must be
+killable), so stdout is the only channel between a stage and the manager — which is already
+how `[n/m]` and `progress: 42%` travel. Rejected: the stage writing into `work/_runs/<id>.json`
+(it does not know the run id, and the API owns that file), and the manager re-reading each
+stage's own state file (it would have to know every stage's file name, schema and which key
+counts — exactly the coupling the subprocess design exists to avoid).
+
+**Why three exit codes and not two.** Folding "partial" into `0` is the same bug in a smaller
+hat. Folding it into "failed" would make a seven-of-eight run with one flaky cell
+indistinguishable from a total loss, and the owner re-runs those two differently: one is
+`--force` on one cell, the other is "the part table is missing, fix that first". `blocked`
+counts as not-done — a cell the prerequisite gate refused did not happen, whatever the reason,
+so a run of forty blocked cells asked for forty cells and got none.
+
+**Why the bar moves backwards at the end.** `matrix`'s `[n/m]` counts cells *finished*, and a
+failed cell finished — badly — so the live bar can climb to 100% during a run that produced
+nothing. The final value is now rebased onto the cells that are actually done (0% for
+all-failed, 50% for four of eight). Rejected: leaving the bar at 100 and letting the status
+colour carry the bad news — the bar is what the eye reads first, and a full green bar over the
+word "failed" is the same lie in a smaller font. The live bar is untouched.
+
+**What was checked and left alone.** `anim/stages/run.py` has no such bug: it is a linear
+chain, each step raises and the failure propagates, and its one deliberate `return 0` is
+"ComfyUI is off, the CPU half is on disk", which is a real success. `bakeoff.py` *did* have the
+pattern (`except Exception` per cell, `return 0` regardless) and got the same treatment.
+Existing `work/_runs/*.json` records load with `cells: null` and keep the verdict they were
+given — migrated in memory, never rewritten, because back-filling a tally the old run never
+reported would be inventing it.
+
+**A side effect worth naming.** `turnaround`'s and `bakeoff`'s summary lines counted the whole
+plan, so `anim turnaround knight --dirs s0` printed "1/8 direction(s) done". They now count
+`selected`, so it prints "1/1".
+
+---
+
+## 2026-09-23 — the mirrored view feature: three of the eight views cost no GPU
+
+**What.** `anim concept --unit knight --mirror-view right` derives a concept view by flipping
+its partner's accepted view horizontally instead of spending a Qwen-Image-Edit round trip on
+it. Three of the eight views are pairs, and either half may be the source:
+`right` (yaw 0) ↔ `left` (180), `back_right` (45) ↔ `back_left` (135), `front_right` (315) ↔
+`front_left` (225). `config.CONCEPT_MIRROR_PAIRS` / `config.mirror_of` / `config.mirrorable_views`,
+`concept.mirror_view` / `concept.handed_gear`, `POST /concept/{unit}/views/{view}/pick`
+`{"mirror": true}`, and a **mirror from `<partner>`** button on the Concept tab with a `⇄`
+marker on a mirrored view there and on the Board's views ring.
+`docker compose run --rm anim-pipeline pytest` → 694 passed, 4 skipped (was 681 passed, 4
+skipped); `cd web && npm test` → 97 passed, 7 files (was 91); `npx tsc --noEmit` and
+`npm run build` both clean. No GPU was spent building this, which is the point.
+
+**Why — the compass says so.** This file's camera compass (`config.DIRECTIONS`, and the note
+on `TURNAROUND_REFERENCE_BY_DIR`) has said since the camera direction feature that yaw 0 shows
+the character's RIGHT profile, 180 the left, 90 the back, 270 the front. A horizontal flip of
+the image is a reflection through the vertical plane containing the camera axis, and it takes
+a camera at yaw *t* to the camera at yaw *180 − t*. So three of the eight views were always
+derivable, and we were paying Qwen for them. Worse than paying: a *generated* `right` is only
+roughly the reverse of `left`, while a flipped one is exactly it — the mirror is the stronger
+answer to "is this one character in eight facings", which is the question the whole views
+subsystem exists to answer.
+
+**`back`, `top` and `front` map to themselves and must never be offered.** 180 − 90 = 90;
+`top` (yaw 270 from above) and `front` (270, the base itself) likewise. They sit on the
+symmetry plane, so "mirroring" them would hand back the same facing under a different name — a
+copy claiming to be a new view, which would then be handed to Wan as the reference for a
+facing it does not show. The pairs are therefore **computed from the yaws in
+`CONCEPT_VIEWS`**, not typed out: the self-mapping ones drop out on their own, so there is no
+special case to forget, and a view added or re-aimed in that table cannot leave a stale second
+list behind. An import-time check refuses a table where the pairing is not an involution.
+
+**The partner must be ACCEPTED, not merely drawn — the matrix's strictness, not the
+turnaround's.** `turnaround.reference_for` takes the first view the base carries that the owner
+has not *rejected* (a pending view counts) and falls back to the front with a warning;
+`matrix.prerequisite` accepts only `accepted`. A mirrored view is what a whole facing of the
+matrix will be rendered against, so it follows the matrix: deriving it from an unpicked attempt
+would launder an unjudged image into an accepted view, and the flip inherits its partner's
+judgement whether we like it or not. A flip of a flip of the same view is also refused — it is
+a provable round trip.
+
+**Recorded like everything else here.** A mirrored view lands exactly where `--pick-view`
+lands (`render/view_<view>.png`, the base's `concept.views`, the provenance sidecar, the
+curation views step) through one shared writer, `concept._record_views`, which `pick_view` now
+uses too — a second copy of that would be a second answer to "what does the base carry", and
+`turnaround.base_views` reads only one. The entry adds `mirrored: true` and a `mirror` block
+with the source view, its file and that file's sha256; the entry's own `sha256` is of the
+flipped bytes. *(source sha256, "flip horizontally")* reproduces the picture byte for byte,
+which is a stronger provenance claim than any seed. `candidate` and `seed` are `null` because
+nothing was sampled. The rejected alternative was to mirror at render time and never store the
+file — a few hundred KB saved, and the thing this codebase is built on given up.
+
+**The handedness trade-off, said once.** The knight carries a sword and a shield
+(`config.UNIT_PROPS`), and a flip swaps them. So the run prints exactly one line naming the
+gear — once per invocation, not per view — and does not refuse: the owner knows whether the
+sword hand matters for a particular reference, and a stage that argued about it would be
+nagging. `concept.handed_gear` reads `UNIT_PROPS` first and then the base's own parts phrase
+against a word list (`HANDED_GEAR_WORDS`), because for a unit whose kit is not yet in that
+table the parts phrase is the only description of the gear there is — which is why "longsword"
+has to match "sword".
+
+**Turnaround stills and matrix cells were deliberately left out.** They are the obvious next
+thought and the wrong one. A view is a *reference image*: a flip of it is a legitimate picture
+of the same character from the opposite side. A turnaround still or a matrix cell is a frame of
+a *directional action*, and mirroring it reverses the motion's handedness — a left-handed
+sword swing presented as the right-handed one. That is a bug nobody sees until the sheet ships,
+and it would also have dragged the clip / pick / post chain into this feature. Out of scope on
+purpose; if it is ever wanted it is a separate feature with its own name.
+
+**Two things in the brief that the files contradicted, and the files won.** (1) `hooded_archer`
+was described as "four views drawn, none picked". It has `back`, `left` and `top` **picked and
+accepted** on the base; the gap is `right` — which makes it the best real demonstration of this
+feature rather than the refusal case, since `right` can now be filled from the accepted `left`
+for free. (2) `knight` was described as having "seven accepted views". It carries seven views,
+but every one of them is a **provisional** pick from the 2026-09-22 rerun, so every curation
+state is `pending` and this feature refuses on all six pairs until the owner accepts one on the
+Board. Both were checked against `work/*_base/job.json` and `work/*_curation.json`, not against
+another doc.
+
+---
+
 ## 2026-09-23 — the LPC spritesheet generator: evaluated, not adopted
 
 **What.** The owner asked whether the [Universal LPC Spritesheet Character
@@ -28,6 +742,85 @@ triple-licensed, and one option is OGA-BY 3.0 (attribution only, no share-alike)
 the ban's stated "viral share-alike" reason, but it doesn't change the outcome: the audit is
 CC0-only and rejects attribution licences on purpose. Reopening LPC means reopening the
 CC0-only rule first, not arguing about LPC's licences.
+
+---
+
+## 2026-09-22 — the action matrix feature: `anim matrix`, the Matrix tab, eighty cells batched
+
+**What.** [#278](http://192.168.1.158:8700/work_packages/278), the sprite studio's batch
+driver: `anim matrix <unit>` plus a new **Matrix** tab in the panel. It batches the studio's
+per-cell chain — `rig → clip → pick --phases → post` — over a selected set of (action ×
+direction) cells: `anim matrix knight` (every studio action at `s0`), `--actions attack,walk`,
+`--dirs s0,s270`, `--all-dirs --actions idle`, `--dry-run` (the plan and every verdict, no
+GPU), `--force`. `anim/stages/matrix.py` (922 lines; its module docstring is the authoritative
+description), `anim/config.py`'s new `MATRIX_*` block, `GET /matrix/{unit}`, and
+`web/src/matrix.ts` / `matrix-view.ts` for the tab. `tests/test_matrix.py` (754 lines).
+`docker compose run --rm anim-pipeline pytest` → 677 passed, 4 skipped (was 641 passed, 4
+skipped); `cd web && npm test` → 86 passed, 7 files (was 66 passed, 6 files); `npx tsc
+--noEmit` and `npm run build` both clean.
+
+**The request was keyframes-first, the pipeline runs the opposite way, and this is the thing
+to not re-litigate.** The owner's ask was "make five keyframes, then fill between them." Route
+V (#274, ruled 2026-09-21) does not: it renders the *whole* clip through Wan 2.2 Fun-Control
+and `pick --phases` picks the five phases out of it after the fact. The phases are an output of
+the clip, never an input to it. The matrix is that route run eighty times, batched — it changes
+nothing about the direction of the arrow, and a future reader proposing "generate the five
+keyframes directly" is proposing route K, which the bake-off (#274) already ruled against for
+identity drift.
+
+**Job names use the pipeline verb, not the studio name.** `attack` at `s45` is
+`knight_strike_s45`, not `knight_attack_s45` — `curation.canonical_job` and
+`export.job_name_for` both expect `<unit>_<verb>[_<dir>]`, and a job named for the studio
+action is silently skipped by `export` with a "not the matrix job" warning, which would have
+made every matrix cell vanish from the sheet with no error anywhere. `rig` is called with
+`action=cell.verb` so the manifest agrees too. `tests/test_export.py` carries the regression.
+
+**The hard prerequisite gate is stricter than the turnaround's, on purpose.** `turnaround
+.reference_for` accepts a pending view and, when the base carries no view for a facing at all,
+falls back to the front with a warning and renders anyway — the right trade for one still the
+owner is about to judge. The matrix refuses instead: a direction with no *accepted* view on the
+base is blocked, full stop, no `--allow-fallback`. The reason is on the record already — the
+2026-09-22 identity gate run (above, around line 547) produced bare human heads on five of eight
+facings from exactly that front-view fallback. A matrix cell spends a whole clip, not one still,
+so a bad reference is not "re-roll one still", it is a wasted render; the escape hatch is `anim
+concept --views`, then accepting the view on the Board.
+
+**The #277 hold.** `config.MATRIX_MAX_CELLS` caps one run at 8 cells (~10 minutes of warm GPU),
+because `sprite-studio.md` orders the motion exaggeration feature (#277) *before* the matrix so
+the matrix renders each cell once rather than twice. `--max-cells 0` (or
+`ANIM_MATRIX_MAX_CELLS=0`) is the owner explicitly accepting the re-render before #277 lands.
+
+**`is_done` counts a `kept` cell as done, not just `done`.** `kept` means the chain already ran
+and the owner hand-edited that cell's `picks.json`, which the pipeline never overwrites uninvited
+elsewhere either. Re-rendering a kept cell on every resume would spend the GPU undoing exactly
+the protection that "refuse to overwrite a hand-edited picks.json" (`pick`'s own rule) exists for.
+
+**The progress contract.** `anim.api.runs._STEP` matches `^\[(\d+)/(\d+)\]` on the unstripped
+line, so the stage prints `[n/m]` at column 0 only *after* a cell resolves (finished or
+skipped) — the line that *announces* a cell carries no brackets, so an in-flight cell never
+nudges the bar — and `m` is the runnable count, not the planned count, so a run with six blocked
+cells out of eight still reaches 100%. The bar means "cells finished", stays monotone, and is
+honest when Cancel (SIGTERM to the process group plus ComfyUI's `/interrupt`) lands mid-clip and
+the next run resumes from the last finished cell. `turnaround`'s bar sits at 0% the whole time
+today because it prints no such line — that gap is why this needed its own test rather than
+trusting the turnaround's.
+
+**Two prompt phrases were owed to this feature, from 2026-09-21, and are now paid.**
+`CLIP_ACTION_PHRASES` gained `run` ("running at full stride") and `jump` ("leaping, feet off the
+ground") rows — the keyframe phase entry below (line 990) named the matrix as the feature that
+would add them, and without them a run or jump clip fell through to the generic "performing a
+run" phrasing every other action gets a real sentence for.
+
+**One bug found during verification and fixed before landing.** The gate's prerequisite sentence
+was computed once per run using the default direction, so all forty of the knight's blocked
+cells reported "before an `s0` cell renders" regardless of the cell's own facing — true for `s0`,
+wrong and confusing for the other seven. It is now memoised per `(action, direction)`.
+
+**Verification, honestly.** Nothing has rendered through this on a real GPU yet — ComfyUI runs
+on the native Docker daemon and only the owner starts it. What ran: both test suites (above), a
+type-check and a production build, and a read-only `matrix.listing()` call against the real
+`work/` data, which correctly reports all 40 of the knight's cells blocked on the pending
+turnaround gate. A GPU run is still owed before this is called proven end to end.
 
 ---
 
