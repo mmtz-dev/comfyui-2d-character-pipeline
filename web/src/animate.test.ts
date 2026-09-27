@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { AnimateFrame, AnimateState, Attempt, FrameStatus } from "./api";
+import type { AnimateFrame, AnimateGrid, AnimateState, Attempt, FrameStatus, GridCell } from "./api";
 import {
   approvedLine,
   attemptOrigin,
   batchBody,
   batchTargets,
   clampFrame,
-  compassGrid,
+  cellMark,
+  sweepConfirm,
+  sweepPlan,
+  toggleTick,
   drawFromBlocked,
   drawFromText,
   frameBody,
@@ -87,10 +90,58 @@ const A: FrameStatus = "approved";
 const R: FrameStatus = "review";
 const X: FrameStatus = "rejected";
 
-describe("the compass", () => {
-  it("lays the eight side views out as seen from above", () => {
-    const grid = compassGrid(state(frames(Array(12).fill(E))));
-    expect(grid.map((c) => c?.direction ?? null)).toEqual(["s135", "s90", "s45", "s180", null, "s0", "s225", "s270", "s315"]);
+function gridCell(extra: Partial<GridCell> = {}): GridCell {
+  return { state: "none", frames: 12, approved: 0, keys: 5, keys_approved: 0, pictures: 0,
+    exists: false, mirrored: false, blocked: null, ...extra };
+}
+
+function grid(cells: Record<string, Record<string, GridCell>>): Pick<AnimateGrid, "actions" | "directions" | "cells"> {
+  return {
+    actions: ["attack", "walk"],
+    directions: ["s180", "s270"].map((direction) => ({ direction, view: direction, yaw: 0, url: null, blocked: null, mirror_of: null })),
+    cells,
+  };
+}
+
+describe("the grid and the sweep", () => {
+  it("marks each cell by where it stands in the keyframe gate", () => {
+    expect(cellMark(gridCell())).toBe("");
+    expect(cellMark(gridCell({ blocked: "no left view yet" }))).toBe("–");
+    expect(cellMark(gridCell({ state: "keys" }))).toBe("K?");
+    expect(cellMark(gridCell({ state: "keys_ok" }))).toBe("K✓");
+    expect(cellMark(gridCell({ state: "done" }))).toBe("✓");
+    expect(cellMark(gridCell({ state: "done", mirrored: true }))).toBe("⇋");
+  });
+
+  it("caps the ticks", () => {
+    expect(toggleTick(["a"], "b", 2)).toEqual({ ticked: ["a", "b"], refused: null });
+    expect(toggleTick(["a", "b"], "a", 2)).toEqual({ ticked: ["b"], refused: null });
+    const full = toggleTick(["a", "b"], "c", 2);
+    expect(full.ticked).toEqual(["a", "b"]);
+    expect(full.refused).toContain("at most 2");
+  });
+
+  it("plans the keys of ticked cells and skips a blocked direction", () => {
+    const g = grid({
+      attack: { s180: gridCell({ blocked: "no left view yet" }), s270: gridCell({ state: "keys", keys_approved: 2, exists: true }) },
+      walk: { s180: gridCell(), s270: gridCell({ keys: 4 }) },
+    });
+    const plan = sweepPlan(g, ["walk:s270", "attack:s270", "attack:s180"], "keys");
+    expect(plan.cells).toEqual([{ action: "attack", direction: "s270" }, { action: "walk", direction: "s270" }]);
+    expect(plan.renders).toBe(3 + 4);
+    expect(plan.blocked).toEqual([{ key: "attack:s180", why: "no left view yet" }]);
+    expect(sweepConfirm("archer", plan, "keys")).toContain("keyframes of 2 animation(s)");
+  });
+
+  it("holds the in-betweens behind the keyframe gate, cell by cell", () => {
+    const g = grid({
+      attack: { s180: gridCell(), s270: gridCell({ state: "keys_ok", keys_approved: 5, approved: 6, exists: true }) },
+      walk: { s180: gridCell(), s270: gridCell({ state: "keys", keys_approved: 4, exists: true }) },
+    });
+    const plan = sweepPlan(g, ["attack:s270", "walk:s270"], "inbetweens");
+    expect(plan.cells).toEqual([{ action: "attack", direction: "s270" }]);
+    expect(plan.renders).toBe(12 - 5 - 1);
+    expect(plan.blocked).toEqual([{ key: "walk:s270", why: "1 keyframe(s) not approved yet" }]);
   });
 });
 

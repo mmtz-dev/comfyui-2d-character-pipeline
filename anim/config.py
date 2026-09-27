@@ -630,35 +630,18 @@ def clip_negative(template: str, avoid: str | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The action matrix feature (#278) - `anim matrix`, every (action x direction)
+# The rig the Animate tab poses from, and the view each direction wants
 # ---------------------------------------------------------------------------
-# One clip per (action, direction) cell through route V as the bake-off ruled
-# it (2026-09-21): the Quaternius UAL rig, skeleton over full-body depth at
-# gain 0.35, the clip cell.
-MATRIX_RIG = "quaternius"
-# All five of the studio's actions. Not a copy of the names: the matrix renders
-# whatever `STUDIO_ACTIONS` holds, so a sixth action is a row in that table and
-# nothing here. v1 adds none (sprite-studio.md S2).
-MATRIX_ACTIONS: tuple[str, ...] = tuple(STUDIO_ACTIONS)
-MATRIX_CONTROL = "blend"
-MATRIX_DEPTH_GAIN = 0.35
-MATRIX_CELL = CLIP_CELL
-MATRIX_CLIP_FPS = EXTRACT_FPS
+# The skeleton under a frame comes from this rig's clip for the action (the
+# bake-off's ruling, 2026-09-21: the Quaternius UAL rig).
+ANIMATE_RIG = "quaternius"
 # The multi-view reference feature (#298): which of the base's views each
-# direction hands Wan as `ref_image`, best first. "front" is the base itself
-# (the concept pick, a front view). By the compass above: yaw 0 shows the
-# character's RIGHT profile, 180 the left, 90 the back, 270 the front; the
-# obliques take the exact oblique view when the base has one, else the
-# nearest of back / front - the turned-away cells go to the back (the
-# 2026-09-22 failures were bare heads where the reference showed a face,
-# and the back view is the one that shows the back of the head), the
-# turned-toward cells to the front (the accepted base, the one reference
-# that is not itself generated from a reference). The alternative for an
-# oblique - the nearest profile - is one entry away. A view that is not on
-# the base falls back down this list and finally to the front, with a
-# warning in the record (the matrix refuses instead). Top cells use their
-# yaw's row.
-MATRIX_REFERENCE_BY_DIR: dict[str, tuple[str, ...]] = {
+# direction wants, best first ("front" is the base itself). By the compass
+# above: yaw 0 shows the character's RIGHT profile, 180 the left, 90 the
+# back, 270 the front. The Animate tab draws a direction from its OWN view
+# only (`animate.reference`); this table is what the views ring reports as
+# `wanted_by` - which facing goes without a reference while a view is missing.
+REFERENCE_BY_DIR: dict[str, tuple[str, ...]] = {
     "s0": ("right", "front"),
     "s45": ("back_right", "back", "front"),
     "s90": ("back", "front"),
@@ -668,45 +651,6 @@ MATRIX_REFERENCE_BY_DIR: dict[str, tuple[str, ...]] = {
     "s270": ("front",),
     "s315": ("front_right", "front"),
 }
-
-
-def matrix_reference_views(direction_cell: str) -> tuple[str, ...]:
-    """The views to try for one cell, best first; the last is always "front".
-    A top cell tries the top-down view first, then its yaw's row."""
-    yaw, elevation = direction(direction_cell)
-    row = MATRIX_REFERENCE_BY_DIR[f"s{yaw}"]
-    return ("top", *row) if elevation == "top" else row
-
-
-# A matrix cell is a whole rig clip, whose frame count is its duration x
-# MATRIX_CLIP_FPS and so unbounded - the UAL's Idle_Loop is 2.5 s, which is 31
-# frames, padded to 33. Wan's cost is linear in the frame count, so an uncapped
-# matrix cell is an uncapped bill. Past this many frames the rig is sampled at
-# this many evenly-spaced instants instead of at fps (`matrix.clip_times`):
-# fewer, wider samples of the same motion rather than a truncated clip, because
-# a truncated clip would drop the recovery and `pick --phases` needs the whole arc.
-MATRIX_CLIP_MAX_FRAMES = int(os.environ.get("ANIM_MATRIX_MAX_FRAMES", "25"))
-# One cell's GPU job: a whole clip.
-MATRIX_TIMEOUT_S = float(os.environ.get("ANIM_MATRIX_TIMEOUT", "600"))
-# The #277 hold. The motion exaggeration feature is ordered BEFORE this one in
-# sprite-studio.md so the matrix renders once rather than twice; until it
-# lands the stage refuses a selection wider than this, before any GPU call.
-# 8 = one action across all eight facings, ~10 minutes of warm GPU. `--max-cells
-# 0` (or ANIM_MATRIX_MAX_CELLS=0) is the owner accepting the re-render.
-# When #277 lands, `git grep MATRIX_MAX_CELLS` finds everything to delete.
-MATRIX_MAX_CELLS = int(os.environ.get("ANIM_MATRIX_MAX_CELLS", "8"))
-# A capped sample must still feed the picker: `pick --phases` wants one frame
-# per budgeted frame of the longest action (attack, 12) plus the endpoint, so
-# a cap under that would hand the picker fewer frames than the plan asks for
-# and every cell would come back short. Checked here rather than at the first
-# render, so a bad ANIM_MATRIX_MAX_FRAMES fails on import and not 90 seconds in.
-_MATRIX_MIN_FRAMES = max(row["budget"] for row in ACTION_PHASES.values()) + 1
-if MATRIX_CLIP_MAX_FRAMES < _MATRIX_MIN_FRAMES:
-    raise ValueError(
-        f"ANIM_MATRIX_MAX_FRAMES is {MATRIX_CLIP_MAX_FRAMES}; a matrix cell needs "
-        f"at least {_MATRIX_MIN_FRAMES} frames so `pick --phases` can meet the "
-        f"largest action budget ({max(row['budget'] for row in ACTION_PHASES.values())} "
-        f"frames, plus the clip's end)")
 
 
 # ---------------------------------------------------------------------------
@@ -874,7 +818,7 @@ def concept_view_prompt(view: str, parts: str | None) -> str:
 # ---------------------------------------------------------------------------
 # Every view above costs one Qwen-Image-Edit round trip. Three of them need
 # not: by the compass this file has used since the camera direction feature
-# (DIRECTIONS, and MATRIX_REFERENCE_BY_DIR's own note) yaw 0 shows the
+# (DIRECTIONS, and REFERENCE_BY_DIR's own note) yaw 0 shows the
 # character's RIGHT profile, 180 the left, 90 the back and 270 the front. A
 # horizontal flip of the picture is a reflection through the vertical plane
 # that contains the camera axis, and it takes a camera at yaw t to the camera
@@ -1021,6 +965,10 @@ ANIMATE_SCRUB_FPS = 24
 ANIMATE_MAX_FRAMES = 24
 # The play-back rate and the one tick every frame holds in the output timing.
 ANIMATE_FPS = PHASE_FPS
+# The keyframe sweep feature: one press draws the keyframes (or, once they are
+# approved, the in-betweens) of several animations as ONE run. Capped so one
+# press cannot book the card for hours: 8 cells x ~4 keys is ~30 renders.
+ANIMATE_SWEEP_MAX_CELLS = int(os.environ.get("ANIM_SWEEP_MAX_CELLS", "8"))
 # Per action, per phase: what the pose is, in the owner's words. Pre-fills a
 # keyframe's prompt; the owner edits it and each attempt remembers its own.
 ANIMATE_PHASE_PROMPTS: dict[str, dict[str, str]] = {

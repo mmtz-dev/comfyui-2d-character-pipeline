@@ -736,8 +736,8 @@ def test_pick_view_writes_into_the_base_and_the_curation_record(work_dir, workfl
     result = concept_stage.pick_view("knight", {"left": 1}, provisional=True, work_dir=work_dir)
     assert result["views"]["left"]["provisional"] is True and result["curation"]["left"] == "pending"
     assert base_job.read_manifest()["concept"]["views"]["left"]["provisional"] is True
-    # The board shows the row with the file's URL and the state.
-    board = curation.board("knight", work_dir)
+    # The views ring shows the row with the file's URL and the state.
+    board = {"views": curation.views_of("knight", curation.read("knight", work_dir), work_dir)}
     assert set(board["views"]) == set(config.CONCEPT_VIEWS), "all eight slots on the ring"
     assert {v for v, row in board["views"].items() if not row["missing"]} == {"back", "right", "left"}
     assert board["views"]["back"]["state"] == "accepted" and board["views"]["back"]["provisional"] is False
@@ -876,8 +876,8 @@ def test_a_mirrored_view_records_where_its_pixels_came_from(work_dir, workflow_d
 
     assert result["curation"]["right"] == "accepted"
     assert curation.read("knight", work_dir)["views"]["right"] == "accepted"
-    # The board's ring and the static page both say it is a flip.
-    board = curation.board("knight", work_dir)
+    # The views ring and the static page both say it is a flip.
+    board = {"views": curation.views_of("knight", curation.read("knight", work_dir), work_dir)}
     assert board["views"]["right"]["mirrored"] is True
     assert board["views"]["right"]["mirrored_from"] == "left"
     assert board["views"]["right"]["mirror_of"] == "left"
@@ -1238,7 +1238,9 @@ def test_the_views_wait_behind_the_base_gate(work_dir, workflow_dir):
     _views_ready(work_dir, workflow_dir)
     ns = build_parser().parse_args(["concept", "--unit", "knight", "--views"])
     assert curation.gate_for_namespace("concept", ns, work_dir) is None
-    curation.set_gate("knight", "base", "pending", work_dir)
+    record = curation.load("knight", work_dir)
+    record["gates"]["base"] = "pending"
+    curation.write("knight", record, work_dir)
     assert "base gate is pending" in curation.gate_for_namespace("concept", ns, work_dir)
     ns = build_parser().parse_args(["concept", "--unit", "knight", "--edit", "left:00",
                                     "--instruction", "x"])

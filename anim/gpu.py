@@ -37,7 +37,7 @@ from anim import gpu_lease
 #                   animate)
 #   anim-concept    concept: Z-Image passes or the Qwen-Edit view pass. Its own profile so
 #                   its lighter Z-Image runs never teach anim-qwen-edit a size too small
-#   anim-wan        Wan 2.2 Fun-Control 5B bf16 (clip, and matrix / bakeoff, which clip)
+#   anim-wan        Wan 2.2 Fun-Control 5B bf16 (clip, and bakeoff, which clips)
 # Keep the keys equal to anim.api.runs.GPU_STAGES (tests/test_gpu_lease.py checks it).
 STAGE_PROFILES: dict[str, str] = {
     "base": "anim-zimage",
@@ -46,7 +46,6 @@ STAGE_PROFILES: dict[str, str] = {
     "concept": "anim-concept",
     "animate": "anim-qwen-edit",
     "clip": "anim-wan",
-    "matrix": "anim-wan",
     "bakeoff": "anim-wan",
 }
 SERVICE = "anim-pipeline-comfyui"  # its name on the gatekeeper's allowlist

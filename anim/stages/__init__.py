@@ -11,18 +11,13 @@ before `base` in the studio's chain - text or sketch to candidate base
 characters, one of which is picked as the unit's reference; `animate` (the
 animate tab feature) is the owner drawing every frame of one animation at one
 direction, approving each, and writing the approved as the cell's finished
-frames; `bakeoff` (the
-frame route bake-off feature) runs one action through both in-between routes
-on both rigs and writes the page the owner rules on; `matrix` (the action
-matrix feature) - once the base is accepted it renders a whole clip per selected
-(action x direction) cell, one batched resumable run with one seed, and
-refuses any cell whose direction has no accepted view; `palette` (the palette
+frames, or sweeps the keyframes of several animations as one run; `bakeoff`
+(the frame route bake-off feature) runs one action through both in-between
+routes on both rigs and writes the page the owner rules on; `palette` (the palette
 feature) installs the project palette from Lospec or a file and the per-unit
 sub-palettes `post` snaps to; `export` (the spritesheet export feature) packs
 a unit's accepted frames into sheets + atlas.json + a Godot SpriteFrames, with
-`publish` as its game-02 adapter; `curate` (the curation board feature) is the
-board from the shell - accept / reject / regenerate a unit's cells and gates;
-`run` chains the whole thing in one command.
+`publish` as its game-02 adapter; `run` chains the whole thing in one command.
 """
 
 STAGE_ORDER = [
@@ -41,8 +36,6 @@ STAGE_ORDER = [
     "concept",
     "animate",
     "bakeoff",
-    "matrix",
     "palette",
-    "curate",
     "run",
 ]

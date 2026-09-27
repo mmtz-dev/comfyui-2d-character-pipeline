@@ -441,8 +441,8 @@ def test_a_run_whose_every_cell_failed_is_not_done_at_a_hundred(fake_api, monkey
     `done` at 100%. The tally is what stops that."""
     monkeypatch.setenv("FAKE_OUTCOME", "done=0 failed=8 blocked=0 of=8")
     monkeypatch.setenv("FAKE_EXIT", str(outcome.EXIT_NOTHING))
-    run = fake_api.post("/jobs", json={"stage": "matrix",
-                                       "args": {"unit": "hooded_archer"}}).json()
+    run = fake_api.post("/jobs", json={"stage": "bakeoff",
+                                       "args": {"unit": "hooded_archer", "action": "attack"}}).json()
     final = wait_for(fake_api, run["id"])
     assert final["status"] == "failed", "not `done` - nothing was accomplished"
     assert final["percent"] == 0, "the [2/2] line had already put the bar at 100"
@@ -457,14 +457,14 @@ def test_a_partial_run_is_told_apart_from_a_full_success(fake_api, monkeypatch):
     monkeypatch.setenv("FAKE_OUTCOME", "done=5 failed=3 blocked=0 of=8")
     monkeypatch.setenv("FAKE_EXIT", str(outcome.EXIT_PARTIAL))
     partial = wait_for(fake_api, fake_api.post(
-        "/jobs", json={"stage": "matrix", "args": {"unit": "knight"}}).json()["id"])
+        "/jobs", json={"stage": "bakeoff", "args": {"unit": "knight", "action": "attack"}}).json()["id"])
     assert partial["status"] == "partial" and partial["returncode"] == 3
     assert partial["percent"] == 62, "five of eight (rounded as the [n/m] bar is)"
 
     monkeypatch.setenv("FAKE_OUTCOME", "done=8 failed=0 blocked=0 of=8")
     monkeypatch.setenv("FAKE_EXIT", "0")
     full = wait_for(fake_api, fake_api.post(
-        "/jobs", json={"stage": "matrix", "args": {"unit": "knight"}}).json()["id"])
+        "/jobs", json={"stage": "bakeoff", "args": {"unit": "knight", "action": "attack"}}).json()["id"])
     assert full["status"] == "done" and full["percent"] == 100
     assert full["status"] != partial["status"], \
         "the panel can say which of the two it is without reading the log"
@@ -530,13 +530,13 @@ def test_settings_default_then_round_trip(api, work_dir, palette):
         "no stored path: the CLI's palette, shown expanded"
     assert set(fresh["palette"]) == {"path", "name", "colours", "source"}
     body = {"palette": str(palette),
-            "frame_budgets": {"Walk": 8, "attack": 12}, "curation": "every",
+            "frame_budgets": {"Walk": 8, "attack": 12},
             "frame_size": [32, 32]}
     response = api.put("/settings", json=body)
     assert response.status_code == 200, response.text
     stored = response.json()
     assert stored["frame_budgets"] == {"walk": 8, "attack": 12}, "actions lower-cased"
-    assert stored["curation"] == "every" and stored["frame_size"] == [32, 32]
+    assert stored["frame_size"] == [32, 32]
     assert stored["palette"]["path"] == str(palette)
     assert stored["palette"]["colours"] == [palettekit.hex_of(c)
                                             for c in imaging.read_palette(palette)]
@@ -548,14 +548,14 @@ def test_settings_default_then_round_trip(api, work_dir, palette):
         {k: v for k, v in stored.items() if k != "palette"}
     # what GET answered, PUT back unchanged: the object form is accepted
     assert api.put("/settings", json=stored).json() == stored
-    partial = api.put("/settings", json={"curation": "end"}).json()
-    assert partial["curation"] == "end"
+    partial = api.put("/settings", json={"frame_size": [48, 48]}).json()
+    assert partial["frame_size"] == [48, 48]
     assert partial["frame_budgets"] == {}, "a PUT is the whole document"
     assert partial["palette"]["path"] == str(config.PALETTE)
 
 
 @pytest.mark.parametrize("body, word", [
-    ({"curation": "sometimes"}, "curation"),
+    ({"curation": "gates"}, "unknown"),
     ({"frame_budgets": {"walk": 13}}, "1..12"),
     ({"frame_budgets": {"walk": True}}, "integer"),
     ({"frame_size": [64]}, "frame_size"),

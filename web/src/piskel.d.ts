@@ -58,6 +58,7 @@ interface PiskelNamespace {
     };
     palettesListController: { selectPalette(id: string): void };
     framesListController: { flagForRedraw_(regenerateDom?: boolean): void };
+    savedStatusService: { isDirty(): boolean };
     /** The sprite studio fork's hook (vendor/piskel/CHANGES.md). */
     frameTagProvider?: ((index: number) => string | null) | null;
     [key: string]: unknown;

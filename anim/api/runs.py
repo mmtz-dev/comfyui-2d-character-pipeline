@@ -14,7 +14,7 @@ that fails hard (a segfault in onnxruntime, a torch OOM) would take the API
 with it; and the GPU stages hold a `requests` session open for minutes, which a
 thread cannot be told to abandon but a process can be killed.
 
-THE GPU RULE. `base`, `render`, `clip`, `concept`, `animate`, `bakeoff`, `matrix` and
+THE GPU RULE. `base`, `render`, `clip`, `concept`, `animate`, `bakeoff` and
 `run` (which renders when it can) reach ComfyUI, and the card is
 24 GB: a second model load on top of a running one is an OOM twenty minutes in. So GPU stages start only
 from an explicit POST - nothing here polls or prefetches - and only ONE may be
@@ -26,7 +26,7 @@ per step) or a line `progress: 42%`; the manager parses those and nothing
 else. Everything is also written under work/_runs/<id>.{json,log} so `GET
 /runs` survives a restart - a run the API no longer owns is reported `lost`.
 
-OUTCOME, NOT EXIT CODE. A batch stage (`matrix`, `bakeoff`)
+OUTCOME, NOT EXIT CODE. A batch stage (`bakeoff`, an `animate` batch or sweep)
 catches each cell's exception, records it and goes on to the next, because one
 bad cell must not cost the other seven. It used to exit 0 for doing that, and a
 run whose every cell failed read `done` at 100% here - see `anim.outcome` for
@@ -60,12 +60,10 @@ from anim import cli, config, outcome
 from anim.stages import STAGE_ORDER
 from anim.util import read_json, write_json_in_place
 
-# The action matrix feature: `matrix` belongs here for three things at once -
-# the one-GPU-at-a-time 409, ComfyUI's /interrupt on Cancel (a matrix run is
-# minutes of Wan per cell, so a Cancel that only killed the process would
-# leave the card finishing a clip nobody wants), and the GPU badge in the panel.
-GPU_STAGES = frozenset({"base", "render", "clip", "concept", "animate", "bakeoff",
-                        "matrix", "run"})
+# A GPU stage gets three things at once: the one-GPU-at-a-time 409, ComfyUI's
+# /interrupt on Cancel (a Cancel that only killed the process would leave the
+# card finishing a render nobody wants), and the GPU badge in the panel.
+GPU_STAGES = frozenset({"base", "render", "clip", "concept", "animate", "bakeoff", "run"})
 # `review` is a page, not a step - there is nothing to run.
 RUNNABLE = [name for name in STAGE_ORDER if name != "review"]
 
@@ -144,7 +142,7 @@ def _final_percent(status: str, cells: dict[str, int] | None,
     A full success is 100 - that is the old unconditional rule, kept, and it is
     the only case that earns it. With a tally the bar is REBASED onto the cells
     that actually finished, so an all-failed run ends at 0 and a four-of-eight
-    run at 50. That is the one place the bar is not monotone: `matrix` advances
+    run at 50. That is the one place the bar is not monotone: a batch advances
     `[n/m]` per cell FINISHED, failures included, so it can climb to 100 during
     a run that produced nothing, and the last frame corrects it. Rejected:
     leaving the bar at 100 and letting the status colour carry the bad news -

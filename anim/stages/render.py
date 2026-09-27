@@ -216,7 +216,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("job", help="job name, e.g. knight_strike")
     parser.add_argument("--force", action="store_true",
                         help="render even when the unit's curation gate is "
-                             "pending (the curation board feature)")
+                             "pending (the base gate)")
     parser.add_argument("--seed", type=int, default=None,
                         help="explicit seed (default: derived from the clip "
                              "hash, action and picks, so a re-run reproduces)")

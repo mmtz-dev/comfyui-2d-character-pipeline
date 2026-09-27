@@ -17,8 +17,8 @@ it already exists.
 
 **direction** (also **cell**, also a **compass cell**) — one of the 16 facings an *action* can
 be rendered at: eight yaws × two elevations, named `s0`…`s315` and `t0`…`t315`. A direction is
-where the camera stands for a piece of **motion**. The matrix and the Animate tab work in
-directions; they *consume* views as identity references, one view per direction.
+where the camera stands for a piece of **motion**. The Animate tab works in directions; it
+*consumes* views as identity references, one view per direction.
 
 **pose** — a skeleton: OpenPose keypoints extracted per frame, used to drive motion. Nothing
 to do with a camera angle. A "pose pass" is a skeleton render, not a view.
@@ -42,7 +42,7 @@ the same set and are not meant to be:
 | Set | Members | Answers |
 |---|---|---|
 | **core** | back, left, right, top | what a bare `anim concept --views` renders |
-| **main** | back, left, top | which views get a top-level button on the Concept tab |
+| **main** | back, left, top | which views get a top-level button on the Views tab, and which count toward that tab's ✓ |
 | **advanced** | right, back_right, back_left, front_left, front_right | which views sit behind the tab's fold |
 
 `right` is in **core** *and* in **advanced**. That is not a bug: the CLI's default is "the four
@@ -58,7 +58,8 @@ that crosses the fold.
 attempts; nothing is replaced. A target is the base, one view, or one frame of an animation.
 
 **pick** — the one attempt a person has **accepted** for a target. A view's pick is what the
-matrix reads; a base's pick is the front. Accepting is always a human act.
+Animate tab reads for that view's direction; a base's pick is the front. Accepting is always a
+human act.
 
 **approved / rejected / to review** — a frame's **verdict**: the person's judgement of the
 attempt the frame currently shows. A frame with a picture and no verdict on it is *to review*.
@@ -76,7 +77,7 @@ a pick edited after it was accepted. Stale is reported, never silently corrected
 ## Animation words
 
 **animation** — one action at one direction for one unit: a row of **frames** played in order.
-The unit of work on the Animate tab, and the thing a finished cell of the Board holds.
+The unit of work on the Animate tab, and the thing a finished cell of the **grid** holds.
 
 **frame** — one picture of an animation, at one place in the row. It has attempts, shows one of
 them, and carries a verdict. Its number ("Frame 4") is its place in the row and changes when
@@ -103,7 +104,15 @@ direction's accepted view), the **keys** (the approved keyframes either side of 
 
 **sweep** — one press that covers a whole set of targets in a single run. A sweep skips targets
 that already have a pick, so pressing it twice tops up what is unfinished rather than piling
-attempts onto settled work.
+attempts onto settled work. On the Animate tab a sweep covers several **animations** at once —
+whichever cells of the grid are ticked — drawing their keyframes, or their in-betweens once
+every ticked cell's keys are approved, as one server run with one GPU lease. A cell the sweep
+cannot draw (no accepted view; for in-betweens, a key not yet approved) is **blocked**, not
+substituted, same as any other blocked target.
+
+**grid** — the Animate tab's view of every **animation** a unit has or could have: one row per
+studio action, one column per side direction, each cell showing that animation's state at a
+glance. The grid is what a sweep is ticked against.
 
 **blocked** — a cell or a press that *may not* run, because a prerequisite is missing. Distinct
 from **failed**, which was attempted and did not work. A batch reports both separately, and a

@@ -1,18 +1,22 @@
 // The animate tab feature's pure half: what the Animate tab derives from
-// `GET /animate/{unit}/{action}/{direction}` - the compass, the frame row's
-// statuses, Generate all's two steps, why a draw-from is refused, the request
-// each button builds, and the player's frame list. No DOM, so it is testable;
-// animate-view.ts draws it.
+// `GET /animate/{unit}` and `GET /animate/{unit}/{action}/{direction}` - the
+// grid of every animation and what a sweep over ticked cells would draw, the
+// frame row's statuses, Generate all's two steps, why a draw-from is refused,
+// the request each button builds, and the player's frame list. No DOM, so it
+// is testable; animate-view.ts draws it.
 
 import type {
   AnimateFrame,
+  AnimateGrid,
   AnimateRequest,
   AnimateState,
   Attempt,
   Batch,
-  CompassCell,
+  CellState,
   DrawFrom,
   FrameStatus,
+  GridCell,
+  SweepBatch,
 } from "./api";
 import { COUNT_MAX, seedFor } from "./concept";
 
@@ -24,17 +28,95 @@ export const STATUS_TEXT: Record<FrameStatus, string> = {
   rejected: "rejected",
 };
 
-/** The compass as the mockup draws it: a 3 × 3 grid, the character in the
- * middle, seen from above - back row away from the viewer, front row toward. */
-export const COMPASS_LAYOUT: readonly (string | null)[] = [
-  "s135", "s90", "s45",
-  "s180", null, "s0",
-  "s225", "s270", "s315",
-];
+// --- the grid and the sweep (the pipeline tabs feature) ---------------------
+export const CELL_TEXT: Record<CellState, string> = {
+  none: "not started",
+  keys: "keys to review",
+  keys_ok: "keys approved",
+  done: "done",
+};
 
-export function compassGrid(state: Pick<AnimateState, "compass">): (CompassCell | null)[] {
-  return COMPASS_LAYOUT.map((direction) =>
-    direction === null ? null : state.compass.find((c) => c.direction === direction) ?? null);
+/** A grid cell's short mark: nothing, K? (keys to review), K✓, ✓ or ⇋
+ * (done, and mirrored from its partner), – when its direction is blocked. */
+export function cellMark(cell: GridCell): string {
+  if (cell.blocked && cell.state === "none") return "–";
+  if (cell.state === "done") return cell.mirrored ? "⇋" : "✓";
+  if (cell.state === "keys_ok") return "K✓";
+  if (cell.state === "keys") return "K?";
+  return "";
+}
+
+export function cellTitle(action: string, direction: string, view: string, cell: GridCell): string {
+  const lines = [`${action} · ${direction} (${viewLabel(view)})`];
+  if (cell.blocked) lines.push(`blocked - ${cell.blocked}`);
+  else lines.push(CELL_TEXT[cell.state]);
+  if (cell.exists) lines.push(`${cell.approved}/${cell.frames} frames approved, ${cell.keys_approved}/${cell.keys} keys`);
+  lines.push("click to open · shift-click to tick for a sweep");
+  return lines.join("\n");
+}
+
+export const cellKey = (action: string, direction: string) => `${action}:${direction}`;
+
+/** Tick or untick one cell; a tick past the cap is refused with the reason. */
+export function toggleTick(ticked: readonly string[], key: string, max: number
+): { ticked: string[]; refused: string | null } {
+  if (ticked.includes(key)) return { ticked: ticked.filter((k) => k !== key), refused: null };
+  if (max && ticked.length >= max) {
+    return { ticked: [...ticked], refused: `one sweep takes at most ${max} animations - untick one first` };
+  }
+  return { ticked: [...ticked, key], refused: null };
+}
+
+export interface SweepPlan {
+  /** The ticked cells that would be drawn, in grid order. */
+  cells: { action: string; direction: string }[];
+  /** Roughly how many renders (one attempt per frame). */
+  renders: number;
+  /** Ticked cells the sweep would skip, and why - the keyframe gate among them. */
+  blocked: { key: string; why: string }[];
+}
+
+/** What one sweep press over the ticked cells would draw. `keys`: every
+ * keyframe not yet approved. `inbetweens`: the in-betweens of cells whose
+ * keys are ALL approved - the keyframe gate; a cell short of it is blocked,
+ * never drawn. Mirrors `anim.stages.animate.sweep`. */
+export function sweepPlan(grid: Pick<AnimateGrid, "actions" | "directions" | "cells">,
+                          ticked: readonly string[], batch: SweepBatch): SweepPlan {
+  const plan: SweepPlan = { cells: [], renders: 0, blocked: [] };
+  for (const action of grid.actions) {
+    for (const { direction } of grid.directions) {
+      const key = cellKey(action, direction);
+      if (!ticked.includes(key)) continue;
+      const cell = grid.cells[action]?.[direction];
+      if (!cell) continue;
+      if (cell.blocked) {
+        plan.blocked.push({ key, why: cell.blocked });
+        continue;
+      }
+      if (batch === "inbetweens" && cell.keys_approved < cell.keys) {
+        plan.blocked.push({ key, why: `${cell.keys - cell.keys_approved} keyframe(s) not approved yet` });
+        continue;
+      }
+      const renders = batch === "keys"
+        ? cell.keys - cell.keys_approved
+        : (cell.frames - cell.keys) - (cell.approved - cell.keys_approved);
+      plan.cells.push({ action, direction });
+      plan.renders += Math.max(0, renders);
+    }
+  }
+  return plan;
+}
+
+/** The confirm line a sweep press asks before it books the card. */
+export function sweepConfirm(unit: string, plan: SweepPlan, batch: SweepBatch): string {
+  const what = batch === "keys" ? "keyframes" : "in-betweens";
+  const lines = [`Generate the ${what} of ${plan.cells.length} animation(s) of ${unit} as one run?`,
+    "", plan.cells.map((c) => cellKey(c.action, c.direction)).join(", "),
+    `About ${plan.renders} render(s), one GPU job, one Cancel.`];
+  if (plan.blocked.length) {
+    lines.push("", `Skipped (${plan.blocked.length}): ${plan.blocked.map((b) => `${b.key} - ${b.why}`).join("; ")}`);
+  }
+  return lines.join("\n");
 }
 
 /** "back_left" -> "back left". */

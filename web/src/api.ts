@@ -60,7 +60,7 @@ export interface PicksState {
  * failed used to arrive here as `done` at 100%. */
 export type RunStatus = "queued" | "running" | "done" | "partial" | "failed" | "lost" | "cancelled";
 
-/** What `matrix` and `bakeoff` accomplished, in cells. Null for
+/** What `bakeoff` and an animate batch or sweep accomplished, in cells. Null for
  * every other stage: a single-shot stage has no cells to count, and no tally
  * is not a tally of zero. Older records (before 2026-09-24) carry none. */
 export interface RunCells {
@@ -114,200 +114,6 @@ export interface SavedFrame {
   size: [number, number];
   alpha_rounded: number;
   bytes: number;
-}
-
-// --- the curation board feature ---------------------------------------------
-export type CurationMode = "gates" | "every" | "end";
-export type GateState = "pending" | "accepted";
-export type CellStatus = "pending" | "accepted" | "rejected";
-export type FrameMark = "accept" | "reject";
-
-export interface StripFrame {
-  /** The source frame number - what picks.json and the marks use. */
-  index: number;
-  url: string;
-  mark: FrameMark | null;
-}
-
-export interface BoardCell {
-  key: string;
-  action: string;
-  direction: string;
-  verb: string | null;
-  job: string | null;
-  status: CellStatus;
-  frames: Record<string, FrameMark>;
-  seed: number | null;
-  regenerated_from: number | null;
-  decided_at: string | null;
-  run?: string | null;
-  stages: string[];
-  /** The GPU stage a regenerate runs: `clip` or `render`. */
-  stage: string | null;
-  current_seed: number | null;
-  rerender_requested: boolean;
-  set: string | null;
-  picks: number[];
-  strip: StripFrame[];
-  stale?: boolean;
-}
-
-export interface Waiting {
-  kind: "gate" | "view" | "parts" | "cell";
-  key: string;
-  why: string;
-}
-
-export type ViewState = "pending" | "accepted" | "rejected";
-
-/** One view of the base (the multi-view reference feature): the views step
- * under the base gate. The API sends all eight slots of `CONCEPT_VIEWS`, so
- * `missing` (the base carries no file for it) is the ring's third state
- * beside accepted and pending. `url` is the file on the base job, null when
- * the view is missing. `wanted_by` names the matrix directions that ask
- * for this view first - s0 wants `right`. */
-export interface BoardView {
-  view: string;
-  yaw: number;
-  elevation?: string;
-  state: ViewState;
-  /** Optional: an API from before the eight-slot ring sends only what exists. */
-  missing?: boolean;
-  /** How many candidates `concept --views` has drawn for this view. A slot
-   * can be missing from the base and still have attempts waiting for a pick. */
-  attempts?: number;
-  wanted_by?: string[];
-  /** The mirrored view feature; optional for the same reason as `missing` -
-   * an API from before it sends neither. `mirror_of` is the partner this slot
-   * could be flipped from, `mirrored` that it already was. */
-  mirror_of?: string | null;
-  mirrored?: boolean;
-  mirrored_from?: string | null;
-  file: string | null;
-  url: string | null;
-  candidate: number | null;
-  seed: number | null;
-  provisional: boolean;
-  picked: string | null;
-}
-
-export interface BoardState {
-  unit: string;
-  mode: CurationMode;
-  origin: string | null;
-  exists: boolean;
-  path: string;
-  gates: Record<string, GateState>;
-  /** Why a gate cannot be accepted right now, per gate, or null when it can.
-   * Optional because the long-lived API process may predate this build. */
-  gate_blocked?: Record<string, string | null>;
-  /** Whether `<unit>_base/post/parts.json` exists - the measured part palettes
-   * every direction locks its colours to. Optional for the same reason as
-   * `gate_blocked`: the long-lived API process may predate this build. */
-  base_parts?: boolean;
-  /** The job whose `post --parts` measures them. */
-  base_parts_job?: string;
-  views: Record<string, BoardView>;
-  actions: string[];
-  directions: string[];
-  cells: Record<string, BoardCell>;
-  waiting: Waiting[];
-}
-
-export interface CurationUnit {
-  unit: string;
-  cells: number;
-  record: boolean;
-}
-
-// --- the action matrix feature ------------------------------------------------
-/** What one cell's record says it is. `kept` is done with the owner's own
- * hand-edited picks left alone; `not run` is planned and never started. */
-export type MatrixCellStatus = "done" | "failed" | "blocked" | "kept" | "not run";
-
-/** Does the last pick lead back into the first (`pick`'s `loop_closure`)?
- * Information, not a failure: idle / walk / run are loops and Wan does not
- * know it. `metric: "none"` means neither poses nor frames could answer. */
-export interface LoopClosure {
-  first: number;
-  last: number;
-  metric: "pose" | "pixel" | "none";
-  distance: number | null;
-  tolerance: number;
-  ok: boolean | null;
-}
-
-/**
- * One (action x direction) cell of `GET /matrix/{unit}`, as
- * `matrix.listing()` builds it. Every planned cell has a row whether or not
- * anything has run, so the tab can grey what it cannot generate on first
- * load: `runnable` and `reason` are recomputed from the curation record on
- * every GET, never read back from the state file.
- */
-export interface MatrixCell {
-  key: string;
-  action: string;
-  /** The PIPELINE verb - attack's job is `<unit>_strike[_<dir>]`. */
-  verb: string;
-  direction: string;
-  yaw: number;
-  job: string;
-  /** The rig's clip for the action, null when that rig ships none (jump). */
-  clip: string | null;
-  status: MatrixCellStatus;
-  runnable: boolean;
-  /** The whole sentence a blocked cell shows - never a silent grey. */
-  reason: string | null;
-  /** The accepted view of the base this cell would render against. */
-  view: string | null;
-  /** The views the direction wants, best first (`matrix_reference_views`). */
-  wanted: string[];
-  frames: number;
-  /** `/jobs/<job>/frames/post/<i>.png`, one per finished frame. */
-  strip: string[];
-  /** The phase tag of each frame of `strip`, null where there is none. */
-  phases: (string | null)[];
-  fps: number;
-  loop: boolean;
-  closure: LoopClosure | null;
-  seconds: number | null;
-  gpu_seconds: number | null;
-  seed: number | null;
-  error: string | null;
-  /** The cell's status on the Board, so the tab needs no second fetch. */
-  curation: CellStatus | null;
-}
-
-/** The counts of the last run's plan; null before anything has run. */
-export interface MatrixSummary {
-  done: number;
-  failed: number;
-  blocked: number;
-  of: number;
-  gpu_seconds: number;
-  seconds: number;
-}
-
-/** `GET /matrix/{unit}`: the whole five-by-eight grid with its live verdicts.
- * There is no 404 for "no matrix yet" - only a name that is not a unit slug. */
-export interface MatrixState {
-  unit: string;
-  schema: string;
-  elevation: string;
-  /** The unit's one seed, once a run has derived it. */
-  seed: number | null;
-  rig: { name: string; glb: string };
-  actions: string[];
-  directions: string[];
-  cells: Record<string, MatrixCell>;
-  /** The #277 hold: the widest selection the stage will accept (0 = no cap). */
-  max_cells: number;
-  selectable: number;
-  /** Seconds one cell costs, warm - multiply by the selection. */
-  estimate_seconds: number;
-  summary: MatrixSummary | null;
-  updated: string | null;
-  path: string;
 }
 
 export class ApiError extends Error {
@@ -402,63 +208,8 @@ async function sendJSON<T>(method: string, path: string, body: unknown): Promise
   return (await response.json()) as T;
 }
 
-// --- the curation board feature ---------------------------------------------
-export const listCuration = () => getJSON<{ units: CurationUnit[]; mode: CurationMode }>("/curation");
-export const getBoard = (unit: string) => getJSON<BoardState>(`/curation/${encodeURIComponent(unit)}`);
-
-function cellPath(unit: string, action: string, direction: string): string {
-  return `/curation/${encodeURIComponent(unit)}/cells/${encodeURIComponent(action)}/${encodeURIComponent(direction)}`;
-}
-
-/** `PUT .../cells/{action}/{dir}`: a status and/or frame marks (null clears one). */
-export const putCell = (
-  unit: string,
-  action: string,
-  direction: string,
-  body: { status?: CellStatus; frames?: Record<string, FrameMark | null> },
-) => sendJSON<BoardCell>("PUT", cellPath(unit, action, direction), body);
-
-/** The action matrix. Always answers for a unit slug - a unit nothing has
- * run for still gets a row per planned cell, blocked with the reason. */
-export const getMatrix = (unit: string) => getJSON<MatrixState>(`/matrix/${encodeURIComponent(unit)}`);
-
-export const putGate = (unit: string, gate: string, state: GateState) =>
-  sendJSON<BoardState>("PUT", `/curation/${encodeURIComponent(unit)}/gates/${encodeURIComponent(gate)}`, { state });
-
-/** `PUT .../views/{view}`: the views step under the base gate. */
-export const putView = (unit: string, view: string, state: ViewState) =>
-  sendJSON<BoardState>("PUT", `/curation/${encodeURIComponent(unit)}/views/${encodeURIComponent(view)}`, { state });
-
-/** `PUT /settings` is the whole document: send back what GET gave, changed. */
-export const putSettings = (settings: Settings) => sendJSON<Settings>("PUT", "/settings", settings);
-
-/** `POST .../regenerate`: the cell with its run (202), or the refusal - a busy
- * GPU (409) or a pending gate (423) - as a value, like `startRun`. */
-export async function regenerateCell(
-  unit: string,
-  action: string,
-  direction: string,
-): Promise<{ cell: BoardCell; run: RunRecord } | { refused: RunRefusal }> {
-  const response = await fetch(`${cellPath(unit, action, direction)}/regenerate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    body: "{}",
-  });
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (response.status === 202) {
-    const cell = body as unknown as BoardCell & { run: RunRecord };
-    return { cell, run: cell.run };
-  }
-  const error = (body.error ?? body.detail ?? response.statusText) as string;
-  return {
-    refused: {
-      status: response.status,
-      error: typeof error === "string" ? error : JSON.stringify(error),
-      run: body.run as RunRecord | undefined,
-      runs: body.runs as RunRecord[] | undefined,
-    },
-  };
-}
+/** `GET /units`: every unit the studio knows - what the unit bar lists. */
+export const listUnits = async () => (await getJSON<{ units: string[] }>("/units")).units;
 
 // --- the concept generation feature ------------------------------------------
 export type AttemptSource = "txt2img" | "upload" | "existing" | "img2img" | "edit" | "views" | "animate" | "mirror";
@@ -552,6 +303,10 @@ export interface ConceptState {
   defaults: Partial<Record<ModelFamily, { model: string | null; loras: LoraChoice[] }>>;
   last_seed: number | null;
   parts_phrase: string | null;
+  /** Whether `post --parts` has measured the part palettes off the accepted
+   * base, and the job it runs on (the Views tab's "measure part palettes"). */
+  base_parts: boolean;
+  base_parts_job: string;
   base: {
     description: string | null;
     prompt: string | null;
@@ -846,9 +601,41 @@ export interface AnimateState {
   mirrored?: number;
   approved?: string[];
   added?: string;
-  written?: { job: string; frames: number; board: string };
+  written?: { job: string; frames: number };
   edited?: Attempt;
 }
+
+/** One animation as a cell of the Animate tab's grid (the pipeline tabs
+ * feature). `none`: no picture yet; `keys`: a keyframe is not approved;
+ * `keys_ok`: every keyframe is approved, the in-betweens may be drawn;
+ * `done`: every frame is approved. A cell not started counts the template. */
+export type CellState = "none" | "keys" | "keys_ok" | "done";
+
+export interface GridCell {
+  state: CellState;
+  frames: number;
+  approved: number;
+  keys: number;
+  keys_approved: number;
+  pictures: number;
+  exists: boolean;
+  mirrored: boolean;
+  /** Why this direction may not be drawn (its view), or null. */
+  blocked: string | null;
+}
+
+export interface AnimateGrid {
+  unit: string;
+  actions: string[];
+  directions: Omit<CompassCell, "approved" | "frames" | "exists">[];
+  /** `cells[action][direction]`. */
+  cells: Record<string, Record<string, GridCell>>;
+  locked: string | null;
+  max_cells: number;
+  states: CellState[];
+}
+
+export type SweepBatch = "keys" | "inbetweens";
 
 export interface AnimateRequest {
   frame?: string;
@@ -879,6 +666,21 @@ async function runOrRefusal(response: Response): Promise<{ run: RunRecord } | { 
       runs: payload.runs as RunRecord[] | undefined,
     },
   };
+}
+
+export const getAnimateGrid = (unit: string) => getJSON<AnimateGrid>(`/animate/${encodeURIComponent(unit)}`);
+
+/** `POST /animate/{unit}/sweep`: ONE run over several animations (the
+ * keyframe sweep feature), or the refusal as a value. */
+export async function sweepAnimate(
+  unit: string, cells: { action: string; direction: string }[], batch: SweepBatch, model: string | null,
+): Promise<{ run: RunRecord } | { refused: RunRefusal }> {
+  const response = await fetch(`/animate/${encodeURIComponent(unit)}/sweep`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ cells, batch, ...(model ? { model } : {}) }),
+  });
+  return runOrRefusal(response);
 }
 
 export const getAnimate = (unit: string, action: string, direction: string) =>

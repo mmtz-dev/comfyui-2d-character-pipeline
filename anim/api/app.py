@@ -24,27 +24,23 @@ Routes (all JSON unless said otherwise):
                                            run `anim palette` in the background -> 202 + the run
     GET  /palette/units                    the units that have a sub-palette
     GET  /palette/units/{unit}             one unit's sub-palette (404: the whole palette applies)
-    GET  /curation                         the units with cells or a curation record, and the mode
-    GET  /curation/{unit}                  the board: gates, cells with their strips, what is waiting
-    PUT  /curation/{unit}/cells/{action}/{dir}  {"status"} | {"frames": {n: accept|reject|null}}
     POST /curation/{unit}/cells/{action}/{dir}/regenerate   new seed + the cell's GPU stage -> 202
-    PUT  /curation/{unit}/gates/{gate}  {"state"}   base -> pending | accepted
-    PUT  /curation/{unit}/views/{view}  {"state"}   a view of the base -> pending | accepted | rejected
     GET  /export/{unit}                    the last `anim export` of a unit: files, animations, warnings
-    GET  /matrix/{unit}                    the action matrix: every planned (action x direction) cell, its prerequisite
-                                           verdict, its finished frames' URLs, the seed and the #277 cap
-                                           (a matrix LAUNCHES through POST /jobs {"stage": "matrix"} like any stage)
     GET  /concept/{unit}                   the concept generation feature: the base attempts, every view's attempts, picks, defaults
     POST /concept/{unit}/generate          {"op": txt2img|views|img2img|edit, ...} -> `anim concept` in the background -> 202 + the run
                                            (423 while the base gate is pending for a view op)
     PUT  /concept/{unit}/upload            the owner's PNG (image/png body) as a base candidate
     POST /concept/{unit}/pick  {"index"}   accept that base candidate (= the base gate)
-    POST /concept/{unit}/views/{view}/pick {"index"}  accept that view attempt (the matrix's reference for its facings)
+    POST /concept/{unit}/views/{view}/pick {"index"}  accept that view attempt (the Animate tab draws its direction from it)
     PUT  /concept/{unit}/attempts/{target}/{index}/image   the retouch feature: write this PNG over that attempt (the editor's Save)
     POST /concept/{unit}/attempts/{target}/{index}/inpaint the canvas (RGBA, erased = redraw) -> `anim concept --inpaint` in the background -> 202 + the run
     PUT  /concept/{unit}/attempts/{target}/{index}  {"hidden": bool}: hide one attempt from the strips (the accepted one is refused)
     DELETE /concept/{unit}/attempts/{target}/{index}  delete a hidden attempt's PNG; the row stays as its record
     PUT  /concept/{unit}/defaults          {"family", "model", "loras"}: the unit's default checkpoint + LoRAs
+    GET  /units                           every unit the studio knows (the unit bar)
+    GET  /animate/{unit}                   the Animate tab's grid: every action x side direction, each cell's state
+    POST /animate/{unit}/sweep             {"cells": [{"action", "direction"}], "batch": keys|inbetweens} -> ONE
+                                           `anim animate --sweep` run over those animations -> 202 + the run
     GET  /animate/{unit}/{action}/{dir}   the animate tab feature: the compass, the actions, the frame row
                                            (per frame its status, attempts, neighbours, prompt), the mirror, the output
     POST /animate/{unit}/{action}/{dir}/generate   {"frame"} | {"batch": all|keys|rejected|inbetweens}, + prompt,
@@ -95,7 +91,6 @@ from anim.job import Job
 from anim.stages import concept as concept_stage
 from anim.stages import export as export_stage
 from anim.stages import animate as animate_stage
-from anim.stages import matrix as matrix_stage
 from anim.stages.review import ReviewApp
 
 
@@ -110,23 +105,6 @@ class RunRequest(BaseModel):
 
 class PicksRequest(BaseModel):
     picks: list[int] = Field(default_factory=list)
-
-
-class CellRequest(BaseModel):
-    """`PUT /curation/{unit}/cells/{action}/{dir}` (the curation board
-    feature): a `status` for the cell, and/or `frames` marks merged over the
-    ones there are (`null` clears a mark)."""
-
-    status: str | None = None
-    frames: dict[str, str | None] | None = None
-
-
-class GateRequest(BaseModel):
-    state: str
-
-
-class RegenerateRequest(BaseModel):
-    seed: int | None = None
 
 
 class ConceptRequest(BaseModel):
@@ -273,6 +251,38 @@ class AnimateRequest(BaseModel):
         return args
 
 
+class SweepRequest(BaseModel):
+    """`POST /animate/{unit}/sweep` (the keyframe sweep feature): the
+    animations to sweep, `{"action", "direction"}` each, and what to draw -
+    `keys`, or `inbetweens` once a cell's keys are approved."""
+
+    cells: list[dict[str, str]] = Field(min_length=1)
+    batch: str = "keys"
+    model: str | None = None
+    force: bool = False
+
+    def args(self, unit: str) -> dict[str, Any]:
+        if self.batch not in animate_stage.SWEEP_BATCHES:
+            raise HTTPException(400, f"batch is one of {list(animate_stage.SWEEP_BATCHES)}")
+        specs = []
+        for cell in self.cells:
+            try:
+                action, direction = animate_stage.parse_cell(
+                    f"{cell.get('action', '')}:{cell.get('direction', '')}")
+            except ValueError as exc:
+                raise HTTPException(400, str(exc)) from None
+            specs.append(f"{action}:{direction}")
+        cap = config.ANIMATE_SWEEP_MAX_CELLS
+        if cap and len(set(specs)) > cap:
+            raise HTTPException(400, f"{len(set(specs))} cells; one sweep takes at most {cap}")
+        args: dict[str, Any] = {"slug": unit, "sweep": specs, "batch": self.batch}
+        if self.model:
+            args["model"] = self.model
+        if self.force:
+            args["force"] = True
+        return args
+
+
 class FrameAddRequest(BaseModel):
     after: int = Field(ge=0)
 
@@ -408,7 +418,7 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
 
     def _gate(stage: str, args: dict[str, Any] | None, argv: list[str] | None
               ) -> JSONResponse | None:
-        """The curation board feature's 423: the unit's gate is pending. The
+        """The base gate's 423: the unit's gate is pending. The
         run manager's own refusals (unknown stage, bad args) come first."""
         try:
             line = argv if argv is not None else runs_api.argv_for(stage, dict(args or {}))
@@ -566,69 +576,6 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
                                      f"palette applies")
         return {**record, "path": str(palettekit.unit_palette_path(unit, path))}
 
-    # --- the curation board feature ---------------------------------------
-    def _curated(call: Any, *args: Any, **kwargs: Any) -> Any:
-        try:
-            return call(*args, **kwargs)
-        except curation.CurationError as exc:
-            raise HTTPException(exc.status, str(exc)) from None
-
-    @app.get("/curation")
-    def list_curation() -> dict[str, Any]:
-        return {"units": curation.list_units(work_dir), "mode": curation.mode_of(work_dir)}
-
-    @app.get("/curation/{unit}")
-    def get_board(unit: str) -> dict[str, Any]:
-        return _curated(curation.board, unit, work_dir)
-
-    @app.put("/curation/{unit}/cells/{action}/{direction}")
-    def put_cell(unit: str, action: str, direction: str, body: CellRequest
-                 ) -> dict[str, Any]:
-        """Marks first, then the status: a `{"status": "accepted", "frames":
-        {...}}` records the marks and then locks the cell."""
-        if body.status is None and body.frames is None:
-            raise HTTPException(400, "give `status` and/or `frames`")
-        if body.frames is not None:
-            _curated(curation.set_frames, unit, action, direction, body.frames, work_dir)
-        if body.status is not None:
-            _curated(curation.set_cell_status, unit, action, direction, body.status,
-                     work_dir)
-        key = _curated(curation.cell_key, action, direction)
-        return _curated(curation.board, unit, work_dir)["cells"][key]
-
-    @app.post("/curation/{unit}/cells/{action}/{direction}/regenerate", status_code=202)
-    def regenerate_cell(unit: str, action: str, direction: str, response: Response,
-                        body: RegenerateRequest | None = None) -> Any:
-        """A new seed, then the cell's GPU stage through the run manager: the
-        unit's gate is the 423, a busy card the 409, as for `POST /jobs`."""
-        key = _curated(curation.cell_key, action, direction)
-        cell = _curated(curation.board, unit, work_dir)["cells"].get(key)
-        if cell is None or not cell.get("job"):
-            raise HTTPException(404, f"{unit} has no job for cell {key}")
-        locked = _gate(cell["stage"], {"job": cell["job"]}, None)
-        if locked is not None:
-            return locked
-        try:
-            out = _curated(curation.regenerate, unit, action, direction, manager.start,
-                           work_dir, seed=body.seed if body else None)
-        except RunRefused as exc:
-            return JSONResponse(status_code=exc.status,
-                                content={"error": str(exc), **exc.extra})
-        response.headers["Location"] = f"/runs/{out['run']['id']}"
-        return out
-
-    @app.put("/curation/{unit}/gates/{gate}")
-    def put_gate(unit: str, gate: str, body: GateRequest) -> dict[str, Any]:
-        _curated(curation.set_gate, unit, gate, body.state, work_dir)
-        return _curated(curation.board, unit, work_dir)
-
-    @app.put("/curation/{unit}/views/{view}")
-    def put_view(unit: str, view: str, body: GateRequest) -> dict[str, Any]:
-        """The views step under the base gate (the multi-view reference
-        feature): accept / reject / reopen one view of the base."""
-        _curated(curation.set_views, unit, {view: body.state}, work_dir)
-        return _curated(curation.board, unit, work_dir)
-
     # --- the spritesheet export feature -----------------------------------
     @app.get("/export/{unit}")
     def get_export(unit: str) -> dict[str, Any]:
@@ -642,29 +589,6 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
             raise HTTPException(404, f"no export of {unit!r} yet; POST /jobs "
                                      f"{{\"stage\": \"export\", \"args\": "
                                      f"{{\"unit\": \"{unit}\"}}}}")
-        return row
-
-    # --- the action matrix feature ----------------------------------------
-    @app.get("/matrix/{unit}")
-    def get_matrix(unit: str) -> dict[str, Any]:
-        """The matrix: every planned (action x direction) cell with its status,
-        its prerequisite verdict and the URLs of its finished frames, plus the
-        seed and the #277 cap.
-
-        Answers before anything has run - the Matrix tab greys what it cannot
-        generate on first load - so there is no "no matrix yet" 404; only a
-        name that is not a unit slug is one. A matrix RUNS like any other
-        stage: `POST /jobs {"stage": "matrix", "args": {"unit": ...,
-        "actions": "attack,walk", "dirs": "s0,s90"}}`, which already carries
-        the 423 gate, the one-GPU-at-a-time 409 and argparse's own 400 for a
-        bad selection. A second POST endpoint here would only re-implement
-        those three refusals.
-        """
-        if not jobs_api.valid_name(unit):
-            raise HTTPException(404, f"{unit!r} is not a unit slug")
-        row = matrix_stage.listing(unit, work_dir)
-        if row is None:
-            raise HTTPException(404, f"no unit {unit!r}")
         return row
 
     # --- the concept generation feature -----------------------------------
@@ -900,6 +824,31 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
                                 content={"error": str(exc), **exc.extra})
         response.headers["Location"] = f"/runs/{run.id}"
         return run.record()
+
+    @app.get("/units")
+    def list_units() -> dict[str, Any]:
+        """Every unit the studio knows: a slug any job carries, or a curation
+        record - what the unit bar lists."""
+        return {"units": animate_api.units(work_dir)}
+
+    @app.get("/animate/{unit}")
+    def get_animate_grid(unit: str) -> dict[str, Any]:
+        """Every studio action x every side direction: each animation's state
+        (none / keys / keys_ok / done), counts, mirrored, and why it is blocked."""
+        row = animate_api.grid(unit, work_dir)
+        if row is None:
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        return row
+
+    @app.post("/animate/{unit}/sweep", status_code=202)
+    def sweep_animate(unit: str, body: SweepRequest, response: Response) -> Any:
+        """`anim animate --sweep ... --batch keys|inbetweens` in the background:
+        ONE run over several animations. Blocked cells are skipped and reported
+        in the run's log; 423 while the base gate is pending, 409 while the GPU
+        is busy."""
+        if not jobs_api.valid_name(unit):
+            raise HTTPException(404, f"{unit!r} is not a unit slug")
+        return _animate_run(body.args(unit), response)
 
     @app.get("/animate/{unit}/{action}/{direction}")
     def get_animate(unit: str, action: str, direction: str) -> dict[str, Any]:

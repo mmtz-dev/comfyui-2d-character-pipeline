@@ -4,6 +4,155 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-27 — the pipeline tabs feature: five tabs become three ([#320](http://192.168.1.158:8700/work_packages/320))
+
+**What.** The studio panel's five tabs — Pipeline, Board, Concept, Animate, Matrix — became
+three, in pipeline order: **Concept → Views → Animate**. One **unit bar** above the tabs
+replaces the per-tab unit pickers, remembering the unit in `localStorage`. Gating is soft:
+every tab is always clickable, each shows ✓ when its step is done (Concept: the base has a
+pick; Views: back, left and top all have one; Animate never), and anything blocked says why —
+the base gate still stands. Concept is wide unless a base attempt is open for editing; Views
+and Animate are always split, the panel at a draggable width beside Piskel. Clicking an
+attempt or a frame loads it straight into Piskel, asking first over unsaved paint. The
+Animate tab gained a **grid** (`GET /animate/{unit}`, new): every action × direction cell with
+its state (not started / keys to review / keys approved / done / mirrored / blocked). Clicking
+a cell opens it below; shift-clicking ticks it for the **sweep box**, which draws the ticked
+cells' keyframes — or their in-betweens, once every ticked cell's keys are approved — as
+**one** server run (`POST /animate/{unit}/sweep`, `anim animate --sweep ACTION:DIR … --batch
+keys|inbetweens`, capped at `ANIMATE_SWEEP_MAX_CELLS` (8) cells), so one GPU lease and one
+Cancel cover a whole batch and it survives the tab closing. Removed entirely: the **action
+matrix** (`anim/stages/matrix.py`, `anim matrix`, `GET /matrix/{unit}`), the **curation board**
+(`anim/stages/curate.py`, `anim curate`, every `/curation*` route, the Board tab) and the
+**Pipeline tab** (its Open frames / Save section — every frame is now edited through Animate).
+The curation modes `every` / `end` are gone; the base gate is always on, with no per-project
+setting to turn it off. Also folded in: the uncommitted **edit bar feature** ([#319](http://192.168.1.158:8700/work_packages/319)) —
+Save / Inpaint / Done, the ● unsaved marker, the draggable editing width (now 440 px, was
+330) — minus its ⚙ "Stay on my tab / Jump to Pipeline" setting, which has nothing left to jump
+to with the Pipeline tab gone; the edit bar also gained the project palette as clickable
+swatches. Design doc: `games-design-wiki/shared/pipeline-tabs.md`.
+
+**Why.** The action matrix rendered a whole (action × direction) clip in one shot with no
+keyframe gate, so its output drifted cell to cell — the same drift the owner rejected the
+keyframe route bake-off and the Keyframes tab over. The Animate tab already had the gate that
+fixes that (in-betweens wait for approved keys), but only one cell at a time; the sweep folds
+the matrix's reach — many cells in one press — into Animate instead of keeping a second,
+ungated render path beside it. The Board only existed to review the matrix's output, so it
+went with it. Pipeline's job-opening flow is what the Animate tab replaced back on 2026-09-26;
+carrying it forward as a fourth thing to maintain had nothing left reading it. The owner
+settled this in a grilling session (three rounds) plus a clickable mockup
+(`http://192.168.1.158:8090/anim-pipeline-tabs.html`, now superseded by the shipped studio),
+and ruled directly on sixteen numbered questions in the design doc — among them: the second
+tab is named **Views**, not Board or Matrix, because "direction" keeps meaning the camera
+facing of an action and Views draws views; gating is soft everywhere, never a hard block with
+no explanation; the sweep is one server run, not one client-side loop of presses, so it
+survives a closed tab and costs one GPU lease; and the uncommitted edit bar work folds into
+this refactor rather than landing separately and being rewritten days later, with its
+Stay/Jump setting dropped because the choice it existed for — did an edit throw you off your
+tab — stopped being a question once there was no Pipeline tab to land on.
+
+**Choices made along the way.**
+
+- **The unit list needed a new route.** The old per-tab pickers read `GET /curation`, which
+  went with the board. `GET /units` (every unit slug any job carries, plus units with a
+  curation record) replaces it.
+- **Part palette lock did not follow the matrix into Animate's output.** The matrix locked
+  every direction's parts to the base's measured palettes; nothing in the Animate tab's output
+  path does that automatically. `anim post <unit>_base --parts` (moved to the Views tab as
+  "measure part palettes") still measures them, but a drifting part is now caught by eye, on
+  approval, the same as any other drift — folding the lock into Animate's per-frame generation
+  is follow-up work, not part of this feature.
+- **`base_views` and `clip_for`/`rig_for` moved out of the deleted `matrix.py`** into
+  `anim/curation.py` and `anim/stages/animate.py` respectively, since Animate already imported
+  them from their old home.
+- **A settings PUT carrying the old `curation` key is a 400**, not silently ignored — "unknown
+  setting" says plainly that the mode selector is gone rather than pretending it took effect.
+
+**Not changed.** The base gate itself, `anim/curation.py`'s gate and views-step machinery, the
+Concept tab's generation behaviour and its API, the frame route bake-off (`anim bakeoff`,
+unrelated to the matrix), and every `/jobs` route.
+
+**Verified.** `docker compose run --rm anim-pipeline pytest` — **692 passed, 4 skipped** (the
+four opt-in smoke / regression tests). `cd web && docker run --rm -u $(id -u):$(id -g) -v
+"$PWD":/web -w /web node:22-slim npx vitest run` — **88 passed in 7 files** (down from 144:
+`board.test.ts`, `matrix.test.ts` and `frames.test.ts` went with their modules; `tabs.test.ts`
+is new). Checked in a browser (headless Chromium, real `work/`): the three tabs, the unit bar,
+the ✓ steps, click-to-edit on Views, the grid and a ticked sweep; no console errors. Then
+`web/dist` was rebuilt and `anim-api` restarted.
+
+---
+
+## 2026-09-27 — the edit bar feature: editing keeps your tab ([#319](http://192.168.1.158:8700/work_packages/319))
+
+**What.** Every "edit" (Concept Edit pixels, Animate Pixel edit / Inpaint) and "open in the
+editor" (Board, Matrix, Pipeline's Open frames) now keeps the tab you are on. While something is
+open in Piskel, an **edit bar** sits above the tabs: what is open, a "● unsaved" marker, and
+Save → the attempt + Inpaint (one attempt) or Save frames → `<set>` (a job), plus **Done**. The
+panel narrows to one editing width for every tab, 330 px by default, and a gold right edge drags
+it (240 px .. 80% of the window, remembered in localStorage). With the panel folded, a compact copy
+of the bar floats at the top of Piskel's drawing column. Done widens the panel back and leaves
+the image on the canvas, but with nothing left to save to. Done, or opening something else while
+the canvas has unsaved paint, asks `Discard unsaved changes to <label>?` first. A ⚙ beside the
+tabs holds one setting, "When I edit an image": Stay on my tab (default) or Jump to Pipeline.
+The Pipeline tab's Save section is gone, and a one-line pointer in Job replaces it. The pure
+rules (width clamp, stored-value parsing, which tab an edit shows, which tab Done returns to,
+when to ask) are `web/src/editing.ts`, tested in `editing.test.ts`.
+
+**Why.** Before, each edit called `showTab("pipeline")`. That existed only because Save and
+Inpaint lived in the Pipeline tab's Save section, and because the grid tabs make the panel
+`min(1040px, 78vw)` wide, which squeezes Piskel. So the owner was thrown off the Concept or
+Board tab every time they touched a pixel. With the controls in a bar that exists on every tab,
+and a width that follows *editing* instead of *the tab*, the jump has no reason left. The owner
+approved the design from a clickable mockup, including four assumptions:
+- Jump mode still gets the bar.
+- The drag edge shows only while editing.
+- The 240 px / 80% clamp.
+- The ⚙ holds just this one option.
+
+**How unsaved is detected.** This uses Piskel's own `SavedStatusService`, the same notion behind
+its title's ` *` and its leave-page warning. It compares the history state at the last
+`PISKEL_SAVED` with the current one, so a stroke sets it and undoing back to the saved state
+clears it. The bridge publishes `PISKEL_SAVED` after a load (`setPiskel` counts the load itself
+as a history state, so every freshly opened image used to read as dirty) and after the studio's
+own Save. The marker follows `PISKEL_SAVED_STATUS_UPDATE`. The vendored tree is not touched.
+
+**Decisions made while building.**
+- Save never switches tab now, in either mode. The old `saveAttempt` jumped back to Concept or
+  Animate after saving. That went, and the approved mockup's jump mode doesn't switch on Save
+  either. The tab's grid still re-reads so the thumbnail updates.
+- Opening a second image keeps the *first* edit's origin, so in jump mode Done goes back to
+  where you started, not to Pipeline.
+- An inpaint's result reopening the same attempt skips the unsaved question and keeps the edit
+  going.
+- A failed open leaves the bar up with the error and only Done.
+- The tabs are 5 px narrower at 330 px so the five tabs and the ⚙ fit, and they wrap below
+  ~320 px.
+- `.studio-row[hidden]` now hides. Before, the Inpaint row showed for a whole job too, because
+  `.studio-row`'s `display: flex` beat the `hidden` attribute.
+
+**Verified.** tsc clean, vitest 144 (15 new). In Chromium (Playwright container, 1600×900)
+against the running studio:
+- Edit on Concept keeps the Concept tab and narrows the panel 1040 → 330.
+- A drag to 520 is stored, holds on the Board tab while editing, and survives a reload.
+- Folded, the floating bar sits between Piskel's tool column and right column. Unfolded, it hides.
+- Painting sets "● unsaved" and undo clears it.
+- Done with unsaved paint asks, and cancel keeps editing. Opening another attempt while dirty
+  asks too. Done widens back to 1040 and leaves the image on the canvas.
+- Pipeline Open and Board's job link open in place with Save frames → post.
+- Save (the PUT answered by the test, so nothing in `work/` was written) stays on Concept, stays
+  narrow and clears the marker.
+- The ⚙ popover closes on an outside click. In Jump mode an edit lands on Pipeline with the bar,
+  and Done returns to Concept.
+
+Not verified in the browser:
+- Matrix's "Open in Piskel": no done cell for the unit tried. It is the same `openByName` path
+  as the Board's link.
+- Animate's Pixel edit / Inpaint: the same `editAttempt` path as Concept.
+- A real Inpaint round trip, which needs the GPU.
+
+**Not changed.** Browsing widths (Pipeline 330, grid tabs wide). The vendored Piskel.
+
+---
+
 ## 2026-09-27 — the bigger brushes feature: a 1–128 px pen size slider in the pixel editor
 
 **What.** In the vendored Piskel: `MAX_PENSIZE` 32 → 128 (`PenSizeService.js`), `[` / `]` walk a

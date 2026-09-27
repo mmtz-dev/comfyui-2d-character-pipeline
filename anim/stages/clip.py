@@ -453,7 +453,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("job", help="job name, e.g. knightq_strike_clip")
     parser.add_argument("--force", action="store_true",
                         help="render even when the unit's curation gate is "
-                             "pending (the curation board feature)")
+                             "pending (the base gate)")
     parser.add_argument("--seed", type=int, default=None,
                         help="explicit seed (default: derived from the clip hash, "
                              "action, unit and control mode, so a re-run reproduces)")

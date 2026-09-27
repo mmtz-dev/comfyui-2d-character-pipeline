@@ -1,14 +1,18 @@
-// The Concept tab as DOM (the concept generation feature). Top to bottom: the
-// unit, the settings row (checkpoint + LoRAs per family, how many per press,
-// the seed lock, save as the unit's default), the base (prompt, Generate,
-// Upload, every attempt with the accepted one outlined), the views (All /
-// Front / Back / Side / Top-down, the advanced fold, a prompt and Generate per
-// view, every attempt), and under whichever attempt was clicked an action
-// bar: Accept, Regenerate, img2img with its strength, Edit with an
-// instruction. Every write goes to the API and the state is fetched again;
-// concept.ts folds the click in first so the outline moves at once. Plain
-// DOM like the board, for the same reason. While a run holds the GPU every
-// generate button waits and one Cancel button does not.
+// The Concept and Views tabs as DOM (the concept generation feature, split in
+// two by the pipeline tabs feature). One class, one state, two roots:
+// `root` is the Concept tab - the base (prompt, Generate, Upload, every
+// attempt with the accepted one outlined) - and `viewsRoot` the Views tab
+// (All / Front / Back / Side / Top-down, the advanced fold, a prompt and
+// Generate per view, every attempt, and "measure part palettes"). The
+// settings row (checkpoint + LoRAs per family, how many per press, the seed
+// lock) and the busy / status lines are ONE block that `show` moves into
+// whichever of the two is on screen, so a choice made on one tab holds on the
+// other. Under whichever attempt was clicked sits an action bar: Accept,
+// Regenerate, img2img with its strength, Edit with an instruction. On the
+// Views tab the click also opens the attempt in Piskel beside the panel.
+// Every write goes to the API and the state is fetched again; concept.ts
+// folds the click in first so the outline moves at once. While a run holds
+// the GPU every generate button waits and one Cancel button does not.
 
 import {
   ApiError,
@@ -18,12 +22,11 @@ import {
   getConcept,
   getModels,
   hideAttempt,
-  listCuration,
-  listJobs,
   mirrorConceptView,
   pickConcept,
   pickConceptView,
   putConceptDefaults,
+  startRun,
   uploadConcept,
   type Attempt,
   type ConceptState,
@@ -60,7 +63,6 @@ import {
   refOf,
   rowLabel,
   sameAsDefault,
-  unitSlug,
   viewGroups,
   visibleAttempts,
   viewLabel,
@@ -98,12 +100,14 @@ const FAMILIES: { family: ModelFamily; label: string; title: string }[] = [
   { family: "qwen-edit", label: "views / edit", title: "Qwen-Image-Edit: the views of the base and instruction edits" },
 ];
 
-/** What the panel lends the tab: following a run, the health line, and
- * opening one attempt in the pixel editor (the retouch feature). */
+/** What the panel lends the tabs: following a run, the health line, opening
+ * one attempt in the pixel editor (the retouch feature), and hearing that the
+ * state changed (the ✓ on the Concept and Views tabs). */
 export interface ConceptHost {
   follow(run: RunRecord): void;
   refreshHealth(): void;
   editPixels(unit: string, target: string, attempt: Attempt): void;
+  changed(state: ConceptState | null): void;
 }
 
 interface Selected {
@@ -217,14 +221,17 @@ export class FamilyPicker {
 export class ConceptTab {
   private state: ConceptState | null = null;
   private listing: ModelsListing | null = null;
-  private units: string[] = [];
+  private unitName = "";
   private selected: Selected | null = null;
   private busy: RunRecord | null = null;
   private viewPrompts = new Map<string, HTMLTextAreaElement>();
 
+  /** The Concept tab. */
   readonly root = el("div", { class: "concept" });
-  private readonly unitSelect = el("select", { class: "studio-select", title: "the unit (GET /curation, plus every *_concept job)" });
-  private readonly unitInput = el("input", { class: "studio-input small", type: "text", placeholder: "or a new unit - type a name, Enter", title: "a unit that has nothing yet: type a name and press Enter (\"Cloaked Assassin\" becomes cloaked_assassin)" });
+  /** The Views tab. */
+  readonly viewsRoot = el("div", { class: "concept concept-views-tab" });
+  /** Settings, busy and status: moved into whichever tab is showing. */
+  private readonly head = el("div", { class: "concept-head" });
   private readonly pickers = FAMILIES.map((f) => new FamilyPicker(f.family, f.label, f.title, (family) => this.saveDefaults(family), () => this.refreshSaveButtons()));
   private readonly countSelect = el("select", { class: "studio-select small", title: "attempts per press (each is one /prompt on the card)" },
     ...[1, 2, 3, 4].map((n) => el("option", { value: String(n) }, `× ${n}`)));
@@ -247,42 +254,50 @@ export class ConceptTab {
   private readonly viewButtons = el("div", { class: "studio-row concept-view-buttons" });
   private readonly viewsBox = el("div", { class: "concept-views" });
   private readonly advancedBox = el("details", { class: "concept-advanced" }, el("summary", {}, "advanced views (right + the four obliques)"));
+  private readonly partsLine = el("div", { class: "studio-row concept-parts" });
 
   constructor(private readonly host: ConceptHost) {
-    this.unitSelect.addEventListener("change", () => { this.unitInput.value = ""; void this.load(); });
-    this.unitInput.addEventListener("keydown", (event) => {
-      if ((event as KeyboardEvent).key === "Enter") { event.preventDefault(); void this.loadTyped(); }
-    });
     this.lockSeed.addEventListener("change", () => this.drawSeed());
     this.showHidden.addEventListener("change", () => { this.selected = null; this.draw(); });
-    this.root.replaceChildren(
-      el("div", { class: "studio-row" },
-        this.unitSelect,
-        el("button", { type: "button", class: "studio-button", title: "list the units again", onclick: () => void this.refreshUnits() }, "↻"),
-        this.unitInput),
-      el("div", { class: "concept-settings" },
-        ...this.pickers.map((p) => p.root),
-        el("div", { class: "studio-row" },
-          this.countSelect,
-          el("label", { class: "concept-lock" }, this.lockSeed, " lock seed"),
-          el("label", { class: "concept-lock" }, this.showHidden, " show hidden"),
-          el("label", { class: "concept-lock" }, this.inPlace, " edit in place"),
-          this.seedLine)),
+    this.head.replaceChildren(
+      el("details", { class: "concept-settings-fold" },
+        el("summary", {}, "model settings: checkpoints, LoRAs, attempts per press, seed"),
+        el("div", { class: "concept-settings" },
+          ...this.pickers.map((p) => p.root),
+          el("div", { class: "studio-row" },
+            this.countSelect,
+            el("label", { class: "concept-lock" }, this.lockSeed, " lock seed"),
+            el("label", { class: "concept-lock" }, this.showHidden, " show hidden"),
+            el("label", { class: "concept-lock" }, this.inPlace, " edit in place"),
+            this.seedLine))),
       el("div", { class: "studio-row concept-busy" }, this.busyLine, this.cancelButton),
-      this.statusLine,
+      this.statusLine);
+    this.root.replaceChildren(
+      this.head,
       el("h3", { class: "concept-h" }, "Base"),
-      el("p", { class: "studio-help" }, "The front-facing reference every later stage trusts. Generate from the prompt or upload your own; click an attempt to accept it (that is the base gate) or rework it."),
+      el("p", { class: "studio-help" }, "The front-facing reference every later stage trusts. Generate from the prompt or upload your own; click an attempt to accept it (that is the base gate) or rework it. Edit pixels opens it in Piskel beside the panel."),
       this.prompt,
       el("div", { class: "studio-row" }, this.generateBase, this.uploadButton, this.uploadInput),
       this.baseStrip,
       this.baseActions,
-      el("h3", { class: "concept-h" }, "Views"),
-      el("p", { class: "studio-help" }, "The accepted base seen from the other sides, drawn from it through Qwen-Image-Edit. Front is the base itself; Side is the left profile (the right is mirrored in the sheet). Accept one per view and the matrix hands each direction its nearest accepted one."),
+    );
+    this.viewsRoot.replaceChildren(
+      el("p", { class: "studio-help" }, "The accepted base seen from the other sides, drawn from it through Qwen-Image-Edit. Front is the base itself; Side is the left profile. Accept one per view: the Animate tab draws each direction from its own. Click an attempt to open it in Piskel."),
       this.lockLine,
       this.viewButtons,
       this.viewsBox,
       this.advancedBox,
+      this.partsLine,
     );
+  }
+
+  /** Put the shared settings / busy / status block on the tab being shown. */
+  show(which: "concept" | "views"): void {
+    const root = which === "concept" ? this.root : this.viewsRoot;
+    if (this.head.parentElement === root) return;
+    root.prepend(this.head);
+    // Open where there is room for it (Concept is wide), folded beside Piskel.
+    (this.head.firstElementChild as HTMLDetailsElement).open = which === "concept";
   }
 
   private gpuButton(label: string, title: string, run: () => void): HTMLButtonElement {
@@ -298,49 +313,16 @@ export class ConceptTab {
     } catch (error) {
       this.say(`could not read /models - ${errorText(error)}`, "warn");
     }
-    await this.refreshUnits();
   }
 
-  async refreshUnits(): Promise<void> {
-    const before = this.unitSelect.value;
-    try {
-      const [listing, jobs] = await Promise.all([listCuration(), listJobs()]);
-      const names = new Set(listing.units.map((u) => u.unit));
-      for (const job of jobs) if (job.name.endsWith("_concept") && job.slug) names.add(job.slug);
-      this.units = [...names].sort();
-      this.unitSelect.replaceChildren(
-        el("option", { value: "" }, this.units.length ? "pick a unit" : "no units yet - type a slug"),
-        ...this.units.map((unit) => el("option", { value: unit }, unit)));
-      if (this.units.includes(before)) this.unitSelect.value = before;
-      else if (this.units.length === 1) this.unitSelect.value = this.units[0]!;
-    } catch (error) {
-      this.say(`could not list units - ${errorText(error)}`, "bad");
-      return;
-    }
-    await this.load();
-  }
-
-  private async loadTyped(): Promise<void> {
-    const typed = this.unitInput.value.trim();
-    const slug = unitSlug(typed);
-    if (!slug) {
-      this.say(`"${typed}" has nothing a unit slug can be made of - letters or digits, `
-        + "e.g. \"Cloaked Assassin\" -> cloaked_assassin", "bad");
-      return;
-    }
-    this.unitInput.value = "";
-    if (slug !== typed) this.say(`unit ${slug} (from "${typed}")`);
-    if (!this.units.includes(slug)) {
-      this.units.push(slug);
-      this.units.sort();
-      this.unitSelect.append(el("option", { value: slug }, slug));
-    }
-    this.unitSelect.value = slug;
+  /** The unit bar picked a unit ("" for none). */
+  async setUnit(unit: string): Promise<void> {
+    this.unitName = unit;
     await this.load();
   }
 
   private unit(): string {
-    return this.unitSelect.value;
+    return this.unitName;
   }
 
   private async load(): Promise<void> {
@@ -388,8 +370,10 @@ export class ConceptTab {
    * card, or when the base gate locks that one (`.locked`). */
   private enableButtons(): void {
     const off = !this.state || !!this.busy;
-    for (const button of this.root.querySelectorAll<HTMLButtonElement>("button.gpu")) {
-      button.disabled = off || button.classList.contains("locked");
+    for (const root of [this.root, this.viewsRoot]) {
+      for (const button of root.querySelectorAll<HTMLButtonElement>("button.gpu")) {
+        button.disabled = off || button.classList.contains("locked");
+      }
     }
     this.uploadButton.disabled = !this.state;
   }
@@ -628,17 +612,53 @@ export class ConceptTab {
     const state = this.state;
     this.drawSeed();
     this.enableButtons();
+    this.host.changed(state);
     if (!state) {
-      this.baseStrip.replaceChildren();
+      this.baseStrip.replaceChildren(el("span", { class: "studio-help" }, this.unit() ? "" : "pick a unit above, or type a new one"));
       this.baseActions.replaceChildren();
       this.viewButtons.replaceChildren();
       this.viewsBox.replaceChildren();
-      this.lockLine.textContent = "";
+      this.partsLine.replaceChildren();
+      this.lockLine.textContent = this.unit() ? "" : "pick a unit above";
       return;
     }
     this.drawBase(state);
     this.drawViews(state);
+    this.drawParts(state);
     this.enableButtons();
+  }
+
+  /** The part palettes every direction snaps to: `post --parts` over the
+   * accepted base, once (CPU, no GPU). Offered until it has run. */
+  private drawParts(state: ConceptState): void {
+    if (state.base.pick === null) {
+      this.partsLine.replaceChildren();
+      return;
+    }
+    const job = state.base_parts_job;
+    const measure = el("button", { type: "button", class: "studio-button",
+      title: `anim post ${job} --parts: SAM over the accepted base, once, to record what colour each part is. CPU, no GPU.`,
+      onclick: () => void this.measureParts(state.unit, job) },
+      state.base_parts ? "measure part palettes again" : "measure part palettes");
+    this.partsLine.replaceChildren(measure, el("span", { class: state.base_parts ? "studio-help" : "studio-status warn" },
+      state.base_parts ? " part palettes measured - every direction snaps its colours to them"
+        : " no part palettes yet - every direction locks its colours to them"));
+  }
+
+  private async measureParts(unit: string, job: string): Promise<void> {
+    if (!window.confirm(`Measure ${unit}'s part palettes from its accepted base?\n\n`
+      + `This runs anim post ${job} --parts: about 45 s on the CPU, no GPU.`)) return;
+    try {
+      const result = await startRun("post", { job, parts: true });
+      if ("refused" in result) {
+        this.say(`${result.refused.status}: ${result.refused.error}`, result.refused.status === 409 ? "warn" : "bad");
+        return;
+      }
+      this.say(`measuring part palettes: run ${result.run.id}`, "ok");
+      this.host.follow(result.run);
+    } catch (error) {
+      this.say(`could not start - ${errorText(error)}`, "bad");
+    }
   }
 
   private tile(target: string, attempt: Attempt, picked: boolean): HTMLElement {
@@ -650,7 +670,15 @@ export class ConceptTab {
     return el("figure", {
       class: `concept-tile${picked ? " picked" : ""}${selected ? " selected" : ""}${attempt.hidden ? " hidden-attempt" : ""}`,
       title: `${refOf(target, attempt)}\n${attempt.prompt ?? ""}`,
-      onclick: () => { this.selected = selected ? null : { target, attempt }; this.draw(); },
+      onclick: () => {
+        // On the Views tab, selecting is editing: the attempt opens in Piskel
+        // beside the panel. The base opens only from its Edit pixels button,
+        // because the Concept tab is wide and has no Piskel beside it.
+        const editable = target !== "base" && !!attempt.url && attempt.rendered && !attempt.file_deleted;
+        if (editable && this.state) this.host.editPixels(this.state.unit, target, attempt);
+        this.selected = selected && !editable ? null : { target, attempt };
+        this.draw();
+      },
     }, image, el("figcaption", {}, `${String(attempt.index).padStart(2, "0")}${picked ? " ✓" : ""} · ${attemptCaption(attempt)}`));
   }
 

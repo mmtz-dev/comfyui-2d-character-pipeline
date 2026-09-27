@@ -22,9 +22,16 @@
 body.studio-collapsed {
   --studio-w: 34px;
 }
-/* The Board tab: a grid of frame strips needs the room. */
-body.studio-board:not(.studio-collapsed) {
+/* The pipeline tabs feature: Concept is wide - a strip of attempts needs the
+ * room - while nothing is open in Piskel. */
+body.studio-wide:not(.studio-collapsed) {
   --studio-w: min(1040px, 78vw);
+}
+/* Views and Animate (and Concept while a base attempt is open) sit beside
+ * Piskel at the split width - the owner's drag, remembered (--studio-edit-w,
+ * set by panel.ts), clamped again here against the window. */
+body.studio-split:not(.studio-collapsed) {
+  --studio-w: clamp(240px, var(--studio-edit-w, 440px), 80vw);
 }
 
 /* Piskel, moved right. Same selectors as its layout.css, ours loaded later. */
@@ -108,7 +115,12 @@ body.studio-board:not(.studio-collapsed) {
 
 body.studio-collapsed .studio-title,
 body.studio-collapsed .studio-health,
-body.studio-collapsed .studio-sections {
+body.studio-collapsed .studio-sections,
+body.studio-collapsed .studio-unitbar,
+body.studio-collapsed .studio-tabs,
+body.studio-collapsed .studio-footer,
+body.studio-collapsed .studio-editbar,
+body.studio-collapsed .studio-width-handle {
   display: none;
 }
 body.studio-collapsed .studio-head {
@@ -190,6 +202,10 @@ body.studio-collapsed .studio-head {
 .studio-button.gpu::before {
   content: "\26A1 ";
 }
+/* A primary GPU button keeps the primary's dark text on gold. */
+.studio-button.gpu.primary {
+  color: #15171c;
+}
 
 .studio-status {
   margin: 4px 0 0;
@@ -202,11 +218,6 @@ body.studio-collapsed .studio-head {
 .studio-status.warn { color: var(--studio-gold); }
 .studio-status.bad { color: var(--studio-bad); }
 
-.studio-run-title {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  color: var(--studio-fg);
-}
 .studio-bar {
   height: 6px;
   background: var(--studio-bg);
@@ -267,18 +278,24 @@ body.studio-collapsed .studio-head {
 .studio-run.running a,
 .studio-run.queued a { color: var(--studio-gold); }
 
+/* The project palette in the edit bar: click for the pen colour. */
 .studio-swatches {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
-  margin-top: 6px;
+  flex: 1 1 100%;
+  /* Two rows; a big palette scrolls rather than pushing the tab away. */
+  max-height: 30px;
+  overflow-y: auto;
 }
 .studio-swatch {
-  width: 16px;
-  height: 16px;
+  width: 13px;
+  height: 13px;
   border: 1px solid #0008;
   border-radius: 2px;
+  cursor: pointer;
 }
+.studio-swatch:hover { outline: 1px solid var(--studio-gold); }
 
 /* The fork's timeline tag (vendor/piskel/CHANGES.md): a phase name in the
  * bottom-left corner of each preview tile. */
@@ -319,295 +336,123 @@ body.studio-collapsed .studio-head {
   text-align: center;
 }
 
-/* --- tabs ------------------------------------------------------------- */
+/* --- the unit bar and the tabs (the pipeline tabs feature) --------------- */
+.studio-unitbar {
+  flex-shrink: 0;
+  padding: 6px 10px 2px;
+  border-bottom: 1px solid var(--studio-line);
+}
+.studio-unitbar-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--studio-muted);
+}
+.studio-unitbar .studio-select { min-width: 140px; }
+.studio-unitbar .studio-input { flex: 1; min-width: 120px; }
+/* The three tabs read as the pipeline: numbered steps, arrows between, a ✓
+ * in place of the number once the step is done. */
 .studio-tabs {
+  flex-shrink: 0;
   display: flex;
   gap: 4px;
-  padding: 8px 0 0;
+  padding: 6px 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--studio-line);
 }
 .studio-tab {
   font: inherit;
   font-weight: 600;
-  background: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--studio-bg);
   border: 1px solid var(--studio-line);
-  border-bottom: none;
-  border-radius: 4px 4px 0 0;
+  border-radius: 14px;
   color: var(--studio-muted);
-  padding: 4px 12px;
+  padding: 3px 12px 3px 4px;
   cursor: pointer;
 }
+.studio-tab-n {
+  display: inline-grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--studio-line);
+  color: var(--studio-fg);
+  font-size: 11px;
+}
+.studio-tab.done .studio-tab-n { background: var(--studio-ok); color: var(--studio-panel); }
 .studio-tab.active {
   color: var(--studio-gold);
-  background: var(--studio-line);
+  border-color: var(--studio-gold);
+  background: rgba(240, 192, 112, 0.1);
 }
+.studio-tab.active .studio-tab-n { background: var(--studio-gold); color: var(--studio-panel); }
+.studio-tab-arrow { color: var(--studio-muted); }
+
+/* --- the run footer ------------------------------------------------------ */
+.studio-footer {
+  flex-shrink: 0;
+  border-top: 1px solid var(--studio-line);
+  background: var(--studio-bg);
+}
+.studio-footer-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+.studio-footer-line .studio-bar { flex: 0 0 90px; margin: 0; }
+.studio-run-line {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--studio-muted);
+}
+.studio-run-line.ok { color: var(--studio-ok); }
+.studio-run-line.warn { color: var(--studio-gold); }
+.studio-run-line.bad { color: var(--studio-bad); }
+.studio-run-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--studio-line);
+  flex-shrink: 0;
+}
+.studio-run-dot.running,
+.studio-run-dot.queued { background: var(--studio-gold); }
+.studio-run-dot.done { background: var(--studio-ok); }
+.studio-run-dot.partial { background: var(--studio-gold); }
+.studio-run-dot.failed,
+.studio-run-dot.lost { background: var(--studio-bad); }
+.studio-run-toggle { margin: 0; white-space: nowrap; }
+.studio-footer-body { display: none; padding: 0 10px 8px; max-height: 38vh; overflow-y: auto; }
+.studio-footer.open .studio-footer-body { display: block; }
+.studio-footer.open .studio-run-toggle { color: var(--studio-gold); }
+.studio-button[hidden] { display: none; }
+
 .studio-section[hidden] {
   display: none;
 }
 
-/* --- the curation board (the curation board feature) ------------------- */
-.board-gates {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin: 6px 0 2px;
-  font-size: 12px;
-}
-.board-gates-text {
-  color: var(--studio-fg);
-}
-.board-gate.accepted {
-  color: var(--studio-ok);
-  border-color: #2f5a3d;
-}
-.board-gate.pending {
-  color: var(--studio-gold);
-  border-color: #6a4a12;
-}
-/* A gate with nothing behind it: greyed, dashed like every other "not there
- * yet" in the panel (.board-tile-miss, .matrix-cell.locked), and the reason
- * is the button's title - never a silent grey square. */
-.board-gate.blocked {
-  color: var(--studio-muted);
-  border-color: var(--studio-line);
-  border-style: dashed;
-}
-.board-gate.blocked:disabled {
-  cursor: not-allowed;
-}
-.board-legacy {
-  color: var(--studio-muted);
-  font-style: italic;
-}
-.board-ring {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  margin-top: 4px;
-}
-.board-tile {
-  margin: 0;
-  text-align: center;
-  font-size: 10px;
-  color: var(--studio-muted);
-}
-.board-tile img {
-  display: block;
-  image-rendering: pixelated;
-  background: #2a2d36;
-  border: 1px solid #333;
-}
-.board-tile.failed img,
-.board-tile.failed .board-tile-miss {
-  border-color: #a04040;
-}
-.board-tile-miss {
-  width: 128px;
-  height: 128px;
-  border: 1px dashed #444;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #666;
-}
-/* the views of the base (the multi-view reference feature): the views step under the base gate */
-.board-views {
-  margin: 6px 0 2px;
-}
-.board-views-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-  font-size: 12px;
-}
-.board-views-title {
-  color: var(--studio-gold);
-  font-weight: 600;
-}
-.board-view img {
-  background: #fff;
-  object-fit: contain;
-}
-.board-view.accepted img { border-color: #6a9a6a; }
-.board-view.rejected img { border-color: #a04040; opacity: 0.6; }
-.board-view.provisional figcaption::after { content: " (provisional)"; color: #e0b060; }
-.board-view .studio-button { margin-top: 2px; font-size: 10px; }
-/* the third state of a view slot: the base carries no file for it. Dashed
- * and dim, with the way to make it under the name - the ring shows all eight
- * slots, so the gap has to read as a gap and not as a broken thumbnail. */
-.board-view.missing {
-  border-style: dashed;
-  opacity: 0.75;
-}
-.board-view.missing figcaption { color: var(--studio-muted); }
-/* drawn but never picked onto the base: the same dashed slot, in the gold
- * the panel uses everywhere for "your turn". */
-.board-view.missing.unpicked { border-color: #6a4a12; }
-.board-view.missing.unpicked .board-tile-miss { color: var(--studio-gold); }
-.board-view-how {
-  display: block;
-  font-size: 10px;
-  color: var(--studio-gold);
-}
-/* the mirrored view feature: a view derived by flipping its partner. A dotted
- * left/right border says "this picture is the other one reversed" without
- * competing with the accepted / rejected border, which still carries the
- * verdict; the caption under it names the view it came from. */
-.board-view.mirrored img { border-style: dotted; }
-.board-view-mirror {
-  display: block;
-  font-size: 9px;
-  color: var(--studio-muted);
-  white-space: nowrap;
-}
-.board-grid {
-  margin-top: 8px;
-  overflow: auto;
-}
-.board-table {
-  border-collapse: separate;
-  border-spacing: 4px;
-  font-size: 12px;
-}
-.board-table th {
-  color: var(--studio-muted);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  font-size: 11px;
-  text-align: left;
-  padding: 2px 4px;
-  vertical-align: top;
-}
-.board-table td {
-  vertical-align: top;
-  padding: 0;
-}
-.board-cell {
-  background: var(--studio-bg);
-  border: 1px solid var(--studio-line);
-  border-radius: 6px;
-  padding: 6px;
-  min-width: 220px;
-}
-.board-cell.empty {
-  color: var(--studio-muted);
-  text-align: center;
-  min-width: 60px;
-  padding: 14px 6px;
-}
-.board-cell.status-accepted {
-  border-color: #2f5a3d;
-}
-.board-cell.status-rejected {
-  border-color: #6a2f2f;
-}
-.board-cell.waiting {
-  box-shadow: inset 0 0 0 1px #6a4a12;
-}
-.board-cell-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 6px;
-  align-items: baseline;
-  margin-bottom: 4px;
-}
-.board-job {
-  color: var(--studio-fg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 11px;
-  text-decoration: none;
-}
-.board-job:hover {
-  color: var(--studio-gold);
-}
-.board-status {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--studio-muted);
-}
-.board-status.accepted { color: var(--studio-ok); }
-.board-status.rejected { color: var(--studio-bad); }
-.board-status.pending { color: var(--studio-gold); }
-.board-strip {
-  display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  padding-bottom: 4px;
-  min-height: 40px;
-}
-.board-frame {
-  position: relative;
-  flex: 0 0 auto;
-  padding: 0;
-  border: 2px solid var(--studio-line);
-  border-radius: 3px;
-  background: #0b0c10;
-  cursor: pointer;
-  line-height: 0;
-}
-.board-frame img {
-  image-rendering: pixelated;
-  image-rendering: crisp-edges;
-  display: block;
-  height: 128px;    /* a 64 px frame at x2; a source frame keeps its ratio */
-  width: auto;
-}
-.board-frame:hover:not(:disabled) {
-  border-color: var(--studio-gold);
-}
-.board-frame:disabled {
-  cursor: default;
-  opacity: 0.7;
-}
-.board-frame.mark-accept {
-  border-color: var(--studio-ok);
-}
-.board-frame.mark-reject {
-  border-color: var(--studio-bad);
-}
-.board-frame.mark-reject img {
-  opacity: 0.35;
-}
-.board-frame-n {
-  position: absolute;
-  left: 0;
-  bottom: 0;
-  font: 600 10px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #15171c;
-  background: var(--studio-muted);
-  padding: 0 4px;
-  border-top-right-radius: 3px;
-}
-.board-frame-mark {
-  position: absolute;
-  right: 2px;
-  top: 0;
-  font: 700 14px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
-  color: #fff;
-  text-shadow: 0 0 3px #000, 0 0 3px #000;
-}
-.board-meta {
-  margin: 2px 0 0;
-}
-.board-actions .studio-button {
-  padding: 3px 8px;
-  font-size: 12px;
-}
-.board-actions .studio-button.ok {
-  color: var(--studio-ok);
-  border-color: #2f5a3d;
-}
-.board-actions .studio-button.bad {
-  color: var(--studio-bad);
-  border-color: #6a2f2f;
-}
-
 /* The Concept tab (the concept generation feature): the base, its views, the
  * action bar under a clicked attempt, the model / LoRA picker. */
+.concept-head { margin-bottom: 8px; }
+.concept-settings-fold > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--studio-muted);
+  margin-bottom: 4px;
+}
+.concept-parts { margin-top: 10px; }
 .concept-h {
   margin: 12px 0 2px;
   font-size: 13px;
@@ -768,71 +613,6 @@ body.studio-collapsed .studio-head {
 .concept-range { width: 120px; }
 .studio-button.locked { opacity: 0.5; }
 
-/* The Matrix tab (the action matrix feature): the selection rows, the grid of
- * every action × facing, and a blocked cell's reason. The grid itself reuses
- * .board-grid / .board-table / .board-cell - it is the same five-by-eight
- * shape as the board's, so a second set of rules would be a second thing to
- * keep in step. `.locked` is the Concept tab's own greying (:711). */
-.matrix-picks {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 2px 8px;
-  align-items: center;
-  margin: 4px 0;
-}
-.matrix-pick-label {
-  color: var(--studio-muted);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-.matrix-pick-item {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 12px;
-  white-space: nowrap;
-}
-.matrix-pick-item.locked { opacity: 0.45; }
-.matrix-cost { margin: 2px 0 4px; }
-.matrix-cell { min-width: 150px; }
-/* blocked: dashed like .board-tile-miss, and the reason is TEXT - never a
- * silent grey square (constraint 6 of the feature). */
-.matrix-cell.locked {
-  border-style: dashed;
-  opacity: 0.6;
-}
-.matrix-cell.done { border-color: #2f5a3d; }
-.matrix-cell.failed { border-color: #6a2f2f; }
-.matrix-cell.selected { box-shadow: inset 0 0 0 1px #6a4a12; }
-.matrix-reason {
-  font-size: 11px;
-  color: var(--studio-muted);
-  margin: 2px 0;
-}
-.matrix-reason.ready { text-align: center; font-size: 14px; }
-.matrix-film img {
-  display: block;
-  image-rendering: pixelated;
-  background: #2a2d36;
-  border: 1px solid #333;
-}
-.matrix-phases {
-  display: flex;
-  gap: 3px;
-  flex-wrap: wrap;
-  margin: 3px 0;
-}
-.matrix-phase {
-  font-size: 10px;
-  padding: 0 4px;
-  border: 1px solid var(--studio-line);
-  border-radius: 3px;
-  color: var(--studio-muted);
-}
-.matrix-closure.open { color: var(--studio-gold); }
-
-
 /* The Animate tab (the animate tab feature), laid out as the approved
    mockup: numbered steps, the compass, the frame row with status chips (gold
    label = keyframe), the selected frame, the player. The studio's own tokens,
@@ -861,42 +641,60 @@ body.studio-collapsed .studio-head {
   border: 1px solid var(--studio-line);
   border-radius: 6px;
 }
-.animate-dirs { display: flex; gap: 16px; flex-wrap: wrap; align-items: flex-start; }
-.animate-compass {
-  display: grid;
-  grid-template-columns: repeat(3, 76px);
-  grid-template-rows: repeat(3, 76px);
-  gap: 5px;
-}
-.animate-dir {
-  position: relative;
-  padding: 2px;
-  border: 2px solid var(--studio-line);
-  border-radius: 6px;
-  background: var(--studio-panel);
-  color: var(--studio-muted);
-  cursor: pointer;
-  overflow: hidden;
-}
-.animate-dir img { width: 100%; height: 100%; object-fit: contain; image-rendering: pixelated; background: #fff; }
-.animate-dir.selected { border-color: var(--studio-gold); }
-.animate-dir.blocked { border-style: dashed; opacity: 0.6; }
-.animate-dir.center { cursor: default; display: grid; place-items: center; font-size: 10px; text-align: center; }
-.animate-dir-miss { display: grid; place-items: center; height: 100%; font-size: 11px; }
-.animate-dir-label {
-  position: absolute;
-  left: 3px;
-  bottom: 2px;
-  padding: 0 3px;
-  font-size: 10px;
+/* The grid (the pipeline tabs feature): rows the actions, columns the eight
+ * side facings with their accepted view as a thumbnail. */
+.animate { container-type: inline-size; }
+.animate-grid { overflow-x: auto; }
+.animate-grid-table { border-collapse: separate; border-spacing: 3px; font-size: 11px; }
+.animate-grid-table th { color: var(--studio-muted); font-weight: 500; padding: 0 2px; }
+.animate-grid-table thead th { vertical-align: bottom; font-size: 10px; }
+.animate-grid-table thead img {
+  display: block;
+  width: 32px;
+  height: 32px;
+  margin: 0 auto 2px;
+  object-fit: contain;
+  background: #fff;
   border-radius: 3px;
-  background: var(--studio-panel);
+  image-rendering: pixelated;
+}
+.animate-grid-action { text-align: right; }
+.animate-grid-table td {
+  width: 36px;
+  height: 26px;
+  border-radius: 4px;
+  text-align: center;
+  cursor: pointer;
+  border: 2px solid transparent;
+  position: relative;
   color: var(--studio-fg);
 }
-.animate-elevation { display: flex; flex-direction: column; gap: 6px; }
-.animate-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.animate-act.selected { border-color: var(--studio-gold); color: var(--studio-gold); }
-.animate-act small { opacity: 0.7; }
+.animate-grid-table td.c-none { background: var(--studio-line); color: var(--studio-muted); }
+.animate-grid-table td.c-keys { background: rgba(240, 192, 112, 0.35); }
+.animate-grid-table td.c-keys_ok { background: rgba(143, 179, 245, 0.4); }
+.animate-grid-table td.c-done { background: rgba(143, 211, 165, 0.4); }
+.animate-grid-table td.c-blocked { background: var(--studio-panel); color: var(--studio-muted); border-style: dashed; border-color: var(--studio-line); }
+.animate-grid-table td.open { border-color: var(--studio-gold); }
+.animate-grid-table td.ticked::after {
+  content: "✓";
+  position: absolute;
+  top: -3px;
+  right: 1px;
+  font-size: 10px;
+  color: var(--studio-gold);
+}
+.animate-chip.c-none { background: var(--studio-line); color: var(--studio-muted); }
+.animate-chip.c-keys { background: rgba(240, 192, 112, 0.35); color: var(--studio-fg); }
+.animate-chip.c-keys_ok { background: rgba(143, 179, 245, 0.4); color: var(--studio-fg); }
+.animate-chip.c-done { background: rgba(143, 211, 165, 0.4); color: var(--studio-fg); }
+.animate-chip.c-blocked { border: 1px dashed var(--studio-line); color: var(--studio-muted); }
+.animate-sweep {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px dashed var(--studio-busy);
+  border-radius: 6px;
+}
+.animate-cell-title { margin: 12px 0 0; font-weight: 600; color: var(--studio-gold); }
 .animate-toolbar .studio-row { align-items: center; }
 .animate-count { margin-left: auto; color: var(--studio-muted); }
 .animate-strip { display: flex; gap: 6px; overflow-x: auto; padding: 6px 0; }
@@ -947,7 +745,7 @@ body.studio-collapsed .studio-head {
 }
 @keyframes animate-spin { to { transform: rotate(360deg); } }
 .animate-detail { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 12px; }
-@media (max-width: 900px) { .animate-detail { grid-template-columns: 1fr; } }
+@container (max-width: 700px) { .animate-detail { grid-template-columns: 1fr; } }
 .animate-big { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .animate-big figure { margin: 0; }
 .animate-box {
@@ -985,3 +783,122 @@ body.studio-collapsed .studio-head {
 .animate-play-game { width: 128px; height: 128px; image-rendering: pixelated; }
 .animate-play-controls { display: flex; flex-direction: column; gap: 6px; min-width: 190px; }
 .animate-output { margin: 10px 0; }
+
+/* --- the edit bar (the edit bar feature) ------------------------------- */
+.studio-editbar {
+  flex-shrink: 0;
+  margin: 8px 10px 0;
+  padding: 7px 9px;
+  border: 1px solid var(--studio-gold);
+  background: #2a2618;
+  border-radius: 6px;
+}
+.studio-editbar[hidden] {
+  display: none;
+}
+.studio-editbar-what {
+  font-size: 12px;
+  word-break: break-word;
+}
+.studio-editbar-what b {
+  color: var(--studio-gold);
+}
+.studio-dirty {
+  color: var(--studio-bad);
+  font-size: 11px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.studio-dirty[hidden] {
+  display: none;
+}
+.studio-button.small {
+  padding: 2px 7px;
+  font-size: 11px;
+}
+.studio-button[hidden],
+.studio-row[hidden] {
+  display: none;
+}
+
+/* The folded panel's copy, top-centre of Piskel's drawing column (its
+ * .main-column, between the tool columns). That column sets font-size 0. */
+.studio-float {
+  display: none;
+}
+body.studio-collapsed .studio-float:not([hidden]) {
+  display: flex;
+  position: absolute;
+  top: 4px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 50;
+  gap: 5px;
+  align-items: center;
+  max-width: calc(100% - 16px);
+  padding: 4px 8px;
+  background: #111317ee;
+  border: 1px solid var(--studio-gold);
+  border-radius: 6px;
+  color: var(--studio-fg);
+  font: 11px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  white-space: nowrap;
+}
+.studio-float b {
+  color: var(--studio-gold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.studio-float .studio-button.primary {
+  flex: none;
+}
+
+/* The draggable right edge, whenever the panel is split and unfolded. Fixed on the
+ * body because the panel clips its overflow. */
+.studio-width-handle {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--studio-w) - 6px);
+  width: 12px;
+  z-index: 1101;
+  cursor: ew-resize;
+  display: grid;
+  place-items: center;
+  touch-action: none;
+}
+.studio-width-handle[hidden] {
+  display: none;
+}
+.studio-width-handle::before {
+  content: "";
+  width: 4px;
+  height: 56px;
+  border-radius: 2px;
+  background: var(--studio-gold);
+  opacity: 0.85;
+}
+.studio-width-handle::after {
+  content: attr(data-width);
+  position: absolute;
+  top: calc(50% + 36px);
+  left: 12px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #111;
+  color: var(--studio-gold);
+  font: 10px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.15s;
+  pointer-events: none;
+}
+.studio-width-handle:hover::after,
+body.studio-dragging .studio-width-handle::after {
+  opacity: 1;
+}
+/* No text selection or stray Piskel hover while the edge is dragged. */
+body.studio-dragging {
+  user-select: none;
+  cursor: ew-resize;
+}

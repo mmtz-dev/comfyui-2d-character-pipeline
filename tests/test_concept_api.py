@@ -140,7 +140,11 @@ def test_a_view_op_is_423_until_the_base_is_picked(api, work_dir):
     assert r.json()["gates"]["base"] == "accepted" and r.json()["parts_phrase"] == "helm"
     _accepted(api, api.post("/concept/knight/generate", json={"op": "views"}))
     # The base's own ops never wait; a view's edit does once the gate reopens.
-    api.put("/curation/knight/gates/base", json={"state": "pending"})
+    from anim import curation
+
+    record = curation.load("knight", work_dir)
+    record["gates"]["base"] = "pending"
+    curation.write("knight", record, work_dir)
     _accepted(api, api.post("/concept/knight/generate", json={"op": "txt2img", "prompt": "x"}))
     _accepted(api, api.post("/concept/knight/generate", json={"op": "img2img", "ref": "base:00"}))
     assert api.post("/concept/knight/generate",
@@ -212,8 +216,10 @@ def test_the_view_pick_route_also_mirrors(api, work_dir):
     assert r.status_code == 400 and "no mirror partner" in r.json()["detail"]
     assert api.get("/concept/knight").json()["views"]["back"]["mirror_of"] is None
     assert api.get("/concept/knight").json()["views"]["top"]["mirror_of"] is None
-    # The board's ring carries the same two facts.
-    ring = api.get("/curation/knight").json()["views"]
+    # The views ring carries the same two facts.
+    from anim import curation
+
+    ring = curation.views_of("knight", curation.read("knight", work_dir), work_dir)
     assert ring["right"]["mirrored"] is True and ring["right"]["mirrored_from"] == "left"
     assert ring["left"]["mirrored"] is False and ring["left"]["mirror_of"] == "right"
 

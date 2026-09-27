@@ -2,13 +2,12 @@
 
 Just the store: `GET /settings` returns the file merged over the defaults and
 `PUT /settings` validates and writes it in place. Nothing here applies a
-setting - the keyframe phase feature reads `frame_budgets`, the curation board
-reads `curation`, the export reads `frame_size`. Until those land, the CLI's
+setting - the keyframe phase feature reads `frame_budgets`, the export reads
+`frame_size`. Until those land, the CLI's
 config.py values stay in force and this file is a note the UI can already edit.
 
     palette        path to the project's .gpl / one-row .png (null = config.PALETTE)
     frame_budgets  {action: frames} overriding config.ACTION_FRAMES, capped at 12
-    curation       gates | every | end   (sprite-studio.md S2 "Curation")
     frame_size     [w, h] of one exported frame (game-02's contract is 64x64)
     export         {"adapter": generic | game02} - what `anim export` does by
                    default (the spritesheet export feature): the generic
@@ -33,7 +32,6 @@ from anim.util import read_json, write_json_in_place
 
 SETTINGS_SCHEMA = "anim.project/1"
 SETTINGS_FILENAME = "project.json"
-CURATION_MODES = ("gates", "every", "end")
 # The art bible's cap (sprite-studio.md S2 "Frame budget": cap 12).
 FRAME_BUDGET_MAX = 12
 EXPORT_ADAPTERS = ("generic", "game02")
@@ -42,7 +40,6 @@ DEFAULTS: dict[str, Any] = {
     "schema": SETTINGS_SCHEMA,
     "palette": None,
     "frame_budgets": {},
-    "curation": "gates",
     "frame_size": list(config.CANVAS),
     "export": {"adapter": "generic"},
 }
@@ -117,9 +114,6 @@ def validate(body: dict[str, Any]) -> dict[str, Any]:
                                 f"1..{FRAME_BUDGET_MAX}, not {count!r}")
         clean[action.strip().lower()] = count
     merged["frame_budgets"] = clean
-
-    if merged["curation"] not in CURATION_MODES:
-        raise SettingsError(f"curation must be one of {list(CURATION_MODES)}")
 
     size = merged["frame_size"]
     if (not isinstance(size, (list, tuple)) or len(size) != 2

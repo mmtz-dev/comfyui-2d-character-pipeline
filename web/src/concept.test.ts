@@ -52,6 +52,7 @@ const view = (name: string, group: "main" | "advanced", extra: Partial<ConceptVi
 const state = (): ConceptState => ({
   unit: "knight", job: "knight_concept", exists: true, cell: [768, 768], locked: null,
   gates: { base: "accepted" }, defaults: {}, last_seed: 42, parts_phrase: "helm",
+  base_parts: false, base_parts_job: "knight_base",
   base: { description: "a knight", prompt: "p", sketch: null, candidates: [attempt(0), attempt(1)], pick: 1, hidden_count: 0, pick_stale: false, accepted: true, front_url: "/f.png" },
   views: {
     back: view("back", "main", { candidates: [attempt(0, { source: "views", file: "back_00.png" })] }),

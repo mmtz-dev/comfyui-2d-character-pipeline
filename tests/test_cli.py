@@ -9,7 +9,7 @@ from anim.stages import STAGE_ORDER
 
 EXPECTED = ["extract", "pose", "rig", "clip", "pick", "review", "strip", "render",
             "post", "publish", "export", "base", "concept", "animate", "bakeoff",
-            "matrix", "palette", "curate", "run"]
+            "palette", "run"]
 
 
 def test_every_stage_in_the_plan_is_registered():

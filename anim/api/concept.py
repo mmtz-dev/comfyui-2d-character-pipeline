@@ -173,6 +173,10 @@ def state(unit: str, work_dir: Path) -> dict[str, Any] | None:
         "cell": manifest.get("cell") or list(config.CONCEPT_CELL),
         "locked": curation.views_blocked(unit, work_dir),
         "gates": gates,
+        # The part palettes every direction snaps to: measured off the
+        # accepted base by `post --parts` (the Views tab's button).
+        "base_parts": curation.base_part_palettes(unit, work_dir),
+        "base_parts_job": curation.base_parts_job(unit),
         "defaults": manifest.get("defaults") or {},
         "last_seed": manifest.get("last_seed"),
         "parts_phrase": parts,

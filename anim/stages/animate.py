@@ -67,8 +67,8 @@ OUTPUT. When every frame is approved the frames go through the pipeline's own
 post chain (matte, downscale to the unit's height on the 64 px canvas, palette
 snap) into the cell's ordinary job - `work/<unit>_<verb>[_<dir>]/` with
 job.json, post/<unit>_<verb>_<n>.png, post/report.json and a picks.json whose
-timing block carries the phases - which is what the Board and `anim export`
-already read; the Board's cell is set accepted. A job there that this stage
+timing block carries the phases - which is what `anim export` already
+reads. A job there that this stage
 did not write (the video route's) is refused unless `--replace-job` moves it
 to work/_replaced/ first.
 """
@@ -233,6 +233,31 @@ def counts(frames: Sequence[dict[str, Any]]) -> dict[str, int]:
         out[frame_status(frame)] += 1
     out["total"] = len(frames)
     return out
+
+
+# What a cell of the Animate tab's grid reads as, in pipeline order.
+CELL_STATES = ("none", "keys", "keys_ok", "done")
+
+
+def cell_summary(frames: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    """One animation, as a cell of the Animate tab's grid: `state` is `none`
+    (no frame has a picture), `keys` (some keyframe is not approved),
+    `keys_ok` (every keyframe is approved - the in-betweens may be drawn) or
+    `done` (every frame is approved). Pure."""
+    keys = [f for f in frames if f.get("key")]
+    keys_approved = sum(1 for f in keys if frame_status(f) == "approved")
+    approved = sum(1 for f in frames if frame_status(f) == "approved")
+    pictures = sum(1 for f in frames if f.get("current") is not None)
+    if not pictures:
+        state = "none"
+    elif frames and approved == len(frames):
+        state = "done"
+    elif keys_approved == len(keys):
+        state = "keys_ok"
+    else:
+        state = "keys"
+    return {"state": state, "frames": len(frames), "approved": approved,
+            "keys": len(keys), "keys_approved": keys_approved, "pictures": pictures}
 
 
 def next_step(frames: Sequence[dict[str, Any]]) -> dict[str, Any]:
@@ -407,14 +432,29 @@ def load_rig(glb: Path) -> rigkit.Rig:
     return _load_rig(str(glb), glb.stat().st_mtime if glb.exists() else 0.0)
 
 
-def rig_clip(action: str, *, glb: Path | None = None) -> dict[str, Any]:
-    """The rig clip the matrix rigs for this action: `{rig, glb, clip, duration}`.
-    Refused when the rig ships no whole clip for it (the UAL's jump)."""
-    from anim.stages import matrix as matrix_stage
+def clip_for(rig_name: str, action: str) -> str | None:
+    """The rig's clip for one studio action, or None when that rig ships no
+    whole clip for it (the UAL's jump is three clips and no whole one)."""
+    return config.STUDIO_ACTIONS[action]["clips"].get(rig_name)
 
+
+def rig_for(rig_name: str = config.ANIMATE_RIG,
+            glb: Path | None = None) -> tuple[str, Path]:
+    """(rig name, GLB path) - the bake-off's rig table, or the override.
+    Imported inside the call: the bake-off stage pulls in the whole Wan chain."""
+    from anim.stages import bakeoff as bakeoff_stage
+
+    if rig_name not in bakeoff_stage.RIGS:
+        raise ValueError(f"unknown rig {rig_name!r}; one of {sorted(bakeoff_stage.RIGS)}")
+    return rig_name, Path(glb) if glb is not None else Path(bakeoff_stage.RIGS[rig_name]["glb"])
+
+
+def rig_clip(action: str, *, glb: Path | None = None) -> dict[str, Any]:
+    """The rig clip for this action: `{rig, glb, clip, duration}`.
+    Refused when the rig ships no whole clip for it (the UAL's jump)."""
     name = action_name(action)
-    rig_name, path = matrix_stage.rig_for(config.MATRIX_RIG, glb)
-    clip = matrix_stage.clip_for(rig_name, name)
+    rig_name, path = rig_for(config.ANIMATE_RIG, glb)
+    clip = clip_for(rig_name, name)
     if clip is None:
         raise ValueError(f"the {rig_name} rig ships no whole {name} clip, so there is no "
                          f"skeleton to pose; draw this action's frames without one")
@@ -492,8 +532,6 @@ def reference(unit: str, direction: str, work_dir: Path | None = None) -> dict[s
     """The direction's own accepted view: `{view, path, sha256}` - the base
     itself at s270. Refused with the reason when it is not accepted: a
     direction is never drawn from another direction's view."""
-    from anim.stages import matrix as matrix_stage
-
     direction = direction_name(direction)
     view = config.view_for_direction(direction)
     blocked = curation.views_blocked(unit, work_dir)
@@ -504,14 +542,14 @@ def reference(unit: str, direction: str, work_dir: Path | None = None) -> dict[s
         return {"view": view, "path": base_path, "sha256": sha256_file(base_path)}
     if blocked:
         raise ValueError(blocked)
-    entry = matrix_stage.base_views(unit, work_dir).get(view)
+    entry = curation.base_views(unit, work_dir).get(view)
     if entry is None:
         raise ValueError(f"{unit} has no {view} view yet, so {direction} has nothing to be "
-                         f"drawn from - draw it on the Concept tab (`anim concept --unit "
+                         f"drawn from - draw it on the Views tab (`anim concept --unit "
                          f"{unit} --views {view}`) and accept one")
     if entry.get("state") != "accepted":
         raise ValueError(f"{unit}'s {view} view is {entry.get('state')}, not accepted - accept "
-                         f"it on the Concept tab or the Board before drawing {direction}")
+                         f"it on the Views tab before drawing {direction}")
     path = Path(entry["path"])
     return {"view": view, "path": path, "sha256": sha256_file(path)}
 
@@ -746,11 +784,12 @@ def generate_batch(unit: str, action: str, direction: str, which: str, *,
                    client: comfy.ComfyClient | None = None, workflow_dir: Path | None = None,
                    lock_path: Path | None = None, timeout_s: float = 900.0,
                    log: Callable[[str], None] = lambda _: None, work_dir: Path | None = None,
-                   **options: Any) -> dict[str, Any]:
+                   progress: bool = True, **options: Any) -> dict[str, Any]:
     """One press over several frames, each with its own defaults (prompt,
     draw from, skeleton at its template instant). A frame that may not be
     drawn - a neighbour keyframe not approved - is BLOCKED and the rest go
-    on; one that raises is FAILED and the rest go on. `[n/m]` after each."""
+    on; one that raises is FAILED and the rest go on. `[n/m]` after each,
+    unless `progress` is off (a sweep counts cells, not frames)."""
     job, record = open_job(unit, action, direction, work_dir)
     targets = batch_targets(record["frames"], which)
     ids = [record["frames"][i]["id"] for i in targets]
@@ -778,8 +817,85 @@ def generate_batch(unit: str, action: str, direction: str, which: str, *,
             results.append({"frame": frame_id, "status": "failed",
                             "reason": f"{type(exc).__name__}: {exc}"})
             log(f"animate: {frame_id} failed - {type(exc).__name__}: {exc}")
-        print(f"[{n}/{len(ids)}] {frame_id} {results[-1]['status']}", flush=True)
+        if progress:
+            print(f"[{n}/{len(ids)}] {frame_id} {results[-1]['status']}", flush=True)
+        else:
+            log(f"animate: {frame_id} {results[-1]['status']}")
     return {"which": which, "frames": results, "cells": tally}
+
+
+# ---------------------------------------------------------------------------
+# The sweep: one batch over several animations (the keyframe sweep feature)
+# ---------------------------------------------------------------------------
+SWEEP_BATCHES = ("keys", "inbetweens")
+
+
+def parse_cell(spec: str) -> tuple[str, str]:
+    """`walk:s90` (or `walk:left`) -> ("walk", "s90")."""
+    action, sep, direction = str(spec).partition(":")
+    if not sep:
+        raise ValueError(f"a sweep cell is ACTION:DIRECTION (walk:s90), not {spec!r}")
+    return action_name(action), direction_name(direction)
+
+
+def sweep_blocked(unit: str, action: str, direction: str, which: str,
+                  work_dir: Path | None = None) -> str | None:
+    """Why this cell may not join a sweep, or None. Every cell needs its
+    direction's accepted view; an in-between sweep also needs every keyframe
+    of the cell approved - the keyframe gate, which a sweep never skips."""
+    try:
+        reference(unit, direction, work_dir)
+    except (ValueError, FileNotFoundError) as exc:
+        return str(exc)
+    if which == "inbetweens":
+        _job, record = open_job(unit, action, direction, work_dir, create=False)
+        summary = cell_summary(record["frames"])
+        if summary["keys_approved"] < summary["keys"]:
+            return (f"{summary['keys'] - summary['keys_approved']} keyframe(s) of {action} "
+                    f"{direction} not approved yet - approve the keys before the in-betweens")
+    return None
+
+
+def sweep(unit: str, cells: Sequence[tuple[str, str]], which: str, *,
+          client: comfy.ComfyClient | None = None, workflow_dir: Path | None = None,
+          lock_path: Path | None = None, timeout_s: float = 900.0,
+          log: Callable[[str], None] = lambda _: None, work_dir: Path | None = None,
+          max_cells: int | None = None, **options: Any) -> dict[str, Any]:
+    """The keyframes (or the in-betweens) of several animations as ONE run:
+    `generate_batch(which)` on each cell in turn. A blocked cell is reported
+    and skipped, never drawn from a fallback; a cell whose frames raised is
+    FAILED and the rest go on. `[n/m]` after each CELL. Refused before any
+    GPU call when `which` is not a sweep batch or there are too many cells."""
+    if which not in SWEEP_BATCHES:
+        raise ValueError(f"a sweep draws {' or '.join(SWEEP_BATCHES)}, not {which!r}")
+    cap = config.ANIMATE_SWEEP_MAX_CELLS if max_cells is None else max_cells
+    unique = list(dict.fromkeys((action_name(a), direction_name(d)) for a, d in cells))
+    if not unique:
+        raise ValueError("a sweep needs at least one cell (ACTION:DIRECTION)")
+    if cap and len(unique) > cap:
+        raise ValueError(f"{len(unique)} cells; one sweep takes at most {cap} "
+                         f"(ANIM_SWEEP_MAX_CELLS) - tick fewer")
+    tally = {"done": 0, "failed": 0, "blocked": 0, "of": len(unique)}
+    results: list[dict[str, Any]] = []
+    for n, (action, direction) in enumerate(unique, start=1):
+        cell = f"{action}:{direction}"
+        reason = sweep_blocked(unit, action, direction, which, work_dir)
+        if reason is not None:
+            tally["blocked"] += 1
+            results.append({"cell": cell, "status": "blocked", "reason": reason})
+            log(f"animate: {cell} blocked - {reason}")
+        else:
+            log(f"animate: {cell} - {which}")
+            batch = generate_batch(unit, action, direction, which, client=client,
+                                   workflow_dir=workflow_dir, lock_path=lock_path,
+                                   timeout_s=timeout_s, log=log, work_dir=work_dir,
+                                   progress=False, **options)
+            frames = batch["cells"]
+            status = "failed" if frames["failed"] else "done"
+            tally[status] += 1
+            results.append({"cell": cell, "status": status, "frames": frames})
+        print(f"[{n}/{len(unique)}] {cell} {results[-1]['status']}", flush=True)
+    return {"which": which, "cells": results, "tally": tally}
 
 
 # ---------------------------------------------------------------------------
@@ -1146,7 +1262,7 @@ def output(unit: str, action: str, direction: str, *, replace_job: bool = False,
            work_dir: Path | None = None, palette: Path | None = None,
            log: Callable[[str], None] = lambda _: None) -> dict[str, Any]:
     """Write every approved frame, at game size, as the cell's finished
-    frames in the job layout `export` and the Board read."""
+    frames in the job layout `export` reads."""
     name = action_name(action)
     direction = direction_name(direction)
     ajob, record = open_job(unit, name, direction, work_dir)
@@ -1222,14 +1338,8 @@ def output(unit: str, action: str, direction: str, *, replace_job: bool = False,
                         "frames": [f["verdict"]["sha256"] for f, _p in sources]}
     record["output_error"] = None
     save(ajob, record)
-    board: str | None = None
-    try:
-        curation.set_cell_status(unit, name, direction, "accepted", work_dir)
-        board = "accepted"
-    except curation.CurationError as exc:
-        board = f"not set: {exc}"
-    log(f"animate: {len(picks)} frame(s) -> work/{target}/post/ (the Board: {board})")
-    return {"job": target, "frames": len(picks), "timing": timing, "board": board}
+    log(f"animate: {len(picks)} frame(s) -> work/{target}/post/")
+    return {"job": target, "frames": len(picks), "timing": timing}
 
 
 # ---------------------------------------------------------------------------
@@ -1238,12 +1348,17 @@ def output(unit: str, action: str, direction: str, *, replace_job: bool = False,
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--unit", "--slug", dest="slug", required=True,
                         help="unit slug, e.g. hooded_archer")
-    parser.add_argument("--action", required=True,
+    parser.add_argument("--action", default=None,
                         help=f"a studio action: {', '.join(config.STUDIO_ACTIONS)} "
-                             f"(or its pipeline verb)")
-    parser.add_argument("--dir", dest="direction", required=True, metavar="CELL",
+                             f"(or its pipeline verb); required unless --sweep")
+    parser.add_argument("--dir", dest="direction", default=None, metavar="CELL",
                         help="the side direction: s0..s315, or its view (right, back_right, "
-                             "back, back_left, left, front_left, front, front_right)")
+                             "back, back_left, left, front_left, front, front_right); "
+                             "required unless --sweep")
+    parser.add_argument("--sweep", nargs="+", default=None, metavar="ACTION:DIR",
+                        help="the keyframe sweep: --batch keys (or inbetweens) on each of "
+                             "these animations as one run, e.g. --sweep walk:s90 run:s90 "
+                             f"(at most {config.ANIMATE_SWEEP_MAX_CELLS} cells)")
     parser.add_argument("--frame", default=None,
                         help="the frame: its number (1..), its id (f03) or a keyframe's phase "
                              "(wind-up). Alone, it draws a new attempt of that frame")
@@ -1341,7 +1456,27 @@ def _print_row(record: dict[str, Any]) -> None:
               f"{len(frame.get('candidates') or [])} attempt(s)")
 
 
+def _run_sweep(args: argparse.Namespace) -> int:
+    if args.batch not in SWEEP_BATCHES:
+        raise SystemExit(f"anim animate: --sweep needs --batch {' or '.join(SWEEP_BATCHES)}")
+    try:
+        cells = [parse_cell(spec) for spec in args.sweep]
+        options = {"draw_from": args.draw_from, "skeleton": args.skeleton,
+                   "count": args.count, "seed": args.seed, "model": args.model,
+                   "loras": args.lora}
+        result = sweep(args.slug, cells, args.batch,
+                       client=comfy.ComfyClient(getattr(args, "comfyui_url", None)),
+                       timeout_s=args.timeout, log=print, **options)
+    except (ValueError, FileNotFoundError, OSError, models_lock.RegistryError) as exc:
+        raise SystemExit(f"anim animate: {exc}") from None
+    return outcome.Outcome(**result["tally"]).report()
+
+
 def run_stage(args: argparse.Namespace) -> int:
+    if getattr(args, "sweep", None):
+        return _run_sweep(args)
+    if args.action is None or args.direction is None:
+        raise SystemExit("anim animate: --action and --dir are required (or --sweep)")
     try:
         unit = args.slug
         action = action_name(args.action)

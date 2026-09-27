@@ -525,10 +525,6 @@ def test_output_writes_what_export_reads(work_dir, palette, monkeypatch):
             assert img.size == tuple(config.CANVAS) and img.mode == "RGBA"
     picks = json.loads(job.picks_path.read_text())
     assert picks["timing"]["keys"] == [0, 2, 6, 9, 11]
-    # The Board shows the cell done.
-    board = curation.board(UNIT, work_dir)
-    assert board["cells"][f"attack/{FRONT}"]["status"] == "accepted"
-    assert len(board["cells"][f"attack/{FRONT}"]["strip"]) == 12
     _job, record = an.open_job(UNIT, "attack", FRONT, work_dir)
     state = an.output_state(record, work_dir)
     assert state["written"] and not state["stale"] and state["error"] is None
@@ -767,3 +763,92 @@ def test_a_unit_can_own_its_phase_prompts():
     assert "sword" in an.default_prompt("attack", frames, 2, loop=False, unit="knight")
     assert config.animate_phase_prompt("walk", "action", "hooded_archer") == \
         config.animate_phase_prompt("walk", "action")
+
+
+# ---------------------------------------------------------------------------
+# The grid and the sweep (the pipeline tabs feature)
+# ---------------------------------------------------------------------------
+def test_cell_summary_reads_the_keyframe_gate():
+    assert an.cell_summary(_fake_frames(["empty"] * 4, [0, 3]))["state"] == "none"
+    keys = an.cell_summary(_fake_frames(["approved", "empty", "empty", "review"], [0, 3]))
+    assert keys["state"] == "keys" and keys["keys_approved"] == 1 and keys["keys"] == 2
+    ok = an.cell_summary(_fake_frames(["approved", "review", "empty", "approved"], [0, 3]))
+    assert ok["state"] == "keys_ok" and ok["approved"] == 2 and ok["pictures"] == 3
+    assert an.cell_summary(_fake_frames(["approved"] * 4, [0, 3]))["state"] == "done"
+
+
+def _sweep(work_dir: Path, cells, which: str, **kw):
+    with FakeComfy(png=figure_png()) as fake:
+        result = an.sweep(UNIT, cells, which, skeleton=False, client=comfy.ComfyClient(fake.url),
+                          workflow_dir=WORKFLOWS, work_dir=work_dir, **kw)
+    return result, fake
+
+
+def test_a_sweep_draws_keys_across_cells_and_keeps_the_gate(work_dir, capsys):
+    _base(work_dir)
+    cells = [("attack", FRONT), ("walk", "front"), ("attack", "s180")]
+    result, fake = _sweep(work_dir, cells, "keys")
+    assert result["tally"] == {"done": 2, "failed": 0, "blocked": 1, "of": 3}
+    status = {c["cell"]: c for c in result["cells"]}
+    assert status["attack:s180"]["status"] == "blocked"
+    assert "no left view" in status["attack:s180"]["reason"]
+    walk_keys = sum(1 for f in an.default_layout("walk", UNIT) if f["key"])
+    assert len(fake.prompts) == 5 + walk_keys, "keys only, both front cells"
+    out = capsys.readouterr().out
+    assert "[3/3] attack:s180 blocked" in out and "[1/5]" not in out, "cells, not frames"
+    # The in-betweens wait for the keys, cell by cell.
+    early, fake = _sweep(work_dir, [("attack", FRONT)], "inbetweens")
+    assert early["tally"]["blocked"] == 1 and fake.prompts == []
+    an.approve_reviewed(UNIT, "attack", FRONT, work_dir=work_dir)
+    fill, fake = _sweep(work_dir, [("attack", FRONT), ("walk", FRONT)], "inbetweens")
+    assert [c["status"] for c in fill["cells"]] == ["done", "blocked"]
+    assert len(fake.prompts) == 7
+
+
+def test_a_sweep_is_refused_before_the_gpu(work_dir):
+    _base(work_dir)
+    with pytest.raises(ValueError, match="at most 2"):
+        _sweep(work_dir, [("attack", FRONT), ("walk", FRONT), ("run", FRONT)], "keys",
+               max_cells=2)
+    with pytest.raises(ValueError, match="keys or inbetweens"):
+        _sweep(work_dir, [("attack", FRONT)], "rejected")
+    with pytest.raises(ValueError, match="ACTION:DIRECTION"):
+        an.parse_cell("attack")
+    assert an.parse_cell("strike:front") == ("attack", "s270")
+
+
+def test_the_grid_and_the_units(api, work_dir):
+    assert api.get("/animate/Not A Slug").status_code == 404
+    empty = api.get("/animate/knight").json()
+    assert empty["actions"] == list(config.STUDIO_ACTIONS)
+    assert [d["direction"] for d in empty["directions"]] == an.side_directions()
+    assert "no base" in empty["locked"] and empty["max_cells"] == config.ANIMATE_SWEEP_MAX_CELLS
+    assert empty["cells"]["attack"]["s270"]["state"] == "none"
+    assert empty["cells"]["attack"]["s270"]["exists"] is False
+    assert empty["cells"]["attack"]["s270"]["keys"] == 5, "the template's row"
+    assert api.get("/units").json() == {"units": []}
+    _base(work_dir)
+    _generate(work_dir, "wind-up")
+    _approve(work_dir, "wind-up")
+    grid = api.get("/animate/knight").json()
+    front = grid["cells"]["attack"]["s270"]
+    assert front["state"] == "keys" and front["keys_approved"] == 1 and front["blocked"] is None
+    assert "no left view" in grid["cells"]["attack"]["s180"]["blocked"]
+    assert grid["cells"]["walk"]["s270"]["state"] == "none"
+    assert "knight" in api.get("/units").json()["units"]
+
+
+def test_the_sweep_route_maps_onto_one_run(api, work_dir):
+    body = {"cells": [{"action": "attack", "direction": "s270"},
+                      {"action": "strike", "direction": "left"}], "batch": "keys"}
+    locked = api.post("/animate/knight/sweep", json=body)
+    assert locked.status_code == 423 and "no base" in locked.json()["error"]
+    _base(work_dir)
+    argv = wait_for(api, api.post("/animate/knight/sweep", json={**body, "model": "q.safetensors"}
+                                  ).json()["id"])["argv"]
+    assert argv == ["--unit", "knight", "--sweep", "attack:s270", "attack:s180",
+                    "--model", "q.safetensors", "--batch", "keys"]
+    assert api.post("/animate/knight/sweep", json={**body, "batch": "all"}).status_code == 400
+    assert api.post("/animate/knight/sweep", json={"cells": []}).status_code == 422
+    bad = api.post("/animate/knight/sweep", json={"cells": [{"action": "dance", "direction": "s0"}]})
+    assert bad.status_code == 400

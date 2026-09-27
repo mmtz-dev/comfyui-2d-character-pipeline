@@ -54,7 +54,33 @@ export async function openAnimation(name: string, urls: string[], fps: number): 
   piskel.addLayer(layer);
   pskl.app.piskelController.setPiskel(piskel);
   pskl.app.piskelController.setFPS(fps);
+  // What was just loaded is what is on disk: Piskel counts the load itself
+  // as a change (setPiskel saves a history state), so reset its saved mark.
+  markSaved();
   return { width: first.width, height: first.height, frames: images.length };
+}
+
+/**
+ * Whether the canvas has changes since the last load or save - Piskel's own
+ * notion (SavedStatusService: the history state at the last PISKEL_SAVED vs
+ * now), the one its title's " *" and its leave-page warning use. Undoing back
+ * to the saved state counts as clean.
+ */
+export function isDirty(): boolean {
+  return pskl.app.savedStatusService.isDirty();
+}
+
+/** Tell Piskel the canvas is saved (the studio's Save wrote it to `work/`). */
+export function markSaved(): void {
+  $.publish(Events.PISKEL_SAVED!);
+}
+
+/** Put a node over Piskel's drawing area - the main column, between its tool
+ * columns, so a floating control never covers a tool. */
+export function mountOverCanvas(node: HTMLElement): void {
+  const column = document.querySelector(".main-column");
+  if (!column) throw new Error("Piskel's markup lost its .main-column");
+  column.append(node);
 }
 
 export interface ExportedFrame {
@@ -128,9 +154,16 @@ export function setProjectPalette(name: string, colours: string[]): void {
   pskl.app.palettesListController.selectPalette(PROJECT_PALETTE_ID);
 }
 
-/** Subscribe to Piskel's bus (a PISKEL_RESET after a load, a save state). */
+/** Subscribe to Piskel's bus (a PISKEL_RESET after a load, a save state,
+ * PISKEL_SAVED_STATUS_UPDATE after a stroke, an undo or a save). */
 export function onPiskelEvent(name: string, handler: () => void): void {
   const event = Events[name];
   if (!event) throw new Error(`Piskel has no event ${name}`);
   $.subscribe(event, handler);
+}
+
+/** Make `colour` Piskel's primary pen colour (the edit bar's palette strip);
+ * `secondary` sets the right-button colour instead. */
+export function selectColour(colour: string, secondary = false): void {
+  $.publish(Events[secondary ? "SELECT_SECONDARY_COLOR" : "SELECT_PRIMARY_COLOR"]!, [colour]);
 }

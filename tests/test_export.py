@@ -291,25 +291,25 @@ def test_the_matrix_is_found_by_name_and_the_gaps_are_warnings(matrix):
     assert walk.direction == "s90" and walk.loop is True
 
 
-def test_the_matrix_stages_own_job_names_are_the_ones_export_finds(work_dir):
-    """The action matrix feature's regression. The matrix names a cell's job
-    with the PIPELINE VERB (`curation.canonical_job`) and calls `rig` with the
-    same verb, so the manifest agrees with the directory. A slip to the studio
-    name on either side - `knight_attack_s45`, or `action: "attack"` inside
-    `knight_strike_s45` - makes `find_animations` skip the job as "not the
-    matrix job" and the cell disappears from the sheet without an error."""
-    from anim.stages import matrix as matrix_stage
+def test_the_canonical_job_names_are_the_ones_export_finds(work_dir):
+    """A finished animation's job is named with the PIPELINE VERB
+    (`curation.canonical_job`, what `anim animate --output` writes), and its
+    manifest carries the same verb. A slip to the studio name on either side -
+    `knight_attack_s45`, or `action: "attack"` inside `knight_strike_s45` -
+    makes `find_animations` skip the job as "not the matrix job" and the cell
+    disappears from the sheet without an error."""
+    from anim import curation
 
-    cells = matrix_stage.plan(UNIT, ["attack", "walk"], ["s0", "s45"])
-    assert [c.job for c in cells] == ["knight_strike", "knight_walk",
-                                      "knight_strike_s45", "knight_walk_s45"]
-    for cell in cells:
-        make_job(work_dir, cell.job, action=cell.verb, direction=cell.direction,
-                 frames=config.ACTION_PHASES[cell.action]["budget"])
+    cells = [(action, direction) for direction in ("s0", "s45") for action in ("attack", "walk")]
+    jobs = [curation.canonical_job(UNIT, a, d) for a, d in cells]
+    assert jobs == ["knight_strike", "knight_walk", "knight_strike_s45", "knight_walk_s45"]
+    for job, (action, direction) in zip(jobs, cells):
+        make_job(work_dir, job, action=config.STUDIO_ACTIONS[action]["verb"],
+                 direction=direction, frames=config.ACTION_PHASES[action]["budget"])
     anims, warnings = find_animations(UNIT, work_dir)
     skipped = [w for w in warnings if w["kind"] == "skipped"]
-    assert skipped == [], "every matrix job is the matrix job"
-    assert [a.job for a in anims] == [c.job for c in cells]
+    assert skipped == [], "every canonical job is the matrix job"
+    assert [a.job for a in anims] == jobs
     assert {a.key for a in anims} == {"strike_s0", "walk_s0", "strike_s45", "walk_s45"}
     assert [a.action for a in anims] == ["strike", "walk", "strike", "walk"], \
         "the sheet is named for the verb game-02 knows"

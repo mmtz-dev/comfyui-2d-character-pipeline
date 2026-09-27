@@ -1,9 +1,12 @@
-// The Animate tab as DOM (the animate tab feature), laid out as the approved
-// mockup: 1 the direction (a compass of the unit's eight side-on views),
-// 2 the animation, 3 the frame row with its toolbar, 4 the selected frame
-// (big picture, its skeleton, every attempt, prompt, draw from, the pose
-// slider, model, and Generate / Approve / Reject / Pixel edit / Inpaint),
-// 5 the player (full size and game size), and the output line. Plain DOM
+// The Animate tab as DOM (the animate tab feature; the grid and the sweep are
+// the pipeline tabs feature's): 1 every animation of the unit as an actions x
+// directions grid - click a cell to open it, shift-click to tick it, and the
+// sweep box draws the ticked cells' keyframes (then, once approved, their
+// in-betweens) as one run; 2 the frame row with its toolbar - clicking a
+// frame also opens its picture in Piskel beside the panel; 3 the selected
+// frame (big picture, its skeleton, every attempt, prompt, draw from, the
+// pose slider, and Generate / Approve / Reject / Pixel edit / Inpaint);
+// 4 the player (full size and game size), and the output line. Plain DOM
 // like the other tabs; the logic is animate.ts.
 
 import {
@@ -13,15 +16,16 @@ import {
   cancelRun,
   generateAnimate,
   getAnimate,
+  getAnimateGrid,
   getModels,
   judgeAnimateFrame,
-  listCuration,
-  listJobs,
   mirrorAnimate,
   outputAnimate,
   putAnimateFrame,
   removeAnimateFrame,
+  sweepAnimate,
   type AnimateFrame,
+  type AnimateGrid,
   type AnimateRequest,
   type AnimateState,
   type Attempt,
@@ -29,16 +33,20 @@ import {
   type DrawFrom,
   type ModelsListing,
   type RunRecord,
+  type SweepBatch,
 } from "./api";
 import { attemptCaption, busyText, isActive } from "./concept";
 import {
+  CELL_TEXT,
   STATUS_TEXT,
   approvedLine,
   attemptOrigin,
   batchBody,
   batchTargets,
+  cellKey,
+  cellMark,
+  cellTitle,
   clampFrame,
-  compassGrid,
   currentAttempt,
   drawFromBlocked,
   drawFromText,
@@ -53,6 +61,9 @@ import {
   skeletonUrl,
   sliderText,
   startFrame,
+  sweepConfirm,
+  sweepPlan,
+  toggleTick,
   viewLabel,
   type PlayFrame,
 } from "./animate";
@@ -109,6 +120,9 @@ interface FrameForm {
 
 export class AnimateTab {
   private state: AnimateState | null = null;
+  private grid: AnimateGrid | null = null;
+  private unitName = "";
+  private ticked: string[] = [];
   private listing: ModelsListing | null = null;
   private busy: RunRecord | null = null;
   private selected: string | null = null;
@@ -117,15 +131,15 @@ export class AnimateTab {
   private playIndex = -1;
   private playing: PlayFrame[] = [];
   private action = "attack";
-  private direction = "s180";
+  private direction = "s270";
 
   readonly root = el("div", { class: "animate" });
-  private readonly unitSelect = el("select", { class: "studio-select", title: "the unit (GET /curation, plus every *_concept job)" });
   private readonly statusLine = el("div", { class: "studio-status" });
   private readonly busyLine = el("span", { class: "studio-status warn" });
   private readonly cancelButton = el("button", { type: "button", class: "studio-button", hidden: true, title: "POST /runs/{id}/cancel", onclick: () => void this.cancel() }, "Cancel");
-  private readonly compassBox = el("div", { class: "animate-compass" });
-  private readonly actionsBox = el("div", { class: "animate-actions" });
+  private readonly gridBox = el("div", { class: "animate-grid" });
+  private readonly sweepBox = el("div", { class: "animate-sweep" });
+  private readonly cellTitleLine = el("div", { class: "animate-cell-title" });
   private readonly toolbar = el("div", { class: "animate-toolbar" });
   private readonly strip = el("div", { class: "animate-strip" });
   private readonly detail = el("div", { class: "animate-detail" });
@@ -146,7 +160,6 @@ export class AnimateTab {
   constructor(private readonly host: AnimateHost) {
     this.approvedOnly.checked = true;
     this.loop.checked = true;
-    this.unitSelect.addEventListener("change", () => void this.load(true));
     this.fps.addEventListener("input", () => {
       this.fpsText.textContent = `${this.fps.value} fps`;
       if (this.playTimer !== null) this.startPlay();
@@ -154,21 +167,21 @@ export class AnimateTab {
     this.approvedOnly.addEventListener("change", () => { if (this.playTimer !== null) this.startPlay(); else this.showStill(); });
     this.root.replaceChildren(
       el("div", { class: "studio-row" },
-        this.unitSelect,
-        el("button", { type: "button", class: "studio-button", title: "read the state again", onclick: () => void this.refreshUnits() }, "↻"),
         this.modelSelect,
-        el("label", { class: "concept-lock" }, this.lockSeed, " lock seed")),
+        el("label", { class: "concept-lock" }, this.lockSeed, " lock seed"),
+        el("button", { type: "button", class: "studio-button", title: "read the grid and the animation again", onclick: () => void this.reload() }, "↻")),
       el("div", { class: "studio-row concept-busy" }, this.busyLine, this.cancelButton),
       this.statusLine,
-      this.stepHead(1, "Pick a direction", "each direction draws from its own accepted view"),
-      el("div", { class: "animate-panel animate-dirs" },
-        this.compassBox,
-        el("div", { class: "animate-elevation" },
-          el("button", { type: "button", class: "studio-button animate-act selected", title: "the eight side-on facings" }, "Side-on"),
-          el("button", { type: "button", class: "studio-button animate-act", disabled: true, title: "a later milestone" }, "Top-down (later)"))),
-      this.stepHead(2, "Pick an animation"),
-      el("div", { class: "animate-panel" }, this.actionsBox),
-      this.stepHead(3, "Frames: generate, check, fix"),
+      this.stepHead(1, "Pick an animation", "click a cell to open it · shift-click to tick it for a sweep"),
+      el("div", { class: "animate-panel" },
+        this.gridBox,
+        el("div", { class: "animate-legend" },
+          ...(["none", "keys", "keys_ok", "done"] as const).map((s) =>
+            el("span", { class: `animate-chip c-${s}` }, CELL_TEXT[s])),
+          el("span", { class: "animate-chip c-blocked" }, "blocked (no view)")),
+        this.sweepBox),
+      this.cellTitleLine,
+      this.stepHead(2, "Frames: generate, check, fix", "clicking a frame opens it in Piskel"),
       el("div", { class: "animate-panel" },
         this.toolbar,
         this.strip,
@@ -176,9 +189,9 @@ export class AnimateTab {
           ...(["empty", "generating", "review", "approved", "rejected"] as const).map((s) =>
             el("span", { class: `animate-chip s-${s}` }, STATUS_TEXT[s])),
           el("span", { class: "animate-key-note" }, "gold label = keyframe"))),
-      this.stepHead(4, "The selected frame"),
+      this.stepHead(3, "The selected frame"),
       el("div", { class: "animate-panel" }, this.detail),
-      this.stepHead(5, "Play it"),
+      this.stepHead(4, "Play it"),
       el("div", { class: "animate-panel animate-player" },
         el("figure", {}, el("div", { class: "animate-stage" }, this.playFull), el("figcaption", { class: "studio-help" }, "full size")),
         el("figure", {}, el("div", { class: "animate-stage small" }, this.playGame), this.gameCaption),
@@ -209,7 +222,6 @@ export class AnimateTab {
       this.say(`could not read /models - ${errorText(error)}`, "warn");
     }
     this.fillModels();
-    await this.refreshUnits();
   }
 
   private fillModels(): void {
@@ -220,27 +232,36 @@ export class AnimateTab {
       ...rows.filter((r) => r.file !== fallback).map((r) => el("option", { value: r.file, title: r.file }, r.label || r.file)));
   }
 
-  async refreshUnits(): Promise<void> {
-    const before = this.unitSelect.value;
-    try {
-      const [listing, jobs] = await Promise.all([listCuration(), listJobs()]);
-      const names = new Set(listing.units.map((u) => u.unit));
-      for (const job of jobs) if (job.name.endsWith("_concept") && job.slug) names.add(job.slug);
-      const units = [...names].sort();
-      this.unitSelect.replaceChildren(
-        el("option", { value: "" }, units.length ? "pick a unit" : "no units yet - start on the Concept tab"),
-        ...units.map((unit) => el("option", { value: unit }, unit)));
-      if (units.includes(before)) this.unitSelect.value = before;
-      else if (units.length === 1) this.unitSelect.value = units[0]!;
-    } catch (error) {
-      this.say(`could not list units - ${errorText(error)}`, "bad");
-      return;
-    }
-    await this.load(false);
+  /** The unit bar picked a unit ("" for none). */
+  async setUnit(unit: string): Promise<void> {
+    const changed = unit !== this.unitName;
+    this.unitName = unit;
+    if (changed) this.ticked = [];
+    await this.reload(changed);
+  }
+
+  private async reload(changed = false): Promise<void> {
+    await Promise.all([this.loadGrid(), this.load(changed)]);
   }
 
   private cell(): AnimateCell {
-    return { unit: this.unitSelect.value, action: this.action, direction: this.direction };
+    return { unit: this.unitName, action: this.action, direction: this.direction };
+  }
+
+  private async loadGrid(): Promise<void> {
+    const unit = this.unitName;
+    if (!unit) {
+      this.grid = null;
+      this.drawGrid();
+      return;
+    }
+    try {
+      this.grid = await getAnimateGrid(unit);
+    } catch (error) {
+      this.grid = null;
+      this.say(`could not read /animate/${unit} - ${errorText(error)}`, "bad");
+    }
+    this.drawGrid();
   }
 
   private async load(changed: boolean): Promise<void> {
@@ -263,7 +284,7 @@ export class AnimateTab {
   /** The panel tells the tab a run ended, so the frames reload. */
   async runFinished(): Promise<void> {
     this.setBusy(null);
-    if (this.state) await this.load(false);
+    if (this.unitName) await this.reload();
   }
 
   setBusy(run: RunRecord | null): void {
@@ -382,6 +403,7 @@ export class AnimateTab {
     try {
       const next = await op(state);
       this.apply(next);
+      void this.loadGrid();
       const extra = next.output.error ? ` · output: ${next.output.error}` : next.written ? ` · ${next.written.frames} frames written to work/${next.written.job}` : "";
       this.say(`${what}${extra}`, next.output.error ? "warn" : "ok");
     } catch (error) {
@@ -414,11 +436,10 @@ export class AnimateTab {
   // --- drawing ---------------------------------------------------------------
   private draw(): void {
     const state = this.state;
-    this.drawCompass();
-    this.drawActions();
+    this.cellTitleLine.textContent = state ? `${state.action} · ${state.direction} (${viewLabel(state.view)})` : "";
     if (!state) {
       this.toolbar.replaceChildren();
-      this.strip.replaceChildren(el("span", { class: "studio-help" }, "pick a unit"));
+      this.strip.replaceChildren(el("span", { class: "studio-help" }, this.unitName ? "" : "pick a unit above"));
       this.detail.replaceChildren();
       this.outputLine.replaceChildren();
       this.stopPlay();
@@ -437,35 +458,109 @@ export class AnimateTab {
     this.enableButtons();
   }
 
-  private drawCompass(): void {
-    const state = this.state;
-    if (!state) {
-      this.compassBox.replaceChildren();
+  /** The grid: rows the studio's actions, columns the eight side facings. */
+  private drawGrid(): void {
+    const grid = this.grid;
+    if (!grid) {
+      this.gridBox.replaceChildren(el("span", { class: "studio-help" }, this.unitName ? "" : "pick a unit above"));
+      this.drawSweep();
       return;
     }
-    this.compassBox.replaceChildren(...compassGrid(state).map((cell) => {
-      if (!cell) return el("div", { class: "animate-dir center" }, "character", el("br"), "(from above)");
-      const chosen = cell.direction === state.direction;
-      const title = cell.blocked ? `${cell.direction}: blocked - ${cell.blocked}` : `${cell.direction}: drawn from the ${viewLabel(cell.view)} view`
-        + (cell.frames ? ` · ${cell.approved}/${cell.frames} approved` : "");
-      return el("button", {
-        type: "button", class: `animate-dir${chosen ? " selected" : ""}${cell.blocked ? " blocked" : ""}`, title,
-        onclick: () => { this.direction = cell.direction; void this.load(true); },
-      },
-        cell.url ? el("img", { src: cell.url, alt: cell.view }) : el("span", { class: "animate-dir-miss" }, cell.blocked ? "blocked" : "—"),
-        el("span", { class: "animate-dir-label" }, `${viewLabel(cell.view)}${cell.frames ? ` ${cell.approved}/${cell.frames}` : ""}`));
-    }));
+    const head = el("tr", {}, el("th", {}),
+      ...grid.directions.map((d) => el("th", { title: d.blocked ? `${d.direction}: ${d.blocked}` : `${d.direction}: drawn from the ${viewLabel(d.view)} view` },
+        d.url ? el("img", { src: d.url, alt: d.view, loading: "lazy" }) : null,
+        el("span", {}, viewLabel(d.view)))));
+    const rows = grid.actions.map((action) => el("tr", {}, el("th", { class: "animate-grid-action" }, action),
+      ...grid.directions.map(({ direction, view }) => {
+        const cell = grid.cells[action]?.[direction];
+        if (!cell) return el("td", {});
+        const key = cellKey(action, direction);
+        const open = action === this.action && direction === this.direction;
+        return el("td", {
+          class: `c-${cell.blocked && cell.state === "none" ? "blocked" : cell.state}${open ? " open" : ""}${this.ticked.includes(key) ? " ticked" : ""}`,
+          title: cellTitle(action, direction, view, cell),
+          onclick: (event: Event) => this.clickCell(action, direction, (event as MouseEvent).shiftKey),
+        }, cellMark(cell));
+      })));
+    this.gridBox.replaceChildren(el("table", { class: "animate-grid-table" }, el("thead", {}, head), el("tbody", {}, ...rows)));
+    this.drawSweep();
   }
 
-  private drawActions(): void {
-    const state = this.state;
-    const rows = state?.actions ?? [];
-    this.actionsBox.replaceChildren(...rows.map((row) =>
-      el("button", {
-        type: "button", class: `studio-button animate-act${row.action === this.action ? " selected" : ""}`,
-        title: row.clip ? `the skeleton comes from the rig clip ${row.clip}${row.loop ? " (a loop)" : ""}` : "no rig clip for this action - frames are drawn without a skeleton",
-        onclick: () => { this.action = row.action; void this.load(true); },
-      }, row.action, " ", el("small", {}, `${row.frames} frames`))));
+  private clickCell(action: string, direction: string, tick: boolean): void {
+    if (tick) {
+      const next = toggleTick(this.ticked, cellKey(action, direction), this.grid?.max_cells ?? 0);
+      if (next.refused) this.say(next.refused, "warn");
+      this.ticked = next.ticked;
+      this.drawGrid();
+      return;
+    }
+    this.action = action;
+    this.direction = direction;
+    this.drawGrid();
+    void this.load(true);
+  }
+
+  /** The sweep box: what the ticked cells would draw, as one run. */
+  private drawSweep(): void {
+    const grid = this.grid;
+    if (!grid || !this.ticked.length) {
+      this.sweepBox.replaceChildren(el("span", { class: "studio-help" },
+        "Shift-click cells to tick them, then draw all their keyframes as one run. In-betweens follow once a cell's keys are approved."));
+      return;
+    }
+    const keys = sweepPlan(grid, this.ticked, "keys");
+    const between = sweepPlan(grid, this.ticked, "inbetweens");
+    const keysButton = this.gpuButton(`Generate keyframes (${keys.cells.length})`,
+      `anim animate --sweep ... --batch keys: every keyframe not approved yet, ~${keys.renders} render(s)`,
+      () => void this.sweep("keys"), true);
+    keysButton.classList.toggle("locked", !keys.cells.length || !keys.renders || !!grid.locked);
+    const betweenButton = this.gpuButton(`Generate in-betweens (${between.cells.length})`,
+      between.blocked.length ? `waiting on the keyframe gate: ${between.blocked.map((b) => `${b.key} - ${b.why}`).join("; ")}`
+        : `anim animate --sweep ... --batch inbetweens: ~${between.renders} render(s)`,
+      () => void this.sweep("inbetweens"));
+    betweenButton.classList.toggle("locked", !between.cells.length || !between.renders || !!grid.locked);
+    this.sweepBox.replaceChildren(
+      el("div", { class: "studio-row" },
+        el("b", {}, "Sweep"), ` ${this.ticked.length} ticked `,
+        el("span", { class: "studio-help" }, `· keys ≈ ${keys.renders} render(s) · in-betweens ≈ ${between.renders}`)),
+      el("div", { class: "studio-row" }, keysButton, betweenButton,
+        el("button", { type: "button", class: "studio-button", onclick: () => { this.ticked = []; this.drawGrid(); } }, "clear ticks")),
+      ...(keys.blocked.length ? [el("div", { class: "studio-status warn" },
+        `skipped: ${keys.blocked.map((b) => `${b.key} - ${b.why}`).join("; ")}`)] : []));
+    this.enableButtons();
+  }
+
+  private async sweep(batch: SweepBatch): Promise<void> {
+    const grid = this.grid;
+    if (!grid) return;
+    const plan = sweepPlan(grid, this.ticked, batch);
+    if (!plan.cells.length) {
+      this.say("nothing in the ticked cells can be drawn by that press", "warn");
+      return;
+    }
+    if (!window.confirm(sweepConfirm(grid.unit, plan, batch))) return;
+    this.say(`starting the sweep ...`);
+    try {
+      const result = await sweepAnimate(grid.unit, plan.cells, batch, this.modelSelect.value || null);
+      if ("refused" in result) {
+        const { refused } = result;
+        if (refused.status === 409 && refused.run) {
+          this.say(`GPU busy with ${refused.run.id} (${refused.run.stage}); one at a time`, "warn");
+          this.host.follow(refused.run);
+          this.setBusy(refused.run);
+        } else {
+          this.say(`${refused.status === 423 ? "gate" : refused.status}: ${refused.error}`, refused.status === 423 ? "warn" : "bad");
+        }
+        return;
+      }
+      this.say(`sweep: ${plan.cells.length} animation(s), run ${result.run.id}`, "ok");
+      this.host.follow(result.run);
+      this.setBusy(result.run);
+    } catch (error) {
+      this.say(`could not start - ${errorText(error)}`, "bad");
+    } finally {
+      this.host.refreshHealth();
+    }
   }
 
   private drawToolbar(state: AnimateState): void {
@@ -510,7 +605,15 @@ export class AnimateTab {
     return el("div", {
       class: `animate-frame${frame.key ? " key" : ""}${frame.id === this.selected ? " selected" : ""}`,
       title: `${frame.label} · frame ${frame.position} (${frame.id})`,
-      onclick: () => { this.selected = frame.id; this.form = null; this.draw(); },
+      onclick: () => {
+        const changed = this.selected !== frame.id;
+        this.selected = frame.id;
+        if (changed) this.form = null;
+        this.draw();
+        // Selecting is editing: the picture opens in Piskel beside the panel.
+        const attempt = currentAttempt(frame);
+        if (attempt?.url && !attempt.file_deleted) this.host.editPixels(this.cell(), frame.id, attempt, "pixels");
+      },
     },
       el("div", { class: "animate-frame-label" }, el("span", {}, frame.label), el("span", {}, String(frame.position))),
       el("div", { class: "animate-frame-pic" }, image),
@@ -651,9 +754,9 @@ export class AnimateTab {
     let kind = "studio-help";
     if (out.error) { text = `The finished frames were not written: ${out.error}`; kind = "studio-status warn"; }
     else if (out.written && out.stale) { text = `work/${out.job} is older than the approvals - write it again.`; kind = "studio-status warn"; }
-    else if (out.written) text = `Every frame approved - written to work/${out.job} (${out.at ?? ""}); the Board shows the cell done and \`anim export\` packs it.`;
+    else if (out.written) text = `Every frame approved - written to work/${out.job} (${out.at ?? ""}); \`anim export\` packs it.`;
     else if (out.ready) text = "Every frame approved - write them to the game layout.";
-    else text = `When every frame is approved they are written to work/${out.job}, the job the Board and \`anim export\` read.`;
+    else text = `When every frame is approved they are written to work/${out.job}, the job \`anim export\` reads.`;
     const replace = !!out.error && out.error.includes("another route");
     const write = el("button", { type: "button", class: "studio-button", disabled: !out.ready,
       title: replace ? "moves the video route's job aside to work/_replaced/ first" : "the approved frames through the pipeline's post chain into the cell's job",

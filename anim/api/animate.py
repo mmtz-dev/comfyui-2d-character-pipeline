@@ -1,6 +1,7 @@
 """The animate tab feature's read side: one unit's animation of one action at
 one direction, for the studio's Animate tab.
 
+    GET /animate/{unit}                        -> grid(...)
     GET /animate/{unit}/{action}/{direction}   -> state(...)
 
 Pure over the files `anim animate` writes (work/<unit>_animate_<action>_<dir>/
@@ -25,7 +26,6 @@ from anim.api import jobs as jobs_api
 from anim.job import Job
 from anim.stages import animate as animate_stage
 from anim.stages import concept as concept_stage
-from anim.stages import matrix as matrix_stage
 
 
 def _url(job: Job, set_name: str, path: Path | str | None) -> str | None:
@@ -36,12 +36,19 @@ def _url(job: Job, set_name: str, path: Path | str | None) -> str | None:
     return None if index is None else f"/jobs/{job.name}/frames/{set_name}/{index}.png"
 
 
-def compass(unit: str, action: str, work_dir: Path) -> list[dict[str, Any]]:
+def units(work_dir: Path) -> list[str]:
+    """Every unit slug a job under work/ carries, plus every unit with a
+    curation record (a base accepted before any job of its own)."""
+    names = {row["slug"] for row in jobs_api.list_jobs(work_dir) if row.get("slug")}
+    names.update(curation.recorded_units(work_dir))
+    return sorted(n for n in names if jobs_api.valid_name(n))
+
+
+def directions(unit: str, work_dir: Path) -> list[dict[str, Any]]:
     """The eight side directions: each one's own view (a thumbnail when it is
-    accepted), why it is blocked when it is, its mirror partner, and how far
-    this action has got there."""
+    accepted), why it is blocked when it is, and its mirror partner."""
     base_job = Job.open(f"{unit}_base", work_dir)
-    views = matrix_stage.base_views(unit, work_dir)
+    views = curation.base_views(unit, work_dir)
     gate = curation.views_blocked(unit, work_dir)
     rows = []
     for direction in animate_stage.side_directions():
@@ -58,22 +65,61 @@ def compass(unit: str, action: str, work_dir: Path) -> list[dict[str, Any]]:
         elif not blocked:
             entry = views.get(view)
             if entry is None:
-                blocked = f"no {view} view yet - draw it on the Concept tab"
+                blocked = f"no {view} view yet - draw it on the Views tab"
             elif entry.get("state") != "accepted":
                 blocked = f"the {view} view is {entry.get('state')} - accept it first"
             else:
                 url = _url(base_job, "render", entry["path"])
-        job = Job.open(animate_stage.job_name(unit, action, direction), work_dir)
-        approved = total = 0
-        if job.manifest_path.exists():
-            frames = job.read_manifest().get("frames") or []
-            total = len(frames)
-            approved = sum(1 for f in frames if animate_stage.frame_status(f) == "approved")
         rows.append({"direction": direction, "view": view,
                      "yaw": config.direction(direction)[0], "url": url, "blocked": blocked,
-                     "mirror_of": config.mirror_direction(direction),
-                     "approved": approved, "frames": total, "exists": job.manifest_path.exists()})
+                     "mirror_of": config.mirror_direction(direction)})
     return rows
+
+
+def _record(unit: str, action: str, direction: str, work_dir: Path
+            ) -> tuple[Job, dict[str, Any] | None]:
+    job = Job.open(animate_stage.job_name(unit, action, direction), work_dir)
+    return job, (job.read_manifest() if job.manifest_path.exists() else None)
+
+
+def compass(unit: str, action: str, work_dir: Path) -> list[dict[str, Any]]:
+    """`directions`, plus how far this action has got at each."""
+    rows = []
+    for row in directions(unit, work_dir):
+        _job, record = _record(unit, action, row["direction"], work_dir)
+        frames = (record or {}).get("frames") or []
+        approved = sum(1 for f in frames if animate_stage.frame_status(f) == "approved")
+        rows.append({**row, "approved": approved, "frames": len(frames),
+                     "exists": record is not None})
+    return rows
+
+
+def grid(unit: str, work_dir: Path) -> dict[str, Any] | None:
+    """The Animate tab's grid: every studio action x every side direction in
+    one answer, each cell's `animate_stage.cell_summary` plus whether it
+    exists, whether it was mirrored, and why it is blocked (its direction's
+    view). A cell not started yet reads as the phase template's row. None when
+    the unit is not a slug."""
+    if not jobs_api.valid_name(unit):
+        return None
+    dirs = directions(unit, work_dir)
+    cells: dict[str, dict[str, Any]] = {}
+    for action in config.STUDIO_ACTIONS:
+        row: dict[str, Any] = {}
+        for d in dirs:
+            _job, record = _record(unit, action, d["direction"], work_dir)
+            # Not started: the template's row, so a sweep can count its keys.
+            frames = (record.get("frames") or []) if record is not None \
+                else animate_stage.default_layout(action, unit)
+            row[d["direction"]] = {**animate_stage.cell_summary(frames),
+                                   "exists": record is not None,
+                                   "mirrored": bool((record or {}).get("mirror")),
+                                   "blocked": d["blocked"]}
+        cells[action] = row
+    return {"unit": unit, "actions": list(config.STUDIO_ACTIONS), "directions": dirs,
+            "cells": cells, "locked": curation.views_blocked(unit, work_dir),
+            "max_cells": config.ANIMATE_SWEEP_MAX_CELLS,
+            "states": list(animate_stage.CELL_STATES)}
 
 
 def actions(unit: str, direction: str, work_dir: Path) -> list[dict[str, Any]]:
@@ -86,7 +132,7 @@ def actions(unit: str, direction: str, work_dir: Path) -> list[dict[str, Any]]:
                   else int(animate_stage.phase_plan(name, unit).budget))
         rows.append({"action": name, "verb": row["verb"], "frames": frames,
                      "loop": bool(config.ACTION_PHASES[name]["loop"]),
-                     "clip": matrix_stage.clip_for(config.MATRIX_RIG, name)})
+                     "clip": animate_stage.clip_for(config.ANIMATE_RIG, name)})
     return rows
 
 

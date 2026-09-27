@@ -34,12 +34,10 @@ stage order:
   base is the standing-sprite variant of the same chain
   animate draws every frame of one animation at one direction by hand, from the
     direction's accepted view and the approved keyframes; the approved frames become
-    the cell's finished frames (the Animate tab with buttons)
+    the cell's finished frames (the Animate tab with buttons); --sweep draws the
+    keyframes (then the in-betweens) of several animations as one run
   bakeoff runs one action through both in-between routes on both rigs -> one page
-  matrix renders every selected (action x direction) cell of a unit once its base
-    and that direction's view are accepted: rig -> clip -> pick --phases -> post per cell
   palette installs the project palette (Lospec slug or file) and unit sub-palettes
-  curate accepts / rejects / regenerates a unit's cells and gates (the curation board)
   run chains extract..strip, then render..publish if the GPU is up
 
 the usual one-liners:
@@ -55,7 +53,7 @@ where things live (override with the env vars in anim/config.py):
   assets     game-02's published PNGs and sidecars
 
 the GPU:
-  only `render`, `clip`, `base`, `concept`, `animate`, `bakeoff` and `matrix` touch it,
+  only `render`, `clip`, `base`, `concept`, `animate` and `bakeoff` touch it,
   over HTTP at $COMFYUI_URL
   (default http://host.docker.internal:8188 - ComfyUI runs on the OTHER Docker
   engine, so localhost would not reach it from inside this container)
@@ -109,7 +107,7 @@ def _exit_on_sigterm(signum: int, _frame: object) -> None:
 def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _exit_on_sigterm)
     args = build_parser().parse_args(argv)
-    # The curation board feature: a GPU stage waits for the unit's gates
+    # The base gate: a GPU stage waits for the unit's accepted base
     # (anim/curation.py). One check here rather than one per stage, so a
     # stage that joins the gated set is gated without knowing it. `--force`
     # on the stage's line runs anyway, as the API's 423 says.
@@ -119,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
         reason = curation.gate_for_namespace(args.stage, args)
         if reason:
             print(f"anim {args.stage}: refused - {reason}")
-            print(f"  (--force runs it anyway; `anim curate` shows the board)")
+            print(f"  (--force runs it anyway)")
             return 2
     # The GPU stages book their memory from the shared GPU gatekeeper on their
     # first ComfyUI prompt and give it back here (anim/gpu.py).

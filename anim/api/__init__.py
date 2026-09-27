@@ -1,8 +1,8 @@
 """The pipeline API feature - FastAPI over `work/`, on :8720.
 
 A thin HTTP layer over the same stage functions the `anim` CLI calls, so the
-editor (the web pixel editor feature) and the curation board (the curation
-board feature) drive the same `work/<job>/` files the CLI writes. There is no
+studio (the web pixel editor feature and its Concept / Views / Animate tabs)
+drive the same `work/<job>/` files the CLI writes. There is no
 database: a job IS its directory, a run IS a subprocess of the CLI plus a log
 file, and the project settings are one JSON file.
 
