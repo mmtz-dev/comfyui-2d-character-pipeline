@@ -1410,6 +1410,13 @@ free and works within ~21 GB. The heaviest stage peaks at 20.5 GiB, so it still 
 flag takes effect on recreate:
 `podman-compose -f tools/anim-pipeline/gpu/compose.yml up -d --force-recreate`.
 
+**The spike's TripoSG run** (`spike3d/`, image → 3D mesh) is a GPU batch job outside the
+stages. It runs on rootless Podman + CDI through `spike3d/triposg.sh` (`build` first), and
+books its own lease, profile `anim-triposg` (10 GB seed), after its weights are on disk and
+before the model loads. `--dry-run` checks the input, the GPU and the lease without the
+model. It isn't on the allowlist: a batch job exits, so there's nothing idle to evict. See
+`spike3d/README.md`.
+
 ## Reproducibility
 
 A frame must be re-creatable from its sidecar. Pinned, in order of how easily they drift:

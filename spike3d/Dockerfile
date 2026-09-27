@@ -5,19 +5,21 @@
 # code and MIT weights, ~8 GB VRAM. See RESEARCH.md §1 for why this model and
 # not Hunyuan3D / TRELLIS.2 / Sparc3D.
 #
-# BUILD ON DOCKER DESKTOP. Compiling the CUDA extension needs `nvcc`, which is
-# in the base image; it does NOT need a GPU to be present. So:
+# Built and run with rootless Podman (the GPU runs there, through CDI). Compiling
+# the CUDA extension needs `nvcc`, which is in the base image; it does NOT need a
+# GPU to be present. So:
 #
-#   docker --context desktop-linux compose -f tools/anim-pipeline/spike3d/compose.yml build
+#   tools/anim-pipeline/spike3d/triposg.sh build
 #
-# and only the RUN needs the native daemon. Building ahead of time is what keeps
-# the spike inside its 2-session box - see README.md, session 1 step 1.
+# Building ahead of time is what keeps the spike inside its 2-session box - see
+# README.md, session 1 step 1.
 # =============================================================================
 
 # CUDA 12.4 devel: ships nvcc, which `diso` needs to compile. The A5000's driver
 # (580.159) is well past the CUDA 12.4 floor. A `-runtime` tag would not work -
 # there would be no compiler.
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
+# Fully qualified so Podman doesn't have to resolve a short name.
+FROM docker.io/pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
 
 # Ampere / A5000 is sm_86. Pinning the arch list keeps the diso build to one
 # target instead of compiling every architecture PyTorch knows about, which is
@@ -98,6 +100,9 @@ RUN python -c "import diso, trimesh, pymeshlab, diffusers; print('diso/trimesh/p
 
 COPY run_triposg.py /opt/spike3d/run_triposg.py
 COPY glb_to_obj.py /opt/spike3d/glb_to_obj.py
+# The shared GPU gatekeeper's client (synced from ~/Repos/gpu-gatekeeper); run_triposg.py
+# imports it from its own directory.
+COPY gpu_lease.py /opt/spike3d/gpu_lease.py
 
 ENV PYTHONPATH=/opt/triposg:/opt/triposg/scripts
 

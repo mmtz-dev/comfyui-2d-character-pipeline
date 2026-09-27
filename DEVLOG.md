@@ -4,6 +4,53 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-27 — spike3d TripoSG moves to rootless Podman and books a GPU lease
+
+**What.** `spike3d/compose.yml` is converted in place from the native Docker daemon
+(`runtime: nvidia`, `label=type:nvidia_container_t`) to rootless Podman + CDI
+(`devices: nvidia.com/gpu=all`, `label=disable`), like `gpu/compose.yml`. The new wrapper,
+`spike3d/triposg.sh`, builds the image or runs one `podman-compose run --rm triposg ...`.
+`run_triposg.py` now books a lease from the shared GPU gatekeeper (gpu-gatekeeper Feature 7,
+profile `anim-triposg`), and the Dockerfile's base image is fully qualified for Podman.
+
+**Why the lease replaces the hand sequencing.** The compose comments and the runbook told the
+owner to take ComfyUI down before TripoSG and bring it back after, because ~8 GB plus
+ComfyUI's ~14-20 GB doesn't fit the A5000. The gatekeeper does that now: the run waits in its
+queue while the card is full, and the gatekeeper frees an idle ComfyUI to make room. The
+comments and the runbook now say so.
+
+**Where the lease sits.** It is booked after the weights are on disk (the first run downloads
+~8 GB, which must not hold the GPU), marked loaded once the pipeline is on the GPU, and
+released as soon as `generate` returns, before the mesh is exported. It doesn't cap PyTorch
+to the lease (`cap_torch=False`): the 10 GB seed is upstream's 8 GB floor plus margin, not a
+peak measured here, so a cap could crash a run that is merely larger than guessed. The
+gatekeeper learns the real size after three solo runs.
+
+**Why not on the allowlist.** The allowlist is for services that sit idle holding memory. A
+batch job exits when it's done, so there is nothing to evict.
+
+**`--dry-run`.** It checks the input's alpha gate, CUDA and the lease, and puts 128 MiB on the
+GPU, with no weights and no model. It never marks the lease loaded: the gatekeeper learns a
+profile's size from loaded runs, and a dry run's few hundred MB would teach it a size far too
+small. TripoSG's own imports load lazily now, so the dry run and the tests need only numpy,
+Pillow and torch.
+
+**Verified:**
+- **Tests:** `spike3d/test_run_triposg.py` (4 tests, fakes) and the existing 22 pass in the CPU
+  pipeline container.
+- **No real run.** The image isn't built and the weights aren't downloaded (a ~9 GB base image
+  and ~8 GB of weights).
+- **Dry run.** It ran on rootless Podman with CDI, from a stand-in CUDA image (image-cleanup's
+  backend, which has torch) with this directory mounted at `/work`. It saw the A5000 and booked
+  an `anim-triposg` lease (10 GB). It queued behind a clone-studio generation until the
+  gatekeeper freed clone-studio's idle ComfyUI. Then it got the lease, allocated on the GPU,
+  and released the lease.
+- **Cleanup.** That first dry run still marked its lease loaded, so the gatekeeper recorded a
+  0 GB solo run. That record was deleted from `solo_runs`, and the dry run no longer marks
+  loaded.
+
+---
+
 ## 2026-09-26 — GPU stages book memory through the shared GPU gatekeeper
 
 **What.** Every GPU stage now books its memory from the shared GPU gatekeeper

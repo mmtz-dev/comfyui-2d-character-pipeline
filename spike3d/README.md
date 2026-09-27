@@ -33,7 +33,7 @@ Research and licences behind every choice below: **[`RESEARCH.md`](RESEARCH.md)*
 ```
   reference sprite (RGBA, binary alpha, front-facing A-pose)
         │
-        │  TripoSG  ── MIT, MIT weights, ~8 GB VRAM ── NATIVE daemon
+        │  TripoSG  ── MIT, MIT weights, ~8 GB VRAM ── rootless Podman + CDI
         ▼
      knight.glb ──► glb_to_obj.py (trimesh, MIT, CPU) ──► knight.obj
         │
@@ -59,8 +59,11 @@ Research and licences behind every choice below: **[`RESEARCH.md`](RESEARCH.md)*
 ```
 
 Everything runs on **Docker Desktop / CPU** except two GPU steps: TripoSG (`spike3d/compose.yml`)
-and the identity pass (`../gpu/compose.yml`). They are ~8 GB and up to ~20 GB of VRAM, so on the
-24 GB A5000 they **must not run at the same time** — TripoSG is a batch job that exits.
+and the identity pass (`../gpu/compose.yml`), both on rootless Podman + CDI. They are ~8 GB and up
+to ~20 GB of VRAM, so on the 24 GB A5000 they don't fit side by side. The shared GPU gatekeeper
+(`~/Repos/gpu-gatekeeper`) sequences them: a TripoSG run books its memory (profile
+`anim-triposg`) before its model loads, waits in the gatekeeper's queue while the card is full,
+and the gatekeeper frees an idle ComfyUI to make room. TripoSG is a batch job that exits.
 
 ---
 
@@ -68,7 +71,7 @@ and the identity pass (`../gpu/compose.yml`). They are ~8 GB and up to ~20 GB of
 
 | # | Input | Why |
 |---|---|---|
-| 1 | **Start the native daemon**: `sudo systemctl start docker`, then bring ComfyUI up per [`../gpu/README.md`](../gpu/README.md) §2–4. | Needs a real TTY for the password. An agent cannot do it. |
+| 1 | **Bring ComfyUI up** on rootless Podman per [`../gpu/README.md`](../gpu/README.md). | The identity pass needs it; TripoSG runs through `triposg.sh`, no daemon to start. |
 | 2 | **An Adobe account for Mixamo** (free) at <https://www.mixamo.com/>. | The auto-rigger and the clip downloads are behind a login. |
 | 3 | **Download 3 clips as Collada `.dae`** — *without skin*, and **do not** reduce keyframes in Mixamo's UI: a **sword slash**, a **hit reaction**, a **death/fall**. Drop them in `spike3d/mixamo/`. | These are the three actions the anchor gate judges. `.fbx` will not work — `mixamotoopenpose` parses Collada XML only. |
 | 4 | **Decide the Mixamo question** in `RESEARCH.md` §2.2: Adobe's terms say Mixamo content may not be used to train ML models. We are conditioning at inference, not training, and we ship a pixel sprite — but it is your call, knowingly. If the answer is no, §2.3's CC0 route substitutes, at the cost of about a session for Blender retargeting. | It is cheaper to decide now than after the frames exist. |
@@ -91,13 +94,13 @@ cross-compiles for sm_86.
 
 ```bash
 cd /home/workstation/Repos/game-dev/framework-ladder
-docker --context desktop-linux compose -f tools/anim-pipeline/spike3d/compose.yml build
+tools/anim-pipeline/spike3d/triposg.sh build
 ```
 
 Sanity-check the file first if you like — this parses it and starts nothing:
 
 ```bash
-docker --context desktop-linux compose -f tools/anim-pipeline/spike3d/compose.yml config
+podman-compose -f tools/anim-pipeline/spike3d/compose.yml config
 ```
 
 ### Step 2 · CHECKPOINT A — does the skeleton renderer work? (2 min, CPU)
@@ -215,22 +218,20 @@ and three `.dae` files.
 
 ## Session 2 — generate, compare, decide (~2.5 h)
 
-### Step 7 · TripoSG: reference sprite → mesh (20 min, GPU, native daemon)
+### Step 7 · TripoSG: reference sprite → mesh (20 min, GPU, rootless Podman)
 
 ```bash
-# Owner, real TTY - if it is not already running from session 1:
-sudo systemctl start docker
-
-# ComfyUI must NOT be holding VRAM while this runs.
-docker --context docker-default compose -f tools/anim-pipeline/gpu/compose.yml down
-
-docker --context docker-default compose -f tools/anim-pipeline/spike3d/compose.yml \
-  run --rm triposg \
+# No need to stop ComfyUI: the run books its memory from the GPU gatekeeper first and
+# waits in its queue; the gatekeeper frees an idle ComfyUI to make room.
+tools/anim-pipeline/spike3d/triposg.sh \
     --image-input /work/in/knight_apose.png \
     --output-path /work/out/knight.glb \
     --obj /work/out/knight.obj \
     --faces 20000 --seed 42
 ```
+
+To check the input, the GPU and the lease without the model or its weights, add `--dry-run`.
+The weights download before the lease is booked, so a download never holds the GPU.
 
 First run downloads ~8 GB of MIT weights to `/mnt/private/AI Data/models/3D Models/TripoSG`;
 later runs reuse them (`--skip-download`). It prints the seed/steps/guidance line — **paste that
@@ -242,12 +243,12 @@ Upload `spike3d/out/knight.obj` at <https://www.mixamo.com/> → Upload Characte
 chin / wrist / elbow / knee / groin markers. If the mesh comes in lying down or absurdly scaled:
 
 ```bash
-docker --context desktop-linux compose -f tools/anim-pipeline/spike3d/compose.yml \
+podman-compose -f tools/anim-pipeline/spike3d/compose.yml \
   run --rm --entrypoint python triposg /opt/spike3d/glb_to_obj.py \
     /work/out/knight.glb /work/out/knight_fixed.obj --rotate-x 90 --center --scale 1.0
 ```
 
-(That one has no GPU in it, so Docker Desktop is fine.)
+(That one has no GPU work in it and books no lease; it only reuses the TripoSG image, which lives in Podman.)
 
 Then apply each downloaded clip to the rigged character and re-export as **Collada `.dae`, without
 skin**.
@@ -279,10 +280,10 @@ canvas by default to prevent it.
 
 ### Step 10 · The shared half — identity pass and post-chain (40 min, GPU)
 
-TripoSG has exited, so bring ComfyUI back:
+ComfyUI should still be up (bring it up per `../gpu/README.md` if not):
 
 ```bash
-docker --context docker-default compose -f tools/anim-pipeline/gpu/compose.yml up -d
+podman-compose -f tools/anim-pipeline/gpu/compose.yml up -d
 ```
 
 Then, per action, **the same commands the 2D chain uses** — same workflow, same seed, same
@@ -354,10 +355,13 @@ adopted, not after.**
 | `test_render_openpose.py` | 22 tests, no GPU and no Mixamo needed. Includes the regression guard that our output is byte-identical to a direct rtmlib call. |
 | `dae_to_joints.py` | Mixamo `.dae` → COCO-18 joints JSON. Loads the vendored `mixamotoopenpose` with its module-level CLI surgically removed (it calls `parse_args()` at import). |
 | `make_strip.py` | N skeleton cells → one 1216×320 strip. A stand-in for `anim strip` while that is a scaffold; same geometry contract. |
-| `run_triposg.py` | TripoSG inference with the non-commercial BRIA remover designed out. Refuses non-RGBA input rather than falling back. |
+| `run_triposg.py` | TripoSG inference with the non-commercial BRIA remover designed out. Refuses non-RGBA input rather than falling back. Books a GPU gatekeeper lease (`anim-triposg`) around the model; `--dry-run` checks input, GPU and lease only. |
+| `test_run_triposg.py` | The lease wiring, with fakes: booked after the weights, marked loaded after the model load, released before export. |
+| `triposg.sh` | The run wrapper: `build`, or one `podman-compose run --rm triposg ...`. |
+| `gpu_lease.py` | The GPU gatekeeper's client, synced from `~/Repos/gpu-gatekeeper` (`scripts/sync-client.sh`). Edit it there. |
 | `glb_to_obj.py` | GLB → OBJ for Mixamo, via `trimesh`. This is why no Blender image is needed. |
-| `compose.yml` | TripoSG on the **native daemon** — `runtime: nvidia`, SELinux label, mirroring `../gpu/compose.yml`. Validated with `compose config`. |
-| `Dockerfile` | The TripoSG image. Builds on Docker Desktop (compiling needs `nvcc`, not a GPU). Lints clean under `docker build --check`. |
+| `compose.yml` | TripoSG on **rootless Podman + CDI** (`devices: nvidia.com/gpu=all`, `label=disable`), mirroring `../gpu/compose.yml`. Validated with `podman-compose config`. |
+| `Dockerfile` | The TripoSG image. Builds with Podman (compiling needs `nvcc`, not a GPU). |
 | `compare.html` | The side-by-side deliverable page. Placeholders until frames exist. |
 | `publish_compare.sh` | Copies frames + page to `~/.cache/claude/visuals/` and prints the LAN URL. Deletes before copying — the server pins a file after its first request. |
 | `NOTICE-3d.md` | Third-party attribution carried by this spike. |
@@ -367,9 +371,8 @@ adopted, not after.**
 
 ## Rules this spike does not bend
 
-- **Docker Desktop (`desktop-linux`) for everything** except the two GPU services. Never
-  `docker context use`. The native daemon is targeted explicitly, per command, and only the owner
-  starts it.
+- **Docker Desktop (`desktop-linux`) for everything** except the two GPU services, which run on
+  rootless Podman + CDI. Never the native Docker daemon, never `docker context use`.
 - **Commercially usable licences only.** No `briaai/RMBG-1.4`, no Hunyuan3D, no Sparc3D, no SMPL.
 - **One renderer for both arms.** If the 2D chain's conditioning images change how they are drawn,
   `render_openpose.py` changes with them, or the comparison is void.
