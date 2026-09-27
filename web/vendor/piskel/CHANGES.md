@@ -27,6 +27,23 @@ shows the keyframe phase (`wind-up`, `action`, ...) beside it. No behaviour
 changes when no provider is set. Styling lives in the shell
 (`web/src/studio.css`), not in upstream's CSS.
 
+### `src/js/service/pensize/PenSizeService.js` — a 128 px ceiling, stepped shortcuts
+
+`MAX_PENSIZE` 32 -> 128 (the studio edits 768 px attempts, where upstream's
+sizes are specks), and `[` / `]` walk a table (every size to 8, fours to 32,
+sixteens to 128) instead of +-1. Adds `getMaxPenSize()` for the controller.
+
+### `src/templates/drawing-tools.html` + `src/js/controller/PenSizeController.js` — a size slider
+
+The four `.pen-size-option` dots (1-4 px) are replaced by an
+`<input type="range" class="pen-size-range">` and a `.pen-size-value` "N px"
+label inside the same `.pen-size-container`; the controller drives them
+directly instead of through `pskl.widgets.SizePicker` (which stays, the
+settings panel's grid pickers use it) and blurs the slider after a drag so the
+keyboard shortcuts keep working. Styling lives in the shell
+(`web/src/studio.css`). The brush stays square, and every sized tool (pen,
+eraser, stroke, shapes, dithering, mirror pen) still shares the one size.
+
 ## Not used
 
 `src/index.html` is read for its body markup only (between

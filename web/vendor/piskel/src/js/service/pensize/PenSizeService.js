@@ -2,7 +2,11 @@
   var ns = $.namespace("pskl.service.pensize");
 
   var MIN_PENSIZE = 1;
-  var MAX_PENSIZE = 32;
+  var MAX_PENSIZE = 128;
+  // anim-pipeline: `[` / `]` walk this table rather than +-1, so the 1..128
+  // range is a few presses: every size to 8, then fours to 32, sixteens to 128.
+  var PENSIZE_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 12, 16, 20, 24, 28, 32,
+    48, 64, 80, 96, 112, 128];
 
   /**
    * Service to retrieve and modify the current pen size.
@@ -26,11 +30,19 @@
   };
 
   ns.PenSizeService.prototype.increasePenSize_ = function () {
-    this.setPenSize(this.size + 1);
+    var size = this.size;
+    var next = PENSIZE_STEPS.filter(function (step) { return step > size; })[0];
+    this.setPenSize(next === undefined ? MAX_PENSIZE : next);
   };
 
   ns.PenSizeService.prototype.decreasePenSize_ = function () {
-    this.setPenSize(this.size - 1);
+    var size = this.size;
+    var lower = PENSIZE_STEPS.filter(function (step) { return step < size; });
+    this.setPenSize(lower.length ? lower[lower.length - 1] : MIN_PENSIZE);
+  };
+
+  ns.PenSizeService.prototype.getMaxPenSize = function () {
+    return MAX_PENSIZE;
   };
 
   ns.PenSizeService.prototype.getPenSize = function () {

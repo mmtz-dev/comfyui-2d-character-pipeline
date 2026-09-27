@@ -2,32 +2,22 @@
   <div class="sticky-section-wrap">
     <div class="vertical-centerer">
       <div
-        class="pen-size-container size-picker-container"
-        title="Pen size<br/>from 1 to 4 pixels"
+        class="pen-size-container pen-size-slider"
+        title="Pen size<br/>1 to 128 pixels - [ and ] step it"
         rel="tooltip"
         data-placement="top"
         data-test-id="pen-size-picker"
       >
-        <div
-          class="pen-size-option size-picker-option"
-          data-size="1"
-          data-test-id="pen-size-1"
-        ></div>
-        <div
-          class="pen-size-option size-picker-option"
-          data-size="2"
-          data-test-id="pen-size-2"
-        ></div>
-        <div
-          class="pen-size-option size-picker-option"
-          data-size="3"
-          data-test-id="pen-size-3"
-        ></div>
-        <div
-          class="pen-size-option size-picker-option"
-          data-size="4"
-          data-test-id="pen-size-4"
-        ></div>
+        <input
+          type="range"
+          class="pen-size-range"
+          min="1"
+          max="128"
+          step="1"
+          value="1"
+          data-test-id="pen-size-range"
+        />
+        <span class="pen-size-value" data-test-id="pen-size-value">1 px</span>
       </div>
       <ul
         id="tools-container"

@@ -4,6 +4,29 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-27 — the bigger brushes feature: a 1–128 px pen size slider in the pixel editor
+
+**What.** In the vendored Piskel: `MAX_PENSIZE` 32 → 128 (`PenSizeService.js`), `[` / `]` walk a
+table (every size to 8, fours to 32, sixteens to 128) instead of ±1, and the four 1–4 px size
+dots are a range slider with an "N px" label (`drawing-tools.html`, `PenSizeController.js`,
+styled in `web/src/studio.css`). All three edits are listed in `web/vendor/piskel/CHANGES.md`.
+
+**Why.** The studio edits 768 px attempts, where Piskel's visible sizes (1–4 px) are specks;
+wiping a background or rubbing out an area for inpaint took dozens of strokes. Piskel already
+allowed 32 through `]`, but nothing on screen said so. The owner chose a 128 px maximum, a slider
+over more preset buttons, and bigger shortcut steps at bigger sizes.
+
+**Verified** in Chromium (Playwright container) against the running studio: max 128; `]` from 1
+walks 2…8, 12…32, 48…128 and stops; `[` walks back; the slider sets the size and follows a
+shortcut change; the slider sits above the tool icons at 98 px wide. tsc clean, vitest 129.
+Not measured: how a fast 128 px drag feels (each stamp is 16 384 pixels).
+
+**Not changed.** The brush stays square (the owner's call; a round stamp would be a real change
+to Piskel's drawing code), and every sized tool still shares one size. `SizePicker` stays —
+the settings panel's grid pickers use it.
+
+---
+
 ## 2026-09-27 — spike3d TripoSG moves to rootless Podman and books a GPU lease
 
 **What.** `spike3d/compose.yml` is converted in place from the native Docker daemon

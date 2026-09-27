@@ -297,6 +297,28 @@ body.studio-collapsed .studio-head {
   pointer-events: none;
 }
 
+/* The fork's pen size slider (vendor/piskel/CHANGES.md): 1-128 px in the
+ * space upstream's four size dots took, above the tool icons. */
+.pen-size-container.pen-size-slider {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  width: 88px;
+  padding: 5px;
+}
+.pen-size-slider .pen-size-range {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--highlight-color, var(--studio-gold));
+  cursor: pointer;
+}
+.pen-size-slider .pen-size-value {
+  font: 600 11px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif;
+  color: var(--studio-fg);
+  text-align: center;
+}
+
 /* --- tabs ------------------------------------------------------------- */
 .studio-tabs {
   display: flex;

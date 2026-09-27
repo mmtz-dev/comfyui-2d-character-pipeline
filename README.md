@@ -480,8 +480,12 @@ because upstream's build is three small steps — join the script list, join the
 resolve the `@@include` partials of `index.html` — and [`web/piskel-plugin.mjs`](web/piskel-plugin.mjs)
 does exactly those three with no dependencies, so the shell needs none of upstream's toolchain.
 Every change to the vendored tree is listed in
-[`web/vendor/piskel/CHANGES.md`](web/vendor/piskel/CHANGES.md) (one: a hook that lets the
-timeline tiles carry a text tag); a re-pull is "copy upstream's `src/` over, re-apply that list".
+[`web/vendor/piskel/CHANGES.md`](web/vendor/piskel/CHANGES.md) (two: a hook that lets the
+timeline tiles carry a text tag, and the bigger brushes feature — the pen size is a **slider
+from 1 to 128 px** above the tools instead of upstream's four 1–4 px dots, and `[` / `]` step
+it 1…8, then by 4 to 32, then by 16 to 128; the brush stays square and pen, eraser, stroke,
+shapes and dithering share the one size); a re-pull is "copy upstream's `src/` over, re-apply
+that list".
 
 **The shell** (`web/`, Vite + TypeScript, `web/src/`) boots Piskel and mounts the panel:
 
