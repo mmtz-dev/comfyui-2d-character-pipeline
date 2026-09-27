@@ -178,6 +178,10 @@ class ComfyClient:
 
     def post_prompt(self, workflow: dict[str, Any],
                     client_id: str | None = None) -> str:
+        # Book the GPU through the shared gatekeeper before the first prompt of a
+        # GPU stage (anim.gpu; a no-op outside a stage and once the lease is held).
+        from anim import gpu
+        gpu.ensure_lease()
         body: dict[str, Any] = {"prompt": workflow}
         if client_id:
             body["client_id"] = client_id
@@ -235,6 +239,8 @@ class ComfyClient:
                 if status.get("completed") is False and not entry.get("outputs"):
                     pass  # queued but not finished; keep polling
                 else:
+                    from anim import gpu
+                    gpu.loaded()  # a prompt ran, so the model is on the GPU
                     return entry
             if now() - started > timeout_s:
                 raise ComfyError(f"job {prompt_id} did not finish within "

@@ -169,3 +169,39 @@ def audit_script(assets_tree: Path) -> Path:
         pytest.skip("game-02 is not mounted at /game02 - run inside the "
                     "anim-pipeline container")
     return script
+
+
+class FakeLease:
+    def __init__(self, n: int, profile: str, kw: dict) -> None:
+        self.id, self.profile, self.kw = f"L{n}", profile, kw
+        self.gb = 20.0
+        self.guarded = True
+        self.loaded = 0
+        self.released = False
+
+    def mark_loaded(self) -> None:
+        self.loaded += 1
+
+    def release(self) -> None:
+        self.released = True
+
+
+@pytest.fixture(autouse=True)
+def gatekeeper(monkeypatch):
+    """The shared GPU gatekeeper, faked for every test so a GPU stage run from a
+    test never books the real card (anim/gpu.py). `.leases` lists what was booked."""
+    from anim import gpu
+
+    class Fake:
+        leases: list[FakeLease] = []
+
+        def acquire(self, profile, **kw):
+            lease = FakeLease(len(self.leases) + 1, profile, kw)
+            self.leases.append(lease)
+            return lease
+
+    fake = Fake()
+    fake.leases = []
+    monkeypatch.setattr(gpu, "ACQUIRE", fake.acquire)
+    yield fake
+    gpu.release()

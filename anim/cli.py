@@ -121,7 +121,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"anim {args.stage}: refused - {reason}")
             print(f"  (--force runs it anyway; `anim curate` shows the board)")
             return 2
-    return args._run(args)
+    # The GPU stages book their memory from the shared GPU gatekeeper on their
+    # first ComfyUI prompt and give it back here (anim/gpu.py).
+    from anim import gpu
+
+    with gpu.stage(args.stage):
+        return args._run(args)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,58 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-26 — GPU stages book memory through the shared GPU gatekeeper
+
+**What.** Every GPU stage now books its memory from the shared GPU gatekeeper
+(`~/Repos/gpu-gatekeeper`, Feature 6) before its first ComfyUI prompt and releases it when
+the stage ends. The wiring is new `anim/gpu.py` plus three hooks:
+- `cli.main` wraps the stage in `gpu.stage(name)`.
+- `ComfyClient.post_prompt` calls `gpu.ensure_lease()`.
+- `ComfyClient.wait` calls `gpu.loaded()`.
+
+`anim/gpu_lease.py` is the gatekeeper's client, synced in. The profiles, one per model
+family, are `anim-zimage` 14 GB (base), `anim-qwen-edit` 21 GB (render, run, animate), `anim-concept` 21 GB (concept) and `anim-wan` 20 GB (clip, matrix, bakeoff). `compose.yml` sets
+`GPU_GATEKEEPER_URL=http://host.docker.internal:7886` for every service. `gpu/compose.yml`
+raises `--reserve-vram` from 1 to 3 as a fixed cap.
+
+**Why.** The card is shared with clone-studio. Until now the only guard was this API's
+"one GPU stage at a time", which can't see clone-studio's training or generation. A
+render started next to a training run was an OOM twenty minutes in. The gatekeeper queues
+what doesn't fit, frees an idle ComfyUI when a job needs its memory, and never touches a
+running job.
+
+**Choices.**
+- **Hook at the CLI and the client, not in each stage.** Every stage is a CLI process
+  (the API runs `python -m anim <stage>`), and every prompt goes through
+  `ComfyClient.post_prompt`. Two hooks cover all eight GPU stages, the API and a manual
+  `docker compose run anim ...` alike.
+- **Book lazily, on the first prompt.** `run` renders only when ComfyUI is up, and a stage
+  refused by a curation gate never prompts. Neither should hold 21 GB of bookings for CPU
+  work.
+- **One profile per stage, sized for its heaviest model.** `render` runs a Z-Image pose pass
+  and then the Qwen-Edit identity pass in one process. A lease can't grow, so it books the
+  larger one up front.
+- **Fail-open.** An unreachable gatekeeper costs ~5 s, then the stage runs as before.
+- **The API's one-GPU-stage-at-a-time 409 stays.** It is this project's own rule about its
+  one ComfyUI, not about the card.
+
+Nothing here depended on clone-studio's old `/free` calls, so nothing had to be removed.
+clone-studio dropped them in the same change.
+
+**Verified.** 737 passed, 4 skipped (`docker compose run --rm anim-pipeline pytest`),
+including `tests/test_gpu_lease.py` with a fake gatekeeper:
+- one lease per stage, booked on the first prompt
+- marked loaded once
+- released at the end and on SystemExit (Cancel)
+- CPU stages and code outside a stage book nothing
+- `cli.main` wraps the stage
+- `STAGE_PROFILES` matches `runs.GPU_STAGES`
+
+A conftest autouse fixture fakes the gatekeeper for every test, so no test can book the
+real card.
+
+---
+
 ## 2026-09-26 — Animate prompts: the costume without the camera, and the avoid list said aloud
 
 **What.** Every Animate frame's prompt now (1) drops camera words from the unit's description

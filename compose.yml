@@ -26,6 +26,10 @@ x-anim-common: &anim-common
     # Docker Desktop container reaches a port published on the host, which is
     # why gpu/compose.yml binds 0.0.0.0:8188 and not 127.0.0.1:8188.
     - COMFYUI_URL=${COMFYUI_URL:-http://host.docker.internal:8188}
+    # The shared GPU gatekeeper (~/Repos/gpu-gatekeeper). A GPU stage books its
+    # memory there before its first prompt (anim/gpu.py). Same host.docker.internal
+    # route as ComfyUI; a Podman container would use host.containers.internal.
+    - GPU_GATEKEEPER_URL=${GPU_GATEKEEPER_URL:-http://host.docker.internal:7886}
     - ANIM_CAPTURE_DIR=/work/capture
     - ANIM_WORK_DIR=/work/work
     - ANIM_WORKFLOW_DIR=/work/gpu/workflows

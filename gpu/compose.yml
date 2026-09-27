@@ -127,11 +127,18 @@ services:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
       # --extra-model-paths-config  : pick up the shared read-only checkpoints.
-      # --reserve-vram 1            : leave ~1 GB for the display compositor on
-      #                               the 24 GB A5000 (upstream pipeline's rule).
+      # --reserve-vram 3            : the fixed cap (gpu-gatekeeper Feature 6).
+      #                               ComfyUI keeps 3 GB of the 24 GB card free and
+      #                               offloads rather than grow past ~21 GB. The
+      #                               heaviest measured stage (Qwen-Edit) peaks at
+      #                               20.5 GiB, so it still fits; the 3 GB covers
+      #                               other processes' CUDA contexts and a small
+      #                               job booked through the gatekeeper. Was 1
+      #                               (display compositor), which 3 still covers.
+      #                               Applies on recreate: up -d --force-recreate.
       # --disable-auto-launch       : headless, never try to open a browser.
       # The init script appends its own --basedir to this variable.
-      - COMFY_CMDLINE_EXTRA=--extra-model-paths-config /extra_model_paths.yaml --reserve-vram 1 --disable-auto-launch
+      - COMFY_CMDLINE_EXTRA=--extra-model-paths-config /extra_model_paths.yaml --reserve-vram 3 --disable-auto-launch
       # Ampere (A5000, sm_86) has NO fp8 tensor cores. Do NOT add
       # `--fast fp8_matrix_mult` here: it is a no-op at best on this card.
       # The speed path is the INT8/INT4 weights in models.lock.

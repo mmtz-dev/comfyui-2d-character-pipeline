@@ -1214,6 +1214,7 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | Variable | Default | What it is |
 |---|---|---|
 | `COMFYUI_URL` | `http://host.docker.internal:8188` | the GPU image service. From the host or the Mac: `http://192.168.1.158:8188` |
+| `GPU_GATEKEEPER_URL` | `http://host.docker.internal:7886` | the shared GPU gatekeeper a GPU stage books its memory from (see "The shared GPU gatekeeper"). A Podman container would use `http://host.containers.internal:7886` |
 | `ANIM_CAPTURE_DIR` | `/work/capture` | the watched drop folder for filmed clips |
 | `ANIM_WORK_DIR` | `/work/work` | per-job scratch; everything regenerable |
 | `ANIM_WORKFLOW_DIR` | `/work/gpu/workflows` | the API-format workflows `render`, `clip`, `base` and `concept` POST |
@@ -1372,6 +1373,42 @@ Do not reintroduce a hardcoded URL. `grep -rn '127.0.0.1:8000' .` should stay em
   `nvidia-cdi-refresh.service`), which is why it needs no daemon and no sudo.
 - Everything else stays on Docker Desktop. Nothing runs natively on the host — the host
   has Python 3.14 with no pip.
+
+## The shared GPU gatekeeper
+
+The A5000 is shared with clone-studio and other projects. Every GPU stage (`base`,
+`render`, `run`, `concept`, `animate`, `clip`, `matrix`, `bakeoff`) books its memory from
+the shared GPU gatekeeper (`~/Repos/gpu-gatekeeper`, status page
+http://192.168.1.158:7886) before its first ComfyUI prompt, and gives it back when the
+stage ends, including on Cancel. While the card is full, the stage prints
+`GPU: booking ...` and waits in the gatekeeper's queue instead of running out of memory
+halfway through. The gatekeeper frees an idle ComfyUI (this one or clone-studio's, idle for
+10 minutes) when a waiting job needs its memory, and it never touches a running one.
+This ComfyUI is on its allowlist as `anim-pipeline-comfyui`.
+
+| Stage | Profile | Seed size | Why that size |
+|---|---|---|---|
+| `base` | `anim-zimage` | 14 GB | Z-Image Turbo INT8 + ControlNet, ~12.7 GB seen |
+| `render`, `run`, `animate` | `anim-qwen-edit` | 21 GB | Qwen-Image-Edit INT4 + 7B text encoder, 20.5 GiB in the bake-off |
+| `concept` | `anim-concept` | 21 GB | Z-Image passes (13.8 GB measured) or the Qwen-Edit view pass; its own profile so light runs don't shrink `anim-qwen-edit` |
+| `clip`, `matrix`, `bakeoff` | `anim-wan` | 20 GB | Wan 2.2 Fun-Control 5B bf16, 18.9 GiB in the bake-off |
+
+The seed sizes live in the gatekeeper's `config/gatekeeper.toml`. It learns the real ones
+from runs: a stage reports "loaded" once its first prompt has finished. The wiring is in
+`anim/gpu.py`:
+- `anim.cli.main` wraps the stage.
+- `ComfyClient.post_prompt` books the lease on the first prompt, so `run` books nothing
+  for its CPU steps.
+- `ComfyClient.wait` marks it loaded.
+
+`anim/gpu_lease.py` is a copy of the gatekeeper's client, synced with its
+`scripts/sync-client.sh`, so edit it there. If the gatekeeper is down, a stage waits ~5 s
+and runs without a booking. Scripts that use `ComfyClient` outside a stage book nothing.
+
+**Fixed cap:** `gpu/compose.yml` starts ComfyUI with `--reserve-vram 3`, so it keeps 3 GB
+free and works within ~21 GB. The heaviest stage peaks at 20.5 GiB, so it still fits. The
+flag takes effect on recreate:
+`podman-compose -f tools/anim-pipeline/gpu/compose.yml up -d --force-recreate`.
 
 ## Reproducibility
 
