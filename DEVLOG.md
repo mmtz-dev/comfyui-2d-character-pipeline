@@ -4,6 +4,35 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-09-27 — the view keys feature: start and end are the view
+
+**What.** A keyframe can now be a **copy** of its direction's accepted view — a fourth
+`draw_from` beside view / keys / both, no GPU, the view's bytes as a new attempt. An action's
+**start** keyframe, and its **end** unless the action loops, are **view keys**: their default
+draw-from is `copy` until they have one, so Generate this frame, Generate all and a sweep copy
+them instead of rendering. The copy lands **to review**. A frame whose copy was made from a
+view since re-accepted is reported **stale** (`stale` on each frame in `GET /animate/…`, a mark
+on the tab), never re-copied for you. The Draw-from menu offers "a copy of the view" on any
+keyframe. On for all five actions via `view_keys` in `config.ACTION_PHASES`; `timing.json`
+turns it off per action or per unit, the same way it overrides budgets. Vocabulary in
+`CONTEXT.md` (**copy**, **view key**).
+
+**Why.** The owner found the start and end poses often came back looking just like the base
+directional sprite anyway — a GPU render (and a review) spent reproducing a picture that
+already exists and is already accepted. Decisions, from a grilling session:
+- *A copy, not a tighter prompt.* An exact copy is free and cannot drift; a render "close to
+  the view" still can.
+- *To review, not approved.* The view was accepted as a view, not as this frame; approving a
+  frame stays a person's act, as everywhere else on the tab.
+- *Loops copy the start only.* A loop's end flows back into its start; copying both would
+  play the same picture twice at the seam — a visible hitch.
+- *Once copied, the next press draws.* Otherwise rejecting a copy and pressing Generate all
+  would copy it again, forever.
+- *Stale is reported, not fixed.* Matches the glossary's rule for everything else stale.
+
+Tests: 695 passed, 4 skipped (Python; +3); web 89 passed (+1).
+---
+
 ## 2026-09-27 — the pipeline tabs feature: five tabs become three ([#320](http://192.168.1.158:8700/work_packages/320))
 
 **What.** The studio panel's five tabs — Pipeline, Board, Concept, Animate, Matrix — became

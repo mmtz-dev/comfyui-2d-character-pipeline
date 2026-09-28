@@ -180,6 +180,7 @@ def state(unit: str, action: str, direction: str, work_dir: Path) -> dict[str, A
 
     base = f"/animate/{unit}/{name}/{direction}"
     frames = record["frames"]
+    view_keys = animate_stage.view_keys(record)
     loop = bool(record.get("loop"))
     rows: list[dict[str, Any]] = []
     for position, frame in enumerate(frames):
@@ -200,7 +201,10 @@ def state(unit: str, action: str, direction: str, work_dir: Path) -> dict[str, A
                 name, frames, position, loop=loop, unit=unit),
             "default_prompt": animate_stage.default_prompt(name, frames, position, loop=loop,
                                                            unit=unit),
-            "draw_from": animate_stage.default_draw_from(frame),
+            "draw_from": animate_stage.default_draw_from(frame, view_keys),
+            "view_key": bool(frame.get("key")) and frame.get("phase") in view_keys,
+            "stale": animate_stage.copy_stale(current_row,
+                                              reference["sha256"] if reference else None),
             "before": _neighbour(frames, prev), "after": _neighbour(frames, nxt),
             "default_skeleton_frame": default_frame,
             "skeleton_frame": frame.get("skeleton_frame"),

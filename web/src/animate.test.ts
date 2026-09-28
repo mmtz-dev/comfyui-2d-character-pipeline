@@ -48,7 +48,7 @@ function frames(statuses: FrameStatus[], keys = [0, 2, 6, 9, 11]): AnimateFrame[
       current: pictured ? 0 : null,
       verdict: status === "approved" || status === "rejected" ? { state: status, index: 0, sha256: "x", at: "t" } : null,
       prompt: "pose", default_prompt: "pose", draw_from: key ? "view" : "keys",
-      before: null, after: null, default_skeleton_frame: i * 3, skeleton_frame: null,
+      view_key: false, stale: false, before: null, after: null, default_skeleton_frame: i * 3, skeleton_frame: null,
       candidates: pictured ? [attempt(0)] : [], hidden_count: 0,
       game_url: pictured ? `/animate/u/attack/s180/game/f${i + 1}.png` : null,
     };
@@ -198,6 +198,16 @@ describe("draw from", () => {
     expect(drawFromBlocked(noView, row[2]!, "view", false)).toBe("the left view is pending");
     expect(drawFromBlocked(state(row, { locked: "no base" }), row[2]!, "view", false)).toBe("no base");
   });
+
+  it("a copy is the view alone, keyframes only, never with the skeleton", () => {
+    const row = frames(Array(12).fill(E));
+    expect(imagesFor(row[0]!, "copy", true)).toEqual(["view"]);
+    expect(drawFromBlocked(state(row), row[0]!, "copy", true)).toBeNull();
+    expect(drawFromBlocked(state(row), row[1]!, "copy", false)).toMatch(/only a keyframe can be a copy/);
+    const noView = state(row, { reference: null, reference_error: "the left view is pending" });
+    expect(drawFromBlocked(noView, row[0]!, "copy", false)).toBe("the left view is pending");
+    expect(drawFromText(state(row), row[0]!, "copy", true)).toMatch(/view itself, copied .* no GPU/);
+  });
 });
 
 describe("the request", () => {
@@ -277,5 +287,7 @@ describe("mirror", () => {
       .toBe("mirror of s0 f03:02");
     expect(attemptOrigin(attempt(1, { draw_from: "keys", skeleton: { frame: 14, default_frame: 12, frames: 37, fps: 24, time: 0.5, clip: "c", rig: "r" } })))
       .toBe("from keys + skeleton 14");
+    expect(attemptOrigin(attempt(1, { source: "copy", draw_from: "copy", copy: { view: "left", sha256: "x" } })))
+      .toBe("copy of the left view");
   });
 });

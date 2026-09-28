@@ -98,7 +98,14 @@ animation; one with no keyframes is not.
 
 **draw from** — what a frame attempt is drawn from, besides its skeleton: the **view** (the
 direction's accepted view), the **keys** (the approved keyframes either side of the frame), or
-**both**.
+**both**. A fourth answer, **copy**, is not a drawing at all: the frame's picture *is* the
+direction's accepted view, unchanged. Only a keyframe can be a copy.
+
+**view key** — a keyframe whose picture is a **copy** of its direction's view, because at that
+moment the character stands exactly as the view shows. By default an action's start keyframe is
+a view key, and so is its end unless the action loops (a loop's end must flow back into its
+start, not repeat it). A view key is still judged like any frame: it arrives *to review*, and it
+goes **stale** if the view it copied is re-accepted.
 
 ## Batch words
 

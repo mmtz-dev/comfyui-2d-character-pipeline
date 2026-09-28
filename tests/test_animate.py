@@ -365,7 +365,7 @@ def test_batch_all_draws_the_keys_then_stops(work_dir, capsys):
                                    client=comfy.ComfyClient(fake.url), workflow_dir=WORKFLOWS,
                                    work_dir=work_dir)
     assert result["cells"] == {"done": 5, "failed": 0, "blocked": 0, "of": 5}
-    assert len(fake.prompts) == 5
+    assert len(fake.prompts) == 3, "Start and End are view keys: copies, no GPU"
     _job, record = an.open_job(UNIT, "attack", FRONT, work_dir)
     assert [an.frame_status(f) for f in record["frames"]].count("review") == 5
     assert all(an.frame_status(f) == "empty" for f in record["frames"] if not f["key"])
@@ -387,6 +387,67 @@ def test_batch_all_draws_the_keys_then_stops(work_dir, capsys):
     inbetween = record["frames"][1]["candidates"][0]
     assert inbetween["draw_from"] == "keys" and [i["role"] for i in inbetween["images"]] == [
         "before", "after"]
+
+
+# ---------------------------------------------------------------------------
+# The view keys feature: start (and a one-shot's end) is a copy of the view
+# ---------------------------------------------------------------------------
+def test_which_keyframes_are_view_keys(tmp_path):
+    assert config.view_key_phases("attack") == ("start", "end")
+    assert config.view_key_phases("jump") == ("start", "end")
+    for loop in ("idle", "walk", "run"):
+        assert config.view_key_phases(loop) == ("start",), f"{loop}'s end flows into its start"
+    assert config.view_key_phases("hit") == ()
+    path = tmp_path / "timing.json"
+    path.write_text(json.dumps({"attack": {"view_keys": False},
+                                "units": {"hound": {"walk": {"view_keys": False}},
+                                          "knight": {"attack": {"view_keys": True}}}}))
+    assert config.view_key_phases("attack", timing_file=path) == ()
+    assert config.view_key_phases("attack", slug="knight", timing_file=path) == ("start", "end")
+    assert config.view_key_phases("walk", slug="hound", timing_file=path) == ()
+    assert config.view_key_phases("walk", timing_file=path) == ("start",)
+
+
+def test_default_draw_from_copies_a_view_key_once():
+    start = an.frame_row("f01", key=True, phase="start", at=0.0)
+    action = an.frame_row("f02", key=True, phase="action", at=0.5)
+    between = an.frame_row("f03", key=False, phase=None, at=0.7)
+    keys = ("start", "end")
+    assert an.default_draw_from(start, keys) == "copy"
+    assert an.default_draw_from(start) == "view", "view keys off"
+    assert an.default_draw_from(action, keys) == "view"
+    assert an.default_draw_from(between, keys) == "keys"
+    start["candidates"] = [{"index": 0, "source": an.COPY_SOURCE}]
+    assert an.default_draw_from(start, keys) == "view", "it has its copy; the next press draws"
+    start["candidates"][0]["file_deleted"] = "x"
+    assert an.default_draw_from(start, keys) == "copy"
+
+
+def test_a_view_key_is_the_view_to_review(work_dir):
+    _base(work_dir)
+    view = an.reference(UNIT, FRONT, work_dir)
+    rows, fake = _generate(work_dir, "start")
+    assert fake.prompts == [], "a copy is no GPU"
+    (row,) = rows
+    assert row["source"] == an.COPY_SOURCE and row["draw_from"] == "copy"
+    assert row["copy"] == {"view": view["view"], "sha256": view["sha256"]}
+    _job, record = an.open_job(UNIT, "attack", FRONT, work_dir)
+    frame = record["frames"][0]
+    assert an.frame_status(frame) == "review", "copied, never approved for you"
+    path = Job.open(an.job_name(UNIT, "attack", FRONT), work_dir).root / an.ATTEMPTS_DIR / row["file"]
+    assert path.read_bytes() == Path(view["path"]).read_bytes()
+    assert not an.copy_stale(row, view["sha256"])
+    assert an.copy_stale(row, "0" * 64), "the view was re-accepted since"
+    assert not an.copy_stale({"source": "animate"}, "0" * 64)
+    # Rejected, the next press draws it from the view rather than copying again.
+    an.judge(UNIT, "attack", FRONT, "start", "rejected", work_dir=work_dir)
+    rows, fake = _generate(work_dir, "start")
+    assert rows[0]["draw_from"] == "view" and len(fake.prompts) == 1
+    # Any keyframe can be a copy by hand; an in-between cannot.
+    rows, fake = _generate(work_dir, "action", draw_from="copy")
+    assert rows[0]["source"] == an.COPY_SOURCE and fake.prompts == []
+    with pytest.raises(ValueError, match="only a keyframe"):
+        _generate(work_dir, 2, draw_from="copy")
 
 
 def test_a_batch_blocks_a_frame_whose_keys_are_not_approved(work_dir):
@@ -615,6 +676,8 @@ def test_get_animate_before_and_after(api, work_dir):
         1, 3, 7, 10, 12]
     assert empty["frames"][2]["label"] == "Wind-up" and empty["frames"][2]["draw_from"] == "view"
     assert empty["frames"][3]["draw_from"] == "keys"
+    assert [f["position"] for f in empty["frames"] if f["view_key"]] == [1, 12]
+    assert empty["frames"][0]["draw_from"] == empty["frames"][11]["draw_from"] == "copy"
     assert empty["frames"][3]["before"]["label"] == "Wind-up" and empty["frames"][3]["after"]["label"] == "Action"
     assert empty["counts"]["empty"] == 12 and empty["next_step"]["step"] == "keys"
     assert [c["direction"] for c in empty["compass"]] == an.side_directions()
@@ -637,6 +700,12 @@ def test_get_animate_before_and_after(api, work_dir):
     assert wind["game_url"].startswith("/animate/knight/attack/s270/game/f03.png")
     assert row["mirror"]["partner"] is None
     assert api.get("/animate/knight/attack/s180").json()["mirror"]["partner"] == "s0"
+    _generate(work_dir, "start")
+    start = api.get("/animate/knight/attack/s270").json()["frames"][0]
+    assert start["status"] == "review" and start["stale"] is False
+    assert start["draw_from"] == "view", "it has its copy"
+    assert start["candidates"][0]["rendered"] and start["game_url"]
+    assert api.get(start["candidates"][0]["url"]).status_code == 200
 
 
 def test_game_route_renders_the_current_attempt(api, work_dir, palette, monkeypatch):
@@ -670,6 +739,8 @@ def test_generate_maps_onto_the_stages_flags(api, work_dir):
                     json={"batch": "some"}).status_code == 400
     assert api.post("/animate/knight/attack/s270/generate",
                     json={"frame": "f03", "draw_from": "x"}).status_code == 400
+    copy = api.post("/animate/knight/attack/s270/generate", json={"frame": "2", "draw_from": "copy"})
+    assert copy.status_code == 400 and "only a keyframe" in copy.json()["detail"]
     assert api.post("/animate/knight/attack/s180/generate",
                     json={"frame": "f03"}).status_code == 400, "no accepted left view"
 
@@ -793,7 +864,9 @@ def test_a_sweep_draws_keys_across_cells_and_keeps_the_gate(work_dir, capsys):
     assert status["attack:s180"]["status"] == "blocked"
     assert "no left view" in status["attack:s180"]["reason"]
     walk_keys = sum(1 for f in an.default_layout("walk", UNIT) if f["key"])
-    assert len(fake.prompts) == 5 + walk_keys, "keys only, both front cells"
+    # Keys only, both front cells - less the view keys, which are copies:
+    # attack's start and end, walk's start (a loop's end is drawn).
+    assert len(fake.prompts) == (5 - 2) + (walk_keys - 1), "keys only, both front cells"
     out = capsys.readouterr().out
     assert "[3/3] attack:s180 blocked" in out and "[1/5]" not in out, "cells, not frames"
     # The in-betweens wait for the keys, cell by cell.

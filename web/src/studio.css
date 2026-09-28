@@ -733,6 +733,7 @@ body.studio-collapsed .studio-head {
 .animate-chip.s-review { background: rgba(240, 192, 112, 0.15); color: var(--studio-gold); }
 .animate-chip.s-approved { background: rgba(143, 211, 165, 0.15); color: var(--studio-ok); }
 .animate-chip.s-rejected { background: rgba(240, 128, 128, 0.15); color: var(--studio-bad); }
+.animate-chip.s-stale { border: 1px dashed var(--studio-gold); color: var(--studio-gold); }
 .animate-legend { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 11px; color: var(--studio-muted); }
 .animate-key-note { color: var(--studio-gold); }
 .animate-spin {

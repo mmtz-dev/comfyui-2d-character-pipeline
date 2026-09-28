@@ -192,6 +192,7 @@ anim pick knight_attack --no-phases     # the 2–6 key-pose picker instead
   `{"attack": {"budget": 10}}` changes the budget and keeps the split — and a
   `"units": {"hound": {"run": {…}}}` block overrides per unit. Keys may be the studio name or the
   pipeline verb (`attack` ↔ `strike`; `config.STUDIO_ACTIONS` also names each rig's clip).
+  `"view_keys": false` turns off the Animate tab's view keys for that action or unit (below).
 - **Without `--phases`** an existing job's `picks.json` is byte-for-byte what it was (a golden
   file in `tests/fixtures/` pins it). The bake-off's two routes now go through the same picker
   with `spread="even"` — the phase labels and timing, the frames the owner judged.
@@ -820,10 +821,20 @@ keyframe's phase (`wind-up`).
 - **Draw from.** `view` — the direction's own accepted view. `keys` — the two nearest keyframes
   either side of the frame (a cycle wraps round), which must both be **approved**; otherwise the
   frame is refused with the reason, before any GPU call. `both` — the view and the two keys.
-  Keyframes default to the view, in-betweens to the keys; overridable per frame and recorded
+  `copy` — not a drawing: the keyframe's picture *is* the view, byte for byte, no GPU (keyframes
+  only). Keyframes default to the view, in-betweens to the keys; overridable per frame and recorded
   per attempt with the images in the order Qwen-Image-Edit-2509 saw them and their hashes. The
   skeleton, when ticked, is the last image; Qwen takes three, so `both` + skeleton is refused
   rather than silently dropping one.
+- **View keys** (the view keys feature). An action's **start** keyframe — and its **end**, unless
+  the action loops — defaults to `copy`, because the character starts (and a one-shot ends)
+  standing just as the view shows. Generate this frame, Generate all and a sweep all copy it,
+  so those keys cost no GPU. The copy arrives **to review**, never approved for you. Once a frame
+  has a copy the next press draws it from the view, so rejecting the copy and pressing again
+  gets a real drawing. A loop's end is drawn, so the cycle flows back into its start rather than
+  holding on two identical frames. A copy of a view that has since been re-accepted shows a
+  **stale** mark; it is not replaced for you. On for every action (`view_keys` in
+  `config.ACTION_PHASES`); `timing.json` turns it off per action or per unit.
 - **The pose slider** scrubs the rig clip the tab rigs for the action
   (`config.STUDIO_ACTIONS`, `config.ANIMATE_RIG` — the Quaternius UAL's `Sword_Attack` for attack)
   at 24 fps, posed at the direction's yaw, the skeleton re-drawn live (CPU, cached under
@@ -1277,8 +1288,8 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 692 passed, 4 skipped (2026-09-27)
-cd web && npm test                                  # 88 passed in 7 files - the editor panel's pure parts
+docker compose run --rm anim-pipeline pytest        # 695 passed, 4 skipped (2026-09-27)
+cd web && npm test                                  # 89 passed in 7 files - the editor panel's pure parts
 ```
 
 No GPU, no model download, no network. The GPU is replaced by a threaded fake

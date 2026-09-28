@@ -212,7 +212,7 @@ async function sendJSON<T>(method: string, path: string, body: unknown): Promise
 export const listUnits = async () => (await getJSON<{ units: string[] }>("/units")).units;
 
 // --- the concept generation feature ------------------------------------------
-export type AttemptSource = "txt2img" | "upload" | "existing" | "img2img" | "edit" | "views" | "animate" | "mirror";
+export type AttemptSource = "txt2img" | "upload" | "existing" | "img2img" | "edit" | "views" | "animate" | "mirror" | "copy";
 export type ConceptOp = "txt2img" | "views" | "img2img" | "edit";
 export type ModelFamily = "zimage" | "qwen-edit" | "wan";
 
@@ -266,6 +266,8 @@ export interface Attempt {
   images?: AnimateImage[];
   skeleton?: AnimateSkeleton | null;
   mirror?: { direction: string; frame: string; ref: string; sha256: string; how: string } | null;
+  /** The view keys feature: a copy of the direction's view, which view and its hash. */
+  copy?: { view: string; sha256: string } | null;
 }
 
 export interface ConceptView {
@@ -492,7 +494,7 @@ export async function cancelRun(id: string): Promise<{ run: RunRecord } | { refu
 // --- the animate tab feature -------------------------------------------------
 /** view = the direction's accepted view; keys = the approved keyframes either
  * side of the frame; both = the view and the two keys. */
-export type DrawFrom = "view" | "keys" | "both";
+export type DrawFrom = "view" | "keys" | "both" | "copy";
 export type FrameStatus = "empty" | "generating" | "review" | "approved" | "rejected";
 export type Batch = "all" | "keys" | "rejected" | "inbetweens";
 
@@ -536,6 +538,10 @@ export interface AnimateFrame {
   prompt: string;
   default_prompt: string;
   draw_from: DrawFrom;
+  /** The view keys feature: a keyframe whose picture is, by default, a copy of the view. */
+  view_key: boolean;
+  /** Its picture is a copy of a view that has since been re-accepted. */
+  stale: boolean;
   before: FrameNeighbour | null;
   after: FrameNeighbour | null;
   default_skeleton_frame: number | null;

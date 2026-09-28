@@ -20,6 +20,9 @@ import type {
 } from "./api";
 import { COUNT_MAX, seedFor } from "./concept";
 
+/** The view keys feature: why a copied frame carries a "stale" mark. */
+export const STALE_COPY = "a copy of an earlier view - the view has been re-accepted since. Copy it again, draw it, or keep it; nothing is replaced for you.";
+
 export const STATUS_TEXT: Record<FrameStatus, string> = {
   empty: "empty",
   generating: "generating…",
@@ -213,6 +216,7 @@ export function batchTargets(frames: AnimateFrame[], batch: Batch): number[] {
 // --- draw from -------------------------------------------------------------------
 /** The images a draw-from sends, in order, as roles. */
 export function imagesFor(frame: AnimateFrame, drawFrom: DrawFrom, skeleton: boolean): string[] {
+  if (drawFrom === "copy") return ["view"];
   const roles: string[] = [];
   if (drawFrom === "view" || drawFrom === "both") roles.push("view");
   if (drawFrom === "keys" || drawFrom === "both") {
@@ -228,7 +232,8 @@ export function imagesFor(frame: AnimateFrame, drawFrom: DrawFrom, skeleton: boo
 export function drawFromBlocked(state: AnimateState, frame: AnimateFrame, drawFrom: DrawFrom,
                                 skeleton: boolean): string | null {
   if (state.locked) return state.locked;
-  if ((drawFrom === "view" || drawFrom === "both") && !state.reference) {
+  if (drawFrom === "copy" && !frame.key) return `${frame.label} is an in-between; only a keyframe can be a copy of the view`;
+  if (drawFrom !== "keys" && !state.reference) {
     return state.reference_error ?? `no accepted ${viewLabel(state.view)} view to draw from`;
   }
   if (drawFrom === "keys" || drawFrom === "both") {
@@ -246,6 +251,7 @@ export function drawFromBlocked(state: AnimateState, frame: AnimateFrame, drawFr
 
 /** "image1 the left view, image2 Wind-up, image3 Action, image4 skeleton" */
 export function drawFromText(state: AnimateState, frame: AnimateFrame, drawFrom: DrawFrom, skeleton: boolean): string {
+  if (drawFrom === "copy") return `the ${viewLabel(state.view)} view itself, copied as this frame's picture - no GPU`;
   return imagesFor(frame, drawFrom, skeleton).map((role, i) => {
     const what = role === "view" ? `the ${viewLabel(state.view)} view`
       : role === "before" ? `the approved ${frame.before?.label ?? "keyframe before"}`
@@ -398,6 +404,7 @@ export function mirrorOffer(state: AnimateState): MirrorOffer | null {
 
 /** A frame's caption under its tile: "from keys + skeleton 14 · seed 5". */
 export function attemptOrigin(attempt: Attempt): string {
+  if (attempt.source === "copy") return `copy of the ${viewLabel(attempt.copy?.view ?? "")} view`;
   if (attempt.source === "mirror") return `mirror of ${attempt.mirror?.direction ?? "partner"} ${attempt.mirror?.ref ?? ""}`.trim();
   const parts: string[] = [];
   if (attempt.draw_from) parts.push(`from ${attempt.draw_from}`);

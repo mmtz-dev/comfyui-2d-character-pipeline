@@ -228,25 +228,29 @@ def timing_for_action(action: str, n: int) -> tuple[list[int], int] | None:
 # The five names are the studio's, and each maps to the pipeline verb the
 # rest of the stages, the sidecar and game-02 know (attack <-> strike; the
 # other four are the same word) plus the clip each vendored rig ships for it.
+#
+# `view_keys` on: the action starts (and, unless it loops, ends) standing as
+# the direction's view shows, so those keyframes are a copy of the view by
+# default rather than a render - `view_key_phases`, the view keys feature.
 PHASE_NAMES: tuple[str, ...] = ("start", "wind-up", "action", "wind-down", "end")
 PHASE_FPS = 12
 PHASE_CAP = 12
 ACTION_PHASES: dict[str, dict[str, Any]] = {
     "idle": {"budget": 6, "loop": True,
              "split": (0.15, 0.20, 0.30, 0.20, 0.15),
-             "span": (0.20, 0.20, 0.20, 0.20, 0.20)},
+             "span": (0.20, 0.20, 0.20, 0.20, 0.20), "view_keys": True},
     "walk": {"budget": 8, "loop": True,
              "split": (0.10, 0.25, 0.30, 0.25, 0.10),
-             "span": (0.20, 0.20, 0.20, 0.20, 0.20)},
+             "span": (0.20, 0.20, 0.20, 0.20, 0.20), "view_keys": True},
     "run": {"budget": 8, "loop": True,
             "split": (0.10, 0.25, 0.30, 0.25, 0.10),
-            "span": (0.20, 0.20, 0.20, 0.20, 0.20)},
+            "span": (0.20, 0.20, 0.20, 0.20, 0.20), "view_keys": True},
     "jump": {"budget": 10, "loop": False,
              "split": (0.08, 0.22, 0.35, 0.25, 0.10),
-             "span": (0.15, 0.20, 0.30, 0.20, 0.15)},
+             "span": (0.15, 0.20, 0.30, 0.20, 0.15), "view_keys": True},
     "attack": {"budget": 12, "loop": False,
                "split": (0.08, 0.20, 0.37, 0.20, 0.15),
-               "span": (0.20, 0.20, 0.25, 0.20, 0.15)},
+               "span": (0.20, 0.20, 0.25, 0.20, 0.15), "view_keys": True},
 }
 STUDIO_ACTIONS: dict[str, dict[str, Any]] = {
     "attack": {"verb": "strike",
@@ -322,13 +326,13 @@ def _merge_phase_row(base: dict[str, Any], override: dict[str, Any] | None,
     for key, value in (override or {}).items():
         if key == "budget":
             row["budget"] = int(value)
-        elif key == "loop":
-            row["loop"] = bool(value)
+        elif key in ("loop", "view_keys"):
+            row[key] = bool(value)
         elif key in ("split", "span"):
             row[key] = _phase_vector(value, f"{what}.{key}")
         else:
             raise ValueError(f"timing.json {what}: unknown key {key!r}; one of "
-                             f"budget, loop, split, span")
+                             f"budget, loop, split, span, view_keys")
     return row
 
 
@@ -377,6 +381,19 @@ def phases_for_action(action: str, *, slug: str | None = None,
         raise ValueError(f"{name}: budget {row['budget']} is outside 1..{PHASE_CAP} "
                          f"(the studio caps a clip at {PHASE_CAP} frames)")
     return {"action": name, "verb": verb, "source": source, **row}
+
+
+def view_key_phases(action: str, *, slug: str | None = None,
+                    timing_file: Path | None = None) -> tuple[str, ...]:
+    """The keyframe phases whose picture is, by default, a copy of the
+    direction's view (the view keys feature): the start, and the end too
+    unless the action loops - a loop's end has to flow back into its start,
+    and two copies of the view in a row would hold at the seam. Empty when the
+    action's `view_keys` is off, or the studio has no such action."""
+    row = phases_for_action(action, slug=slug, timing_file=timing_file)
+    if row is None or not row.get("view_keys"):
+        return ()
+    return ("start",) if row["loop"] else ("start", "end")
 
 
 # ---------------------------------------------------------------------------
@@ -952,8 +969,10 @@ ANIMATE_ELEVATION = "side"
 # What a frame attempt is drawn from, besides the optional skeleton:
 # `view` - the direction's accepted view; `keys` - the two nearest APPROVED
 # keyframes either side of the frame; `both` - the view and the two keys.
-# Keyframes default to `view`, in-betweens to `keys`.
-ANIMATE_DRAW_FROM: tuple[str, ...] = ("view", "keys", "both")
+# Keyframes default to `view`, in-betweens to `keys`. `copy` is not a drawing:
+# the keyframe's picture is the view itself, no GPU - the default for a view
+# key (`view_key_phases`) that has no copy yet (the view keys feature).
+ANIMATE_DRAW_FROM: tuple[str, ...] = ("view", "keys", "both", "copy")
 # Qwen-Image-Edit-2509's TextEncodeQwenImageEditPlus takes image1..image3.
 ANIMATE_MAX_IMAGES = 3
 # The pose slider scrubs the rig clip at this rate - finer than the 12 fps the

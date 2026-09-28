@@ -38,6 +38,7 @@ import {
 import { attemptCaption, busyText, isActive } from "./concept";
 import {
   CELL_TEXT,
+  STALE_COPY,
   STATUS_TEXT,
   approvedLine,
   attemptOrigin,
@@ -360,7 +361,7 @@ export class AnimateTab {
     if (!state) return;
     const mine = form && form.id === frame.id ? form : null;
     const drawFrom = (mine?.drawFrom.value as DrawFrom | undefined) ?? frame.draw_from;
-    const skeleton = mine ? mine.skeleton.checked && !!state.rig : !!state.rig;
+    const skeleton = drawFrom !== "copy" && (mine ? mine.skeleton.checked && !!state.rig : !!state.rig);
     const blocked = drawFromBlocked(state, frame, drawFrom, skeleton);
     if (blocked) {
       this.say(blocked, "warn");
@@ -618,6 +619,7 @@ export class AnimateTab {
       el("div", { class: "animate-frame-label" }, el("span", {}, frame.label), el("span", {}, String(frame.position))),
       el("div", { class: "animate-frame-pic" }, image),
       el("span", { class: `animate-chip s-${frame.status}` }, STATUS_TEXT[frame.status]),
+      ...(frame.stale ? [el("span", { class: "animate-chip s-stale", title: STALE_COPY }, "stale")] : []),
       el("div", { class: "animate-frame-buttons" }, regenerate, approve, reject));
   }
 
@@ -628,10 +630,11 @@ export class AnimateTab {
     const drawFrom = el("select", { class: "studio-select small" },
       el("option", { value: "view" }, `the ${viewLabel(state.view)} view`),
       el("option", { value: "keys" }, "the approved keyframes either side"),
-      el("option", { value: "both" }, "both"));
+      el("option", { value: "both" }, "both"),
+      ...(frame.key ? [el("option", { value: "copy" }, `a copy of the ${viewLabel(state.view)} view (no GPU)`)] : []));
     drawFrom.value = frame.draw_from;
     const skeleton = el("input", { type: "checkbox", title: "pose it after the rig clip's skeleton at the slider's instant" });
-    skeleton.checked = !!state.rig && frame.draw_from !== "both";
+    skeleton.checked = !!state.rig && frame.draw_from !== "both" && frame.draw_from !== "copy";
     const slider = el("input", { type: "range", min: "0", max: String(Math.max(0, (state.rig?.frames ?? 1) - 1)), step: "1", class: "animate-scrub" });
     slider.value = String(startFrame(frame));
     this.form = { id: frame.id, prompt, drawFrom, skeleton, slider };
@@ -655,6 +658,12 @@ export class AnimateTab {
       if (state.rig && form.skeleton.checked) skelImg.src = skeletonUrl(state, value);
       skelImg.hidden = !state.rig || !form.skeleton.checked;
       const how = form.drawFrom.value as DrawFrom;
+      if (how === "copy") {
+        form.skeleton.checked = false;
+        form.slider.disabled = true;
+        skelImg.hidden = true;
+      }
+      form.skeleton.disabled = !state.rig || how === "copy";
       const blocked = drawFromBlocked(state, frame, how, form.skeleton.checked && !!state.rig);
       drawNote.textContent = blocked ?? drawFromText(state, frame, how, form.skeleton.checked && !!state.rig);
       drawNote.className = blocked ? "studio-status warn" : "studio-help";
@@ -662,7 +671,6 @@ export class AnimateTab {
     form.slider.oninput = refresh;
     form.skeleton.onchange = refresh;
     form.drawFrom.onchange = refresh;
-    form.skeleton.disabled = !state.rig;
     refresh();
 
     const attempt = currentAttempt(frame);
@@ -735,7 +743,8 @@ export class AnimateTab {
         attemptsRow),
       el("div", { class: "animate-detail-right" },
         el("div", { class: "animate-detail-title" }, `${frame.label} · frame ${frame.position} of ${state.frames.length}${frame.key ? " · keyframe" : ""} · ${viewLabel(state.view)} · ${state.action}`,
-          el("span", { class: `animate-chip s-${frame.status}` }, `${STATUS_TEXT[frame.status]}${verdict}`)),
+          el("span", { class: `animate-chip s-${frame.status}` }, `${STATUS_TEXT[frame.status]}${verdict}`),
+          ...(frame.stale ? [el("span", { class: "animate-chip s-stale", title: STALE_COPY }, "stale")] : [])),
         el("div", { class: "studio-row" },
           el("label", { class: "concept-lock" }, keyToggle, " keyframe"), phase, addBefore, addAfter, remove),
         el("div", { class: "studio-help" }, "Prompt"),

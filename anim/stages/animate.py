@@ -49,8 +49,12 @@ never substituted. `keys` - the two nearest keyframes on either side of the
 frame (a loop wraps round), which must both be APPROVED or the frame is
 refused. `both` - the view and the two keys. The skeleton, when ticked, is the
 last image; Qwen-Image-Edit-2509 takes three, so `both` + skeleton is refused
-rather than silently dropping one. Keyframes default to the view, in-betweens
-to the keys. Every attempt records what it was drawn from, with hashes.
+rather than silently dropping one. `copy` - not a drawing: the keyframe's
+picture IS the view, no GPU (the view keys feature). Keyframes default to the
+view, in-betweens to the keys, and a view key (the start, and a one-shot's end
+- the action's `view_keys`) to a copy until it has one. Every attempt records
+what it was drawn from, with hashes; a copy of a view since re-accepted is
+STALE, reported and never replaced for you.
 
 GENERATE ALL is two steps with approval between them: while any keyframe is
 unapproved it draws the keyframes that are empty or rejected, then stops; once
@@ -99,6 +103,7 @@ HELP = "the owner draws every frame of one animation, approves each, and ships t
 SCHEMA = "anim.animate/1"
 SOURCE = "animate"
 MIRROR_SOURCE = "mirror"
+COPY_SOURCE = "copy"
 WORKFLOW = concept_stage.VIEW_WORKFLOW
 FAMILY = "qwen-edit"
 ATTEMPTS_DIR = "attempts"
@@ -183,7 +188,7 @@ def frame_label(frame: dict[str, Any], position: int) -> str:
 
 
 def is_rendered(row: dict[str, Any]) -> bool:
-    return row.get("seconds") is not None or row.get("source") == MIRROR_SOURCE
+    return row.get("seconds") is not None or row.get("source") in (MIRROR_SOURCE, COPY_SOURCE)
 
 
 def frame_status(frame: dict[str, Any]) -> str:
@@ -213,8 +218,32 @@ def neighbour_keys(frames: Sequence[dict[str, Any]], position: int, *, loop: boo
     return prev, nxt
 
 
-def default_draw_from(frame: dict[str, Any]) -> str:
-    return "view" if frame.get("key") else "keys"
+def view_keys(record: dict[str, Any]) -> tuple[str, ...]:
+    """The keyframe phases of this animation that are a copy of the view by
+    default (`config.view_key_phases`, with the unit's timing override)."""
+    return config.view_key_phases(record["studio_action"], slug=record.get("unit"))
+
+
+def has_copy(frame: dict[str, Any]) -> bool:
+    return any(r.get("source") == COPY_SOURCE and not r.get("file_deleted")
+               for r in frame.get("candidates") or [])
+
+
+def default_draw_from(frame: dict[str, Any], view_key_phases: Sequence[str] = ()) -> str:
+    """`copy` for a view key with no copy yet - once it has one, a new press
+    is a drawing, so rejecting the copy and pressing again does not copy it
+    again; `view` for any other keyframe; `keys` for an in-between."""
+    if not frame.get("key"):
+        return "keys"
+    if frame.get("phase") in view_key_phases and not has_copy(frame):
+        return "copy"
+    return "view"
+
+
+def copy_stale(row: dict[str, Any] | None, view_sha256: str | None) -> bool:
+    """A copy of the view whose view has since been re-accepted."""
+    return bool(row and row.get("source") == COPY_SOURCE and view_sha256
+                and (row.get("copy") or {}).get("sha256") != view_sha256)
 
 
 def default_prompt(action: str, frames: Sequence[dict[str, Any]], position: int, *,
@@ -588,7 +617,10 @@ def resolve_draw_from(record: dict[str, Any], job: Job, position: int, draw_from
         raise ValueError(f"--draw-from is one of {list(config.ANIMATE_DRAW_FROM)}, "
                          f"not {draw_from!r}")
     images: list[dict[str, Any]] = []
-    if draw_from in ("view", "both"):
+    if draw_from == "copy" and not record["frames"][position].get("key"):
+        raise ValueError(f"{frame_label(record['frames'][position], position)} is an "
+                         f"in-between; only a keyframe can be a copy of the view")
+    if draw_from in ("view", "both", "copy"):
         if view_image is None:
             raise ValueError("no view to draw from")
         images.append({"role": "view", "ref": view_image["view"],
@@ -629,9 +661,12 @@ def plan(unit: str, action: str, direction: str, frame: str | int, *,
     count = 1 if count is None else int(count)
     if count < 1:
         raise ValueError("--count must be at least 1")
-    how = str(draw_from or default_draw_from(store.frame)).strip().lower()
-    view_image = reference(unit, direction, work_dir) if how in ("view", "both") else None
+    how = str(draw_from or default_draw_from(store.frame, view_keys(record))).strip().lower()
+    view_image = (reference(unit, direction, work_dir) if how in ("view", "both", "copy")
+                  else None)
     images = resolve_draw_from(record, store.job, position, how, view_image)
+    if how == "copy":
+        return store, [copy_view(store, view_image)]
     pose = ((prompt or "").strip() or store.frame.get("prompt")
             or default_prompt(name, record["frames"], position, loop=bool(record.get("loop")),
                               unit=unit))
@@ -684,6 +719,24 @@ def plan(unit: str, action: str, direction: str, frame: str | int, *,
                          "fps": skeleton_block["fps"], "frames": skeleton_block["frames"]}
     store.save()
     return store, rows
+
+
+def copy_view(store: FrameAttempts, view_image: dict[str, Any]) -> dict[str, Any]:
+    """The view itself as the keyframe's new attempt: no GPU, current and TO
+    REVIEW - the view was accepted as a view, not as this frame. It is the
+    frame's size by construction (a frame is drawn at its view's size)."""
+    png = Path(view_image["path"]).read_bytes()
+    image = {"role": "view", "ref": view_image["view"], "path": str(view_image["path"]),
+             "sha256": view_image["sha256"]}
+    row = store.append(concept_stage.attempt_row(
+        COPY_SOURCE, prompt=None, seed=None, generation=None, draw_from="copy",
+        images=[image], skeleton=None,
+        copy={"view": view_image["view"], "sha256": view_image["sha256"]}))
+    row |= {"seconds": 0.0, "sha256": sha256_bytes(png)}
+    write_bytes_in_place(store.path(row), png)
+    store.frame["current"] = int(row["index"])
+    store.save()
+    return row
 
 
 def build_workflow(prompt: str, *, seed: int, images: Sequence[str], job: str,
@@ -775,6 +828,10 @@ def generate(unit: str, action: str, direction: str, frame: str | int, *,
     """Plan and render attempts on one frame; the rows rendered."""
     store, rows = plan(unit, action, direction, frame, lock_path=lock_path, work_dir=work_dir,
                        **options)
+    for row in rows:
+        if row.get("source") == COPY_SOURCE:
+            log(f"animate: {frame_label(store.frame, store.position)} ({store.target}:"
+                f"{row['index']:02d}) is a copy of the {row['copy']['view']} view - no GPU")
     render_pending(store, client=client, workflow_dir=workflow_dir, lock_path=lock_path,
                    timeout_s=timeout_s, log=log)
     return [store.get(int(r["index"])) for r in rows]
@@ -1368,7 +1425,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--draw-from", dest="draw_from", default=None,
                         choices=config.ANIMATE_DRAW_FROM,
                         help="view (the direction's accepted view), keys (the approved "
-                             "keyframes either side) or both; default view for a keyframe, "
+                             "keyframes either side), both, or copy (a keyframe's picture IS "
+                             "the view, no GPU); default copy for a view key with no copy yet "
+                             "(the start, and a one-shot's end), view for another keyframe, "
                              "keys for an in-between")
     parser.add_argument("--skeleton", dest="skeleton", action="store_true", default=None,
                         help="send the rig clip's skeleton as the last image (the default "
@@ -1588,6 +1647,9 @@ def run_stage(args: argparse.Namespace) -> int:
     print(f"animate: {len(rows)} attempt(s) of {unit} {action} {frame} at {direction} in "
           f"{wall:.1f} s wall -> {job.root / ATTEMPTS_DIR}")
     for row in rows:
+        if row.get("source") == COPY_SOURCE:
+            print(f"  {row['file']}  a copy of the {row['copy']['view']} view (no GPU)")
+            continue
         print(f"  {row['file']}  from {row['draw_from']}"
               f"{' + skeleton ' + str(row['skeleton']['frame']) if row.get('skeleton') else ''}"
               f"  seed {row['seed']}  {row['seconds']} s")

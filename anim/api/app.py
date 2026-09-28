@@ -875,14 +875,16 @@ def create_app(work_dir: Path | None = None, *, web_dist: Path | None = None,
                                                   create=False)
             position = _animate_call(animate_stage.find_frame, record, body.frame)
             frame = record["frames"][position]
-            how = body.draw_from or animate_stage.default_draw_from(frame)
+            how = body.draw_from or animate_stage.default_draw_from(
+                frame, animate_stage.view_keys(record))
             job = Job.open(animate_stage.job_name(unit, action, direction), work_dir)
             view = (_animate_call(animate_stage.reference, unit, direction, work_dir)
-                    if how in ("view", "both") else None)
+                    if how in ("view", "both", "copy") else None)
             images = _animate_call(animate_stage.resolve_draw_from, record, job, position,
                                    how, view)
-            skeleton = body.skeleton_frame is not None or body.skeleton is True
-            if body.skeleton is None and body.skeleton_frame is None:
+            skeleton = how != "copy" and (body.skeleton_frame is not None
+                                          or body.skeleton is True)
+            if how != "copy" and body.skeleton is None and body.skeleton_frame is None:
                 try:
                     animate_stage.rig_clip(action)
                     skeleton = True
