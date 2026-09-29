@@ -41,7 +41,7 @@ import urllib.request
 from contextlib import contextmanager
 from typing import Callable, Iterator
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "gpu_lease",
@@ -78,7 +78,8 @@ class GpuBusyError(TimeoutError):
 
 
 class GpuLeaseCancelled(RuntimeError):
-    """`cancel()` turned true while the lease was still queued; the request was withdrawn."""
+    """The queued request was withdrawn: `cancel()` turned true, or an operator
+    cancelled it on the gatekeeper's Manage page (reason "revoked")."""
 
 
 class _Unreachable(Exception):
@@ -182,7 +183,14 @@ class Lease:
                     self._loaded_pending = False
                 return True
             except _HttpError as e:
-                if e.status == 404:
+                if e.status == 404 and e.reason == "revoked":
+                    self.expired = True
+                    log.error(
+                        "!!! GPU lease %s was REVOKED by an operator on the gatekeeper's Manage page — "
+                        "this job's memory is no longer booked. Renewals stopped. !!!",
+                        self.id,
+                    )
+                elif e.status == 404:
                     self.expired = True
                     log.error(
                         "!!! GPU lease %s is GONE (%s) — the gatekeeper no longer counts this job's "
@@ -348,6 +356,10 @@ def acquire(
             info = _call(url, "GET", f"/leases/{info['id']}?wait={wait:.1f}", timeout=wait + 10)
             unreachable_since = None
         except _HttpError as e:
+            if e.status == 404 and e.reason == "revoked":  # an operator cancelled it: don't rejoin
+                raise GpuLeaseCancelled(
+                    f"GPU lease {info.get('id')} cancelled by an operator on the gatekeeper's Manage page"
+                ) from None
             if e.status == 404:  # lost while queued (e.g. gatekeeper restarted): ask again
                 log.warning("queued GPU lease %s vanished (%s); requesting again", info.get("id"), e.reason)
                 info = post()
