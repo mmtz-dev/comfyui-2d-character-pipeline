@@ -159,7 +159,7 @@ sudo firewall-cmd --add-service=samba --permanent && sudo firewall-cmd --reload
 
 This host's existing `smb.service` already exports your home directory as `homes` for the user
 `workstation`, on the normal port 445. So `smb://192.168.1.158/workstation` gets you to
-`Repos/Game-Dev/Framework-Ladder/game-02-tactical-rpg/assets/` today, with no container, real extended attributes,
+`Repos/game-dev/framework-ladder/game-02-tactical-rpg/assets/` today, with no container, real extended attributes,
 no port in the URL, and no stale-content quirk.
 
 The trade-off: `[homes]` exposes your whole home directory rather than just the assets folder, and
