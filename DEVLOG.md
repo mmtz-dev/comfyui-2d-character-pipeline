@@ -4,6 +4,31 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-10-02 — the shared model library feature: the pipeline's weights move into the one library
+
+**What.** The 12 locked weights moved from `comfyui-basedir/models/` into the shared image-model
+library (`/mnt/private/AI Data/models/Image Models/`), into the same subfolders:
+`diffusion_models/`, `text_encoders/`, `vae/`, and `model_patches/`. The pixel-art LoRA moved to
+`lora/_Z_Image/`.
+- `models.lock` and `relock_models.py`: `dest_subdir` is now relative to the library. The LoRA rows
+  are `lora/_Z_Image` and `lora/_Qwen_Image`.
+- `download_models.sh` / `hf_download.py` install into the library. The blob cache moved to
+  `comfyui-basedir/hf-cache`, outside the library so it never shows up as models.
+- `extra_model_paths.yaml` lists the library's `diffusion_models`, `text_encoders`, and
+  `model_patches`. `lora/_Z_Image` and `lora/_Qwen_Image` are also listed as LoRA roots, so the
+  workflows' bare filename `pixel_art_style_z_image_turbo.safetensors` still resolves.
+- The ComfyUI container was restarted. `/object_info` lists every moved file, and the LoRA appears
+  under both its bare and its `_Z_Image/` name.
+- The old `.hf-cache` (105 GB) was deleted, as `gpu/README.md` says is safe. It held the only
+  copies of Wan 2.1 VACE 14B, the Wan 2.1 VAE, Wan 2.2 Fun Inpaint, and the parked Qwen pixel-art
+  LoRA; none of them were installed weights.
+
+**Why.** The owner wanted every image model in one folder, each with a usage note and listed in
+one `INDEX.md` (the model-notes tool in `ai-media/image-generator`). The pinned set was merged
+rather than left separate. The lock stays the source of truth for hashes; only the install
+location changed. The container still mounts the library read-only. Only the one-shot downloader
+writes there.
+
 ## 2026-09-27 — the view keys feature: start and end are the view
 
 **What.** A keyframe can now be a **copy** of its direction's accepted view — a fourth

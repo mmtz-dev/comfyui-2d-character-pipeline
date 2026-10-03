@@ -24,7 +24,7 @@ import pathlib
 import sys
 import urllib.request
 
-# (repo_id, path inside the repo, dest subdir under models/, installed filename)
+# (repo_id, path inside the repo, dest subdir under the shared image-model library, installed filename)
 WANT = [
     # --- stage 1, pose pass: Z-Image-Turbo + Fun ControlNet Union 2.1 ---
     ("Comfy-Org/z_image_turbo",
@@ -74,7 +74,7 @@ WANT = [
     # the hash check.
     ("prithivMLmods/Qwen-Image-2512-Pixel-Art-LoRA",
      "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors",
-     "loras", "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors"),
+     "lora/_Qwen_Image", "Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors"),
 
     # --- the character concept feature: the pixel-art style LoRA for Z-Image ---
     # tarn59's Z-Image-Turbo LoRA (Apache-2.0, ungated, ~162 MB), the owner's
@@ -85,7 +85,7 @@ WANT = [
     # the pose stack uses, so no second diffusion model is needed.
     ("tarn59/pixel_art_style_lora_z_image_turbo",
      "pixel_art_style_z_image_turbo.safetensors",
-     "loras", "pixel_art_style_z_image_turbo.safetensors"),
+     "lora/_Z_Image", "pixel_art_style_z_image_turbo.safetensors"),
 
     # --- stage 3, the clip render feature: Wan 2.2 Fun-Control 5B ---
     # The 5B line first (owner's decision, 2026-09-17): ~10 GB bf16, fits the
@@ -199,8 +199,10 @@ def main() -> int:
 # TAB-separated columns:
 #   repo_id  repo_revision  repo_file  dest_subdir  dest_filename  size_bytes  sha256  license
 #
-# dest_subdir is relative to the basedir's models/ dir, i.e. the container's
-# /basedir/models/<dest_subdir>/<dest_filename>.
+# dest_subdir is relative to the shared image-model library
+# ("/mnt/private/AI Data/models/Image Models"), i.e. the GPU container's
+# /shared-models/<dest_subdir>/<dest_filename>. LoRAs follow the library's
+# lora/_<Base>/ layout.
 #
 # RENAME: z_image_turbo's vae ships as `ae.safetensors` and is installed as
 # `z_image_ae.safetensors`, because extra_model_paths.yaml also exposes the

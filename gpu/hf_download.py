@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Download exactly the files named in gpu/models.lock into the ComfyUI basedir.
+"""Download exactly the files named in gpu/models.lock into the shared image-model library.
 
 Runs INSIDE a throwaway python:3.12-slim container on Docker Desktop
 (the Fedora host has Python 3.14 and no pip). Never run this on the host.
 
 Mounts expected inside the container:
-    /models   -> "/mnt/private/AI Data/comfyui-basedir/models"   (rw)
+    /models   -> "/mnt/private/AI Data/models/Image Models"      (rw)
+    /hf-cache -> "/mnt/private/AI Data/comfyui-basedir/hf-cache" (rw, deletable)
     /spec     -> tools/anim-pipeline/gpu                          (ro)
 
 Idempotent: a file whose size already matches the lock is skipped. Pass
@@ -25,7 +26,7 @@ from huggingface_hub import hf_hub_download
 LOCK = Path("/spec/models.lock")
 DEST_ROOT = Path("/models")
 # Keep the HF blob cache on the big disk, not the container's overlay fs.
-CACHE = Path(os.environ.get("HF_HOME", "/models/.hf-cache"))
+CACHE = Path(os.environ.get("HF_HOME", "/hf-cache"))
 
 
 def rows():

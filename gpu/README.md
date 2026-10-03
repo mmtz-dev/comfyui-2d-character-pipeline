@@ -110,7 +110,7 @@ for n in ["ModelPatchLoader","ZImageFunControlnet","TextEncodeQwenImageEditPlus"
           "NunchakuQwenImageDiTLoader","CLIPLoader","KSampler","SaveImage"]:
     print(("OK   " if n in have else "MISS "), n)'
 
-# The weights are visible to ComfyUI (basedir + the read-only shared library)
+# The weights are visible to ComfyUI (the read-only shared library)
 curl -s http://192.168.1.158:8188/object_info/CLIPLoader | python3 -m json.tool | head -30
 ```
 
@@ -193,15 +193,20 @@ sudo systemctl stop docker      # TTY again; optional
 /mnt/private/AI Data/
 ├── comfyui-run/                     -> container /comfy/mnt   (ComfyUI code + venv)
 ├── comfyui-basedir/                 -> container /basedir     (BASE_DIRECTORY)
-│   ├── models/
-│   │   ├── diffusion_models/        z_image_turbo_int8_convrot, nunchaku qwen-edit int4
-│   │   ├── text_encoders/           qwen_3_4b_fp8_mixed, qwen_2.5_vl_7b_fp8_scaled
-│   │   ├── vae/                     z_image_ae, qwen_image_vae
-│   │   ├── model_patches/           Z-Image Fun ControlNet Union 2.1 2602 (full) + lite
-│   │   └── loras/                   pixel_art_style_z_image_turbo (the character concept feature); the Qwen-Image-2512 LoRA is parked (see Known issues)
+│   ├── models/                      empty since 2026-10-02 (weights moved to the shared library)
+│   ├── hf-cache/                    download_models.sh's blob cache (deletable)
 │   ├── custom_nodes/                ComfyUI-nunchaku, ComfyUI-Image-Saver (pinned)
 │   ├── input/  output/  user/
 └── models/Image Models/             -> container /shared-models  (READ-ONLY)
+    ├── diffusion_models/            z_image_turbo_int8_convrot, nunchaku qwen-edit int4, wan2.2 fun control
+    ├── text_encoders/               qwen_3_4b_fp8_mixed, qwen_2.5_vl_7b_fp8_scaled, umt5_xxl
+    ├── vae/                         z_image_ae, qwen_image_vae, wan2.2_vae (+ Forge's own VAEs)
+    ├── model_patches/               Z-Image Fun ControlNet Union 2.1 2602 (full) + lite
+    └── lora/_Z_Image/               pixel_art_style_z_image_turbo (the character concept feature); the Qwen-Image-2512 LoRA is parked (see Known issues)
+
+Every image model on the machine lives in the shared library, each with a `<model>.md`
+usage note and listed in its `INDEX.md` (the model-notes tool in `ai-media/image-generator`).
+`download_models.sh` installs there; the container still mounts it read-only.
 ```
 
 ## Hardware notes
@@ -221,7 +226,7 @@ in 24 GB; that is the whole reason for the INT4 build.
 |---|---|---|
 | the pose pass (`pose_pass.json`, `base_sprite.json`) | Z-Image-Turbo int8 convrot, Qwen3-4B fp8 mixed, Z-Image VAE, Fun ControlNet Union 2.1 2602 full (+ lite, for A/B) | 19.5 GiB |
 | the identity pass (`identity_pass.json`, currently unused) | Nunchaku Qwen-Image-Edit-2509 INT4 r128 lightning, Qwen2.5-VL-7B fp8, Qwen-Image VAE | 20.8 GiB |
-| the character concept feature (`concept_pass.json`) | the pose pass's Z-Image stack + **`tarn59/pixel_art_style_lora_z_image_turbo`** (`loras/pixel_art_style_z_image_turbo.safetensors`, 162 MB, Apache-2.0; trigger "Pixel art style.", strength 0.6–1.0, default 0.8 in `anim/config.py`) | +0.16 GiB |
+| the character concept feature (`concept_pass.json`) | the pose pass's Z-Image stack + **`tarn59/pixel_art_style_lora_z_image_turbo`** (`lora/_Z_Image/pixel_art_style_z_image_turbo.safetensors`, 162 MB, Apache-2.0; trigger "Pixel art style.", strength 0.6–1.0, default 0.8 in `anim/config.py`) | +0.16 GiB |
 | the clip render feature (`clip_render.json`) | Wan 2.2 Fun-Control 5B bf16, Wan 2.2 VAE, umT5-XXL fp8 | 16.9 GiB |
 | parked | prithivMLmods Qwen-Image-2512 Pixel-Art LoRA (fails verification, see below) | 1.1 GiB, not installed |
 
@@ -242,12 +247,12 @@ ways to resolve it, are in the KNOWN DISCREPANCY block at the top of `models.loc
 The other 7 files (34 GiB) installed and verified clean.
 
 **The Hugging Face blob cache doubles the disk cost.** `download_models.sh` keeps its
-cache at `<basedir>/models/.hf-cache` so it is on the big disk and a re-run does not
+cache at `<basedir>/hf-cache` so it is on the big disk and a re-run does not
 re-download. That means ~35 GiB of models plus ~35 GiB of cache. Once the weights are
 verified and ComfyUI has loaded them once, the cache can go:
 
 ```bash
-rm -rf "/mnt/private/AI Data/comfyui-basedir/models/.hf-cache"
+rm -rf "/mnt/private/AI Data/comfyui-basedir/hf-cache"
 ```
 
 Deleting it only costs bandwidth on a future re-download; `models.lock` remains the

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Download the models named in gpu/models.lock into the ComfyUI basedir.
+# Download the models named in gpu/models.lock into the shared image-model library
+# (the one Forge, clone-studio and this pipeline's ComfyUI all read; merged there
+# 2026-10-02 so every image model lives in one folder with a usage note beside it).
 #
 # Runs in a throwaway python:3.12-slim container on DOCKER DESKTOP
 # (context desktop-linux). The Fedora host has Python 3.14 with no pip, and
@@ -16,24 +18,25 @@ set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASEDIR="${COMFYUI_BASEDIR:-/mnt/private/AI Data/comfyui-basedir}"
-MODELS_DIR="$BASEDIR/models"
+MODELS_DIR="${IMAGE_MODELS_DIR:-/mnt/private/AI Data/models/Image Models}"
+# Blob cache outside the library, so it never shows up as models; safe to delete
+# once the weights are verified (see gpu/README.md).
+CACHE_DIR="$BASEDIR/hf-cache"
 DOCKER_CONTEXT_NAME="desktop-linux"   # never the native daemon; downloads need no GPU
 PY_IMAGE="python:3.12-slim"
 
-if [[ ! -d "$MODELS_DIR" ]]; then
-  echo "creating $MODELS_DIR"
-  mkdir -p "$MODELS_DIR"/{diffusion_models,text_encoders,vae,model_patches,loras}
-fi
+mkdir -p "$MODELS_DIR"/{diffusion_models,text_encoders,vae,model_patches,lora} "$CACHE_DIR"
 
 echo "== free space =="
-df -h "$BASEDIR"
+df -h "$MODELS_DIR"
 echo
 
 exec docker --context "$DOCKER_CONTEXT_NAME" run --rm \
   --name anim-pipeline-model-download \
   -v "$MODELS_DIR:/models" \
+  -v "$CACHE_DIR:/hf-cache" \
   -v "$GPU_DIR:/spec:ro" \
-  -e HF_HOME=/models/.hf-cache \
+  -e HF_HOME=/hf-cache \
   -e HF_HUB_ENABLE_HF_TRANSFER=0 \
   "$PY_IMAGE" \
   bash -c 'set -e
