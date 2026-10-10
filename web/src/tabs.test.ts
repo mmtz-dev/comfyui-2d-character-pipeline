@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConceptState, ConceptView } from "./api";
-import { layoutFor, readTab, readUnit, stepsDone } from "./tabs";
+import { readTab, readUnit, stepsDone } from "./tabs";
 
 function concept(pick: number | null, views: Record<string, number | null>): Pick<ConceptState, "base" | "views"> {
   return {
@@ -16,13 +16,6 @@ describe("the three tabs", () => {
     expect(readTab("board")).toBe("concept");
     expect(readTab("pipeline")).toBe("concept");
     expect(readTab(null)).toBe("concept");
-  });
-
-  it("is wide on Concept and split beside Piskel everywhere else", () => {
-    expect(layoutFor("concept", false)).toBe("wide");
-    expect(layoutFor("concept", true)).toBe("split");
-    expect(layoutFor("views", false)).toBe("split");
-    expect(layoutFor("animate", false)).toBe("split");
   });
 
   it("ticks Concept once the base is picked, and Views once back, left and top are", () => {

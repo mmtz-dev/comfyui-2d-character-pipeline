@@ -29,6 +29,23 @@ rather than left separate. The lock stays the source of truth for hashes; only t
 location changed. The container still mounts the library read-only. Only the one-shot downloader
 writes there.
 
+## 2026-09-28 — every tab resizes: Concept loses its wide layout
+
+**What.** The Concept tab now sits at the same draggable split width as Views and Animate,
+Piskel beside it, instead of taking a fixed wide width (`min(1040px, 78vw)`) with no drag
+handle while nothing was open. `tabs.layoutFor` and the `studio-wide` class are gone; the body
+is always `studio-split` and the width handle always shows. Clicking a base attempt still only
+selects it; Edit pixels opens it in Piskel, as before.
+
+**Why.** The owner wanted to size the panel on every tab, and Concept was the one tab that
+couldn't be. Only Concept was ever wide, so dropping the mode makes one width, one handle and
+one rule for all three tabs. The cost: a narrow panel means fewer Concept attempts per row, and
+the owner can widen it.
+
+Tests: web 88 passed (−1: the wide/split test went with `layoutFor`).
+
+---
+
 ## 2026-09-27 — the view keys feature: start and end are the view
 
 **What.** A keyframe can now be a **copy** of its direction's accepted view — a fourth

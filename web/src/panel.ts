@@ -8,10 +8,9 @@
 // footer: one line for the run being followed, with Cancel, that opens into
 // its log and the recent runs.
 //
-// Concept is wide - a strip of attempts needs the room - until a base attempt
-// is opened for editing; Views and Animate always sit at the draggable split
-// width with Piskel beside them, because clicking a view or a frame there
-// opens it in Piskel. Plain DOM, no framework: the page is one screen and
+// Every tab sits at the draggable split width with Piskel beside it (one
+// width, the owner's drag, remembered), because clicking a view or a frame -
+// or a base attempt's Edit pixels - opens it in Piskel. Plain DOM, no framework: the page is one screen and
 // Piskel itself is jQuery-era JavaScript, so a second rendering model would be
 // a second thing to learn.
 
@@ -38,7 +37,7 @@ import { AnimateTab, type AnimateCell } from "./animate-view";
 import { unitSlug } from "./concept";
 import { projectPalette } from "./palette";
 import { clampEditWidth, discardQuestion, mustConfirmLeave, readEditWidth } from "./editing";
-import { TABS, TAB_LABELS, layoutFor, readTab, readUnit, stepsDone, type Tab } from "./tabs";
+import { TABS, TAB_LABELS, readTab, readUnit, stepsDone, type Tab } from "./tabs";
 import {
   exportFrames,
   frameCount,
@@ -141,7 +140,6 @@ export class StudioPanel {
   private saving = false;
   private stopFollowing: (() => void) | null = null;
   private followed: RunView | null = null;
-  private tab: Tab = "concept";
   private unit = "";
   private units: string[] = [];
   private gpuRunSeen: string | null = null;
@@ -178,7 +176,7 @@ export class StudioPanel {
   private readonly floatBar = el("div", { class: "studio-float", hidden: true },
     this.floatLabel, this.floatDirty, this.floatSave, this.floatInpaint, this.floatDone);
   // The draggable right edge that sets the split width.
-  private readonly widthHandle = el("div", { class: "studio-width-handle", hidden: true, title: "drag to set the panel's width beside Piskel (remembered)" });
+  private readonly widthHandle = el("div", { class: "studio-width-handle", title: "drag to set the panel's width beside Piskel (remembered)" });
   // The run footer
   private readonly runDot = el("span", { class: "studio-run-dot" });
   private readonly runLine = el("span", { class: "studio-run-line" }, "no run followed");
@@ -212,6 +210,7 @@ export class StudioPanel {
 
   constructor(private readonly root: HTMLElement, health: HTMLElement) {
     this.health = health;
+    document.body.classList.add("studio-split");
     this.build();
   }
 
@@ -266,20 +265,10 @@ export class StudioPanel {
   }
 
   showTab(tab: Tab): void {
-    this.tab = tab;
     for (const [name, button] of this.tabButtons) button.classList.toggle("active", name === tab);
     for (const node of this.root.querySelectorAll<HTMLElement>("section[data-tab]")) node.hidden = node.dataset.tab !== tab;
     if (tab !== "animate") this.concept.show(tab);
-    this.applyLayout();
     store(TAB_KEY, tab);
-  }
-
-  /** Wide on Concept with nothing open, split beside Piskel otherwise. */
-  private applyLayout(): void {
-    const split = layoutFor(this.tab, this.editing !== null) === "split";
-    document.body.classList.toggle("studio-split", split);
-    document.body.classList.toggle("studio-wide", !split);
-    this.widthHandle.hidden = !split;
   }
 
   /** The ✓ on Concept and Views, from the unit's concept state. */
@@ -392,7 +381,6 @@ export class StudioPanel {
     document.body.classList.toggle("studio-editing", editing !== null);
     this.editBar.hidden = editing === null;
     this.floatBar.hidden = editing === null;
-    this.applyLayout();
     if (!editing) return;
     const dirty = opened !== null && isDirty();
     this.editLabel.textContent = editing.label;
@@ -416,7 +404,7 @@ export class StudioPanel {
 
   /** Done: the edit bar goes, the image stays on the canvas, and Save /
    * Inpaint go with the bar so nothing can overwrite the attempt from it.
-   * On Concept the panel widens back. */
+   */
   private finishEditing(): void {
     if (!this.editing || !this.mayLeave()) return;
     this.editing = null;

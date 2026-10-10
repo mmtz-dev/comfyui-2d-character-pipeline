@@ -296,7 +296,7 @@ export class ConceptTab {
     const root = which === "concept" ? this.root : this.viewsRoot;
     if (this.head.parentElement === root) return;
     root.prepend(this.head);
-    // Open where there is room for it (Concept is wide), folded beside Piskel.
+    // Open on Concept, where the settings are used most; folded on Views.
     (this.head.firstElementChild as HTMLDetailsElement).open = which === "concept";
   }
 
@@ -673,7 +673,7 @@ export class ConceptTab {
       onclick: () => {
         // On the Views tab, selecting is editing: the attempt opens in Piskel
         // beside the panel. The base opens only from its Edit pixels button,
-        // because the Concept tab is wide and has no Piskel beside it.
+        // so a click on Concept still just selects an attempt to compare.
         const editable = target !== "base" && !!attempt.url && attempt.rendered && !attempt.file_deleted;
         if (editable && this.state) this.host.editPixels(this.state.unit, target, attempt);
         this.selected = selected && !editable ? null : { target, attempt };

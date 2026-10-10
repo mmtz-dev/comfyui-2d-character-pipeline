@@ -22,13 +22,7 @@
 body.studio-collapsed {
   --studio-w: 34px;
 }
-/* The pipeline tabs feature: Concept is wide - a strip of attempts needs the
- * room - while nothing is open in Piskel. */
-body.studio-wide:not(.studio-collapsed) {
-  --studio-w: min(1040px, 78vw);
-}
-/* Views and Animate (and Concept while a base attempt is open) sit beside
- * Piskel at the split width - the owner's drag, remembered (--studio-edit-w,
+/* Every tab sits beside Piskel at the split width - the owner's drag, remembered (--studio-edit-w,
  * set by panel.ts), clamped again here against the window. */
 body.studio-split:not(.studio-collapsed) {
   --studio-w: clamp(240px, var(--studio-edit-w, 440px), 80vw);

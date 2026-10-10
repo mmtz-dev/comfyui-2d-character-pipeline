@@ -21,13 +21,6 @@ export function readTab(stored: string | null): Tab {
   return TABS.includes(stored as Tab) ? (stored as Tab) : "concept";
 }
 
-/** "wide": the panel takes the room (Concept, with nothing open in Piskel).
- * "split": the panel at its draggable width with Piskel beside it - Views and
- * Animate always, Concept while a base attempt is being edited. */
-export function layoutFor(tab: Tab, editing: boolean): "wide" | "split" {
-  return tab === "concept" && !editing ? "wide" : "split";
-}
-
 /** Which steps are done, for the ✓ on each tab. Concept: the base has a
  * pick. Views: every main view (back, left, top) has one. Animate never
  * finishes - there is always another animation. */
