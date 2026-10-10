@@ -831,7 +831,12 @@ def test_a_unit_can_own_its_phase_prompts():
     frames = an.default_layout("attack")
     archer = an.default_prompt("attack", frames, 2, loop=False, unit="hooded_archer")
     assert "spell" in archer and "sword" not in archer
-    assert "sword" in an.default_prompt("attack", frames, 2, loop=False, unit="knight")
+    # The defaults describe the motion, never the gear - a named weapon got drawn
+    # on art that has none; the unit's own parts phrase keeps what it holds.
+    knight = an.default_prompt("attack", frames, 2, loop=False, unit="knight")
+    assert "attack animation" in knight and "sword" not in knight
+    for phase in ("start", "wind-up", "action", "wind-down", "end"):
+        assert "weapon" not in config.animate_phase_prompt("idle", phase)
     assert config.animate_phase_prompt("walk", "action", "hooded_archer") == \
         config.animate_phase_prompt("walk", "action")
 

@@ -990,44 +990,74 @@ ANIMATE_FPS = PHASE_FPS
 ANIMATE_SWEEP_MAX_CELLS = int(os.environ.get("ANIM_SWEEP_MAX_CELLS", "8"))
 # Per action, per phase: what the pose is, in the owner's words. Pre-fills a
 # keyframe's prompt; the owner edits it and each attempt remembers its own.
+# Each sentence names the animation and where this frame sits in it, then says
+# only how the BODY moves - never what the character carries. A sentence that
+# named a weapon ("the weapon held loosely") made Qwen draw one on a character
+# whose art has none (the dwarf's idle, 2026-10-10); whatever image1 holds is
+# kept by ANIMATE_PROMPT's "the same {parts}" instead.
 ANIMATE_PHASE_PROMPTS: dict[str, dict[str, str]] = {
     "attack": {
-        "start": "standing ready at rest, the sword lowered, weight even on both feet",
-        "wind-up": "winding up a sword swing, the sword pulled back over the shoulder, "
-                   "weight on the back foot",
-        "action": "mid-swing, the sword slashing forward across the body, weight "
-                  "lunging onto the front foot",
-        "wind-down": "recovering after the swing, the sword lowered and following "
-                     "through, settling back toward a stand",
-        "end": "back to standing ready at rest, the sword lowered",
+        "start": "the first frame of a melee attack animation: standing ready, "
+                 "weight even on both feet, the striking arm low",
+        "wind-up": "the wind-up frame of a melee attack animation: the striking arm "
+                   "drawn back over the shoulder, the body coiled, weight on the back foot",
+        "action": "the strike frame of a melee attack animation: the striking arm "
+                  "swung forward across the body, weight lunging onto the front foot",
+        "wind-down": "the follow-through frame of a melee attack animation: the striking "
+                     "arm carried through and lowering, settling back toward a stand",
+        "end": "the last frame of a melee attack animation: back to standing ready, "
+               "the striking arm low",
     },
     "idle": {
-        "start": "standing relaxed at rest, the weapon held loosely",
-        "wind-up": "breathing in at rest, the chest lifting a little, the shoulders slightly raised",
-        "action": "at the top of the breath, standing relaxed, the weapon held loosely",
-        "wind-down": "breathing out at rest, the shoulders settling back down",
-        "end": "standing relaxed at rest again, about to breathe in",
+        "start": "the first frame of an idle breathing animation: standing still and "
+                 "relaxed, exactly the pose of image1",
+        "wind-up": "the breathing-in frame of an idle animation: the same standing pose "
+                   "as image1, the chest swelling slightly and the shoulders and head a "
+                   "tiny bit higher, the feet unmoved",
+        "action": "the top-of-breath frame of an idle animation: the same standing pose "
+                  "as image1, the chest at its fullest and the shoulders raised a little, "
+                  "the feet unmoved",
+        "wind-down": "the breathing-out frame of an idle animation: the same standing "
+                     "pose as image1, the chest and shoulders sinking slightly, the feet "
+                     "unmoved",
+        "end": "the last frame of an idle breathing animation: the same standing pose "
+               "as image1, settled, about to breathe in again",
     },
     "walk": {
-        "start": "walking, the contact pose, the right foot forward and the left arm swinging forward",
-        "wind-up": "walking, mid-stride, the left foot stepping forward and the right arm swinging forward",
-        "action": "walking, the passing pose, one foot under the body and the other lifting past it",
-        "wind-down": "walking, mid-stride, the right foot stepping forward and the left arm swinging forward",
-        "end": "walking, about to repeat the contact pose, the right foot reaching forward",
+        "start": "the contact frame of a walk cycle animation: the right foot forward "
+                 "touching the ground, the left arm swinging forward",
+        "wind-up": "the stride frame of a walk cycle animation: the left foot stepping "
+                   "forward, the right arm swinging forward",
+        "action": "the passing frame of a walk cycle animation: one foot under the body "
+                  "and the other lifting past it, the body at its highest",
+        "wind-down": "the stride frame of a walk cycle animation: the right foot stepping "
+                     "forward, the left arm swinging forward",
+        "end": "the last frame of a walk cycle animation: the right foot reaching "
+               "forward, about to repeat the contact pose",
     },
     "run": {
-        "start": "running, the contact pose, leaning forward, the right foot striking the ground",
-        "wind-up": "running, leaning forward, the left knee driving up and the right arm pumping forward",
-        "action": "running, both feet off the ground, the body leaning forward",
-        "wind-down": "running, leaning forward, the right knee driving up and the left arm pumping forward",
-        "end": "running, about to strike the ground again with the right foot",
+        "start": "the contact frame of a run cycle animation: leaning forward, the right "
+                 "foot striking the ground",
+        "wind-up": "the drive frame of a run cycle animation: leaning forward, the left "
+                   "knee driving up and the right arm pumping forward",
+        "action": "the airborne frame of a run cycle animation: both feet off the "
+                  "ground, the body leaning forward",
+        "wind-down": "the drive frame of a run cycle animation: leaning forward, the "
+                     "right knee driving up and the left arm pumping forward",
+        "end": "the last frame of a run cycle animation: about to strike the ground "
+               "again with the right foot",
     },
     "jump": {
-        "start": "standing ready to jump, the knees slightly bent",
-        "wind-up": "crouching to jump, the knees bent deep and the arms swung back",
-        "action": "in the air at the top of a jump, the legs tucked and the arms raised",
-        "wind-down": "landing from a jump, the knees bent to take the impact, the arms out for balance",
-        "end": "standing again after the landing, the weight settled",
+        "start": "the first frame of a jump animation: standing ready, the knees "
+                 "slightly bent",
+        "wind-up": "the crouch frame of a jump animation: the knees bent deep and the "
+                   "arms swung back",
+        "action": "the peak frame of a jump animation: in the air at the top of the "
+                  "jump, the legs tucked and the arms raised",
+        "wind-down": "the landing frame of a jump animation: the knees bent to take the "
+                     "impact, the arms out for balance",
+        "end": "the last frame of a jump animation: standing again after the landing, "
+               "the weight settled",
     },
 }
 # The whole Qwen-Image-Edit prompt around the owner's pose sentence. Which
@@ -1036,7 +1066,8 @@ ANIMATE_PHASE_PROMPTS: dict[str, dict[str, str]] = {
 ANIMATE_PROMPT = (
     "Redraw the same pixel art character from image1, {pose}. {roles}The same character: "
     "the same {parts}, the same colours, the same outline weight, the same proportions and "
-    "the same size, seen from the same side as image1. One figure only, full body in frame, "
+    "the same size, turned exactly the same way as image1, from the same camera angle - "
+    "do not turn the body or the head. One figure only, full body in frame, "
     "feet at the bottom edge, plain flat white background, no ground shadow, no floor"
     "{no_lines}.")
 
@@ -1141,9 +1172,14 @@ def animate_prompt(pose: str, roles: Sequence[str], parts: str | None,
                     f"the motion on from it.")
     if "skeleton" in roles:
         n = roles.index("skeleton") + 1
-        said.append(f"Put the character in the exact body pose of the stick-figure skeleton "
-                    f"in image{n}: follow every limb - the arms, the legs, the torso lean and "
-                    f"the head.")
+        # The skeleton is a tall human rig; "follow every limb" also copied its
+        # limb lengths, so a stocky dwarf came out tall (2026-10-10). It gives
+        # the angles only - the body stays image1's.
+        said.append(f"The stick-figure skeleton in image{n} shows only the pose: copy the "
+                    f"angles of its arms, its legs, the torso lean and the head tilt. Do not "
+                    f"copy its height, limb lengths or build - the skeleton is a generic tall "
+                    f"figure; keep the character's own proportions from image1, a short or "
+                    f"stocky body stays short or stocky.")
     parts = strip_camera_words(parts).rstrip(",.") or "outfit"
     avoid = " ".join(str(avoid or "").split()).strip().rstrip(",.")
     text = ANIMATE_PROMPT.format(

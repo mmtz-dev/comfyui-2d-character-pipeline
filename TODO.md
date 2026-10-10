@@ -7,7 +7,7 @@
 > file is silently discarded on the next sync.**
 >
 > - Open, close, or add work: **[Sprite Studio](http://192.168.1.158:8700/projects/sprite-studio)**
-> - Regenerate this file: `OpenProject/scripts/09-export-todos.sh`
+> - Regenerate this file: `apps/openproject/scripts/09-export-todos.sh`
 > - Why it works this way: `games-design-wiki/shared/tracking-boundary.md`
 
 ---
@@ -17,10 +17,6 @@
 ### the motion exaggeration feature · [#277](http://192.168.1.158:8700/work_packages/277)
 
 The animation-principle transforms, applied where the pipeline can actually apply them — on the rig, before projection — so the model renders an…
-
-### the action matrix feature · [#278](http://192.168.1.158:8700/work_packages/278)
-
-anim matrix <unit>: every (action × direction) cell through the chosen route, resumable, one seed per unit.
 
 ### the sprite studio docs feature · [#284](http://192.168.1.158:8700/work_packages/284)
 
@@ -45,6 +41,77 @@ What. A Concept tab in the sprite studio where the owner makes a unit's concept 
 - [ ] **manual test: the concept generation feature** · [#301](http://192.168.1.158:8700/work_packages/301)
   Run the API (already up on Docker Desktop) and open the studio's Concept tab: <http://192.168.1.158:8720/> → Concept.
 
+### the extra combat actions feature · [#302](http://192.168.1.158:8700/work_packages/302)
+
+Add actions beyond the studio's current five (idle, walk, run, jump, attack): hurt, death, spellcast, shoot, thrust, climb — each through the same…
+
+- [ ] **Discovery: are the extra combat actions viable?** · [#303](http://192.168.1.158:8700/work_packages/303)
+  For each of hurt, death, spellcast, shoot, thrust, climb, answer:
+- [ ] **the hurt action** · [#304](http://192.168.1.158:8700/work_packages/304)
+  Hit reaction. Short (≈3–6 frames), readable at 64 px; plays when a unit takes damage.
+- [ ] **the death action** · [#305](http://192.168.1.158:8700/work_packages/305)
+  A drawn fall, if discovery rules it better than the art bible's 3-frame code squash-and-fade.
+- [ ] **the spellcast action** · [#306](http://192.168.1.158:8700/work_packages/306)
+  Casting for caster units: wind-up, release, recover.
+- [ ] **the shoot action** · [#307](http://192.168.1.158:8700/work_packages/307)
+  Ranged attack for archer units; needs a bow prop.
+- [ ] **the thrust action** · [#308](http://192.168.1.158:8700/work_packages/308)
+  Spear jab — a second melee attack shape beside the slash.
+- [ ] **the climb action** · [#309](http://192.168.1.158:8700/work_packages/309)
+  Only if game-02 maps get height; otherwise closed by discovery.
+
+### the layered gear sprites feature · [#310](http://192.168.1.158:8700/work_packages/310)
+
+Build a unit from separate layers — body, armour, weapon — so gear can be swapped and recoloured without regenerating the whole unit (the paper-doll…
+
+- [ ] **Discovery: are layered gear sprites viable?** · [#311](http://192.168.1.158:8700/work_packages/311)
+  Answer:
+- [ ] **Build the layered gear sprites** · [#312](http://192.168.1.158:8700/work_packages/312)
+  Implement whatever the discovery task rules. Scope is set by that task's doc.
+
+### the advanced views sweep feature · [#313](http://192.168.1.158:8700/work_packages/313)
+
+The Concept tab's advanced fold holds the five advanced views — right, back_right, back_left, front_left, front_right.
+
+### the keyframe inpainting feature · [#315](http://192.168.1.158:8700/work_packages/315)
+
+Start only after the keyframe tab feature has proven one run (owner's call, 2026-09-26): one unit, front base, attack — wind-up / action / wind-down…
+
+### the animate tab feature *(In progress)* · [#317](http://192.168.1.158:8700/work_packages/317)
+
+The owner rejected the video-model routes and the Keyframes tab (#316 — it only had wind-up / action / wind-down slots, not the owner's vision).
+
+### remove the video matrix route · [#318](http://192.168.1.158:8700/work_packages/318)
+
+Owner's decision (2026-09-26): the video route — anim matrix (rig → Wan 2.2 Fun-Control clip → pick --phases → post per cell), the Matrix tab, and…
+
+### the edit bar feature *(In progress)* · [#319](http://192.168.1.158:8700/work_packages/319)
+
+Editing an image no longer throws the owner off the tab they were working in.
+
+### the pipeline tabs feature *(In progress)* · [#320](http://192.168.1.158:8700/work_packages/320)
+
+The studio panel reads like the pipeline it drives: Concept → Views → Animate, one unit bar above the tabs, Piskel beside the panel on Views and…
+
+- [ ] **the animate grid route feature** *(In progress)* · [#321](http://192.168.1.158:8700/work_packages/321)
+  GET /animate/{unit}: every action × side direction and each animation's state in one call; GET /units for the unit bar; base_views /…
+- [ ] **the keyframe sweep feature** *(In progress)* · [#322](http://192.168.1.158:8700/work_packages/322)
+  POST /animate/{unit}/sweep and anim animate --sweep: the keyframes (or, once approved, the in-betweens) of several animations as ONE run;…
+- [ ] **the matrix and board removal feature** *(In progress)* · [#323](http://192.168.1.158:8700/work_packages/323)
+  Deleted the matrix stage, anim curate, /matrix, every /curation route and the curation mode setting; anim/curation.py keeps only the base…
+- [ ] **the panel shell feature** *(In progress)* · [#324](http://192.168.1.158:8700/work_packages/324)
+  Unit bar, the three numbered tabs with ✓, split / wide layout, the run footer, the palette strip in the edit bar; the ⚙ Stay/Jump setting…
+- [ ] **the concept / views split feature** *(In progress)* · [#325](http://192.168.1.158:8700/work_packages/325)
+  The Concept tab keeps the base; the Views tab gets the views, click-to-edit in Piskel and the 'measure part palettes' button.
+- [ ] **the animate grid feature** *(In progress)* · [#326](http://192.168.1.158:8700/work_packages/326)
+  The grid replaces the compass and action picker; shift-click ticks cells for the sweep; clicking a frame opens it in Piskel.
+- [ ] **the pipeline tabs docs feature** *(In progress)* · [#327](http://192.168.1.158:8700/work_packages/327)
+  README, DEVLOG, CONTEXT.md and the design doc for the pipeline tabs feature.
+
+### the Wan 14B sprite LoRA test feature · [#349](http://192.168.1.158:8700/work_packages/349)
+
+Question: does Wan 2.2 image-to-video 14B plus a LoRA trained on pixel-art sprite animations make usable sprite motion on our own GPU, close enough…
+
 ## manual test: the palette feature · [#294](http://192.168.1.158:8700/work_packages/294)
 
 ## manual test: the curation board feature · [#295](http://192.168.1.158:8700/work_packages/295)
@@ -55,5 +122,5 @@ What. A Concept tab in the sprite studio where the owner makes a unit's concept 
 
 ---
 
-*13 open · 18 closed. Counts and contents come straight from
+*37 open · 21 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
