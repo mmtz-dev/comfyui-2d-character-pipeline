@@ -4,6 +4,35 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-10-11 — downscale tool test and two research passes: three gaps opened
+
+**What.** No pipeline code changed. The owner judged the wanderer's 22 HD frames (#349, route #1)
+the best output and the 64 px `post` the weak link, so every headless "unfake" tool was run
+on those frames in throwaway containers (`~/.cache/claude/sprite-proto/`), each followed by
+the same matte, own-palette snap and 64 px placement. They were scored on height, error against
+the HD art, stray edge pixels and grid consistency (page http://192.168.1.158:8090/wanderer/tools/).
+Top three: fast-pixelizer, a fixed-grid prototype, and unfake.js given the 7.5 px pitch. All
+are crisp at 61–63 px; today's `box` + project palette is soft at 52 px with shifted colours.
+Two research passes followed (`docs/research/2026-10-11-2d-game-animation-pipelines.md`,
+and `…-ai-pixel-sprite-sizes-digest.md` via research-digest, which reached Reddit).
+
+**Why it matters.**
+- The Wan frames carry their own art grid of ~7.5 px, so the wanderer is natively ~54 px
+  tall. That fits 64 px with almost no loss if the grid is sampled rather than averaged.
+- AI frames have no perfectly clean grid. Every tool that re-detects per frame got a
+  different grid each frame, so the grid must be measured once per animation.
+- AI game devs ship 16–64 px characters (32–48 typical). Detail comes from grid snap, a
+  palette limit and hand cleanup, not from bigger sprites.
+
+Opened, in that order: **#350** the pixel grid downscale feature, **#351** the sprite
+jitter stabiliser feature, and **#352** the generated-frame loop check feature (`pick`
+checks loops on the rig, which says nothing on the image-to-video route).
+
+Note: `work/wanderer_walk_14bi2v/picks.json` is hand-set to all 22 frames, so
+`post/` there holds the PixelOE test output.
+
+---
+
 ## 2026-10-10 — the Wan 14B sprite LoRA test feature: first A/B on a new unit
 
 **What.** `anim clip` gains `--model 14b-control | 14b-i2v` (Wan 2.2 A14B, two fp8 experts

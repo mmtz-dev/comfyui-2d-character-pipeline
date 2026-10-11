@@ -112,6 +112,18 @@ The studio panel reads like the pipeline it drives: Concept → Views → Animat
 
 Question: does Wan 2.2 image-to-video 14B plus a LoRA trained on pixel-art sprite animations make usable sprite motion on our own GPU, close enough…
 
+### the pixel grid downscale feature · [#350](http://192.168.1.158:8700/work_packages/350)
+
+Goal: anim post turns AI "fake pixel art" frames into true pixel sprites without the blur of today's area-average downscale, so a 64 px sprite keeps…
+
+### the sprite jitter stabiliser feature · [#351](http://192.168.1.158:8700/work_packages/351)
+
+Goal: pixels that should stay still between frames (the head, the torso while walking) stop flickering after the downscale.
+
+### the generated-frame loop check feature · [#352](http://192.168.1.158:8700/work_packages/352)
+
+Goal: a looping action (walk, run, idle) is checked for a clean loop on the frames the model actually drew, not only on the rig's poses.
+
 ## manual test: the palette feature · [#294](http://192.168.1.158:8700/work_packages/294)
 
 ## manual test: the curation board feature · [#295](http://192.168.1.158:8700/work_packages/295)
@@ -122,5 +134,5 @@ Question: does Wan 2.2 image-to-video 14B plus a LoRA trained on pixel-art sprit
 
 ---
 
-*37 open · 21 closed. Counts and contents come straight from
+*40 open · 21 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
