@@ -4,6 +4,35 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-10-10 — the Wan 14B sprite LoRA test feature: first A/B on a new unit
+
+**What.** `anim clip` gains `--model 14b-control | 14b-i2v` (Wan 2.2 A14B, two fp8 experts
+with the lightx2v 4-step LoRA built into new `clip_render_14b_*.json` graphs) and
+`--lora STEM[:STRENGTH]`, which loads a 14B LoRA as its high/low-noise pair (registry family
+`wan14b`) and prefixes its trigger. Locked and installed ~58 GB: both A14B pairs, the Wan 2.1
+VAE, lightx2v and `theamusing/wan2.2_pixel_walk_lora` (pix3lwalk, MIT). First run on a new
+unit, `wanderer` (concept 00 → Qwen right view 01), side-view walk from the Quaternius
+`Walk_Loop` at 16 fps (the LoRA's training rate), seed 20261010, LoRA 0.8, both routes:
+
+- **#1 `14b-i2v`** (view as first frame, no rig control): a clean walk cycle, identity
+  held, pixel look survives `post`. 523.7 s on a cold load.
+- **#4 `14b-control`** (rig skeleton + view as `ref_image`): **two figures** in every frame —
+  a pale full-height figure on the skeleton and the wanderer at the reference's smaller scale
+  on top. 297.8 s. Likely cause: the skeleton fills the 768 px cell while the letterboxed
+  reference figure is ~half that; not retried.
+
+**Why.** No pixel/sprite LoRA exists for the 5B (docs/research/2026-10-10-wan22-5b-loras.md);
+the only walk LoRA made for the job targets I2V A14B. The owner chose the 14B A/B to learn
+whether rig control helps. fp8 over GGUF Q8: same 8-bit class, no new node pack or restart of
+the shared ComfyUI, and the A5000 (sm_86) gets no fp8 speed-up either way. LoRA names must carry
+their library subfolder (`_Wan_14B_i2v/…`) — the bare name was rejected on the first run.
+
+Also fixed a stale test (`test_the_lora_row_is_locked_and_commercially_usable` still expected
+`loras/` after the shared model library move). Tests: 704 passed, 4 skipped. Page:
+http://192.168.1.158:8090/wanderer/ab/ — #349 waits on the owner's adopt / reject.
+
+---
+
 ## 2026-10-02 — the shared model library feature: the pipeline's weights move into the one library
 
 **What.** The 12 locked weights moved from `comfyui-basedir/models/` into the shared image-model

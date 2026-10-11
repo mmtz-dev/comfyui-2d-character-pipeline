@@ -168,8 +168,7 @@ video decode.
   5B) — not applicable to this model; revisit only if A14B becomes the fallback.
 - **Prompt.** `config.CLIP_PROMPT` + `CLIP_ACTION_PHRASES` is a first draft; the
   Chinese negative is the template's. Not A/B'd.
-- **A14B fallback** (`Wan2.2-Fun-A14B-Control`, two 14B experts, needs GGUF/fp8 +
-  block swap under 24 GB). Not locked, not downloaded — only if 5B fails the gate.
+- **A14B** — now built: see `clip_render_14b_*.json` below.
 
 ---
 
@@ -367,3 +366,31 @@ contains `strength_model`.
 
 `LoadImage` filenames resolve against the container's `/basedir/input/`, so the CPU
 pipeline must copy its strips there before enqueuing.
+
+---
+
+## `clip_render_14b_control.json` / `clip_render_14b_i2v.json` — the Wan 14B sprite LoRA test feature (2026-10-10)
+
+Built from the official "Wan2.2 Fun Control" 14B and Wan 2.2 I2V 14B templates' structure:
+two `UNETLoader` experts (fp8_scaled), each through the lightx2v 4-step LoRA, then the
+**style LoRA** pair, then `ModelSamplingSD3` shift 8; two `KSamplerAdvanced` — high-noise
+steps 0..half with leftover noise, low-noise half..end — euler / simple, cfg 1, 4 steps.
+Wan 2.1 VAE (16-channel). The control graph uses `Wan22FunControlToVideo` (`ref_image` =
+identity, `control_video` = skeleton); the i2v graph uses `WanImageToVideo` with the
+reference as `start_image` and no control video.
+
+| Patch point | Node |
+|---|---|
+| `PATCH reference image` | `LoadImage` |
+| `PATCH control video` | `LoadVideo` (control graph only) |
+| `PATCH clip size` | `Wan22FunControlToVideo` / `WanImageToVideo` |
+| `PATCH seed - high-noise sampler` | `KSamplerAdvanced` — `noise_seed`, `steps`, `end_at_step`, `cfg` |
+| `PATCH low-noise sampler` | `KSamplerAdvanced` — `steps`, `start_at_step`, `cfg` |
+| `PATCH style lora high` / `low` | `LoraLoaderModelOnly` — bypassed when no `--lora` |
+| `PATCH positive prompt`, `PATCH negative prompt`, `PATCH output prefix` | as in `clip_render.json` |
+
+- **LoRA names carry their library subfolder.** ComfyUI lists `lora/_Wan_14B_i2v/x.safetensors`
+  as `_Wan_14B_i2v/x.safetensors`; a bare name is `value_not_in_list` (first run, 2026-10-10).
+  `models_lock.loader_name` derives it from the lock's `dest_subdir`.
+- **Verified on the GPU 2026-10-10:** `14b-i2v` with `pixel_walk_lora_v1` at 0.8, 22 rig frames
+  → 25 sent at 512×768: 523.7 s including the first load of both experts.

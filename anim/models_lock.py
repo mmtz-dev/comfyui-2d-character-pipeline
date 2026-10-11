@@ -89,7 +89,21 @@ def _string_inputs(workflow: dict[str, Any]) -> set[str]:
         for value in (node.get("inputs") or {}).values():
             if isinstance(value, str):
                 values.add(value)
+                # A LoRA in a library subfolder is named `_Wan_14B_i2v/x.safetensors`.
+                values.add(value.rsplit("/", 1)[-1])
     return values
+
+
+def loader_name(file: str, path: Path | None = None) -> str:
+    """The name ComfyUI's loader lists a locked LoRA under. The library keeps
+    LoRAs in `lora/_<Base>/`, and the loader lists them relative to the LoRA
+    root, so `lora/_Wan_14B_i2v` + `x.safetensors` -> `_Wan_14B_i2v/x.safetensors`.
+    A file in no subfolder (or not in the lock) is its bare name."""
+    row = next((m for m in load(path) if m.file == file), None)
+    if row is None:
+        return file
+    head, _, rest = row.subdir.partition("/")
+    return f"{rest}/{file}" if head in ("lora", "loras") and rest else file
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +112,7 @@ def _string_inputs(workflow: dict[str, Any]) -> set[str]:
 # gpu/models.registry.tsv says what each locked file IS: its workflow family
 # (a Z-Image graph cannot load a Qwen checkpoint) and its role. The lock keeps
 # the hashes; this keeps the meaning. Joined by `file`.
-FAMILIES = ("zimage", "qwen-edit", "wan")
+FAMILIES = ("zimage", "qwen-edit", "wan", "wan14b")
 ROLES = ("checkpoint", "lora", "controlnet", "te", "vae")
 
 

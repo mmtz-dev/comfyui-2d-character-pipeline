@@ -272,3 +272,102 @@ def test_the_strip_route_is_still_the_default_route():
     assert publish_stage.sidecar_for(slug="knight", action="hit", frames=2,
                                      manifest={}, provenance=None, picks=[0, 1],
                                      report=None)["generation"]["route"] == "strip"
+
+
+# ---------------------------------------------------------------------------
+# The Wan 14B sprite LoRA test feature (#349): --model 14b-control | 14b-i2v,
+# --lora STEM[:STRENGTH] loading a high/low-noise pair
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("name, size_class, has_control", [
+    ("clip_render_14b_control", "Wan22FunControlToVideo", True),
+    ("clip_render_14b_i2v", "WanImageToVideo", False),
+])
+def test_the_14b_workflows_declare_their_patch_points(workflow_dir, name, size_class,
+                                                      has_control):
+    workflow = comfy.load_workflow(name, workflow_dir)
+    for needle in ("reference image", "clip size", "seed", "low-noise sampler",
+                   "style lora high", "style lora low", "output prefix",
+                   "positive prompt", "negative prompt"):
+        assert comfy.find_node(workflow, needle)
+    assert workflow[comfy.find_node(workflow, "clip size")]["class_type"] == size_class
+    assert ("PATCH control video (skeleton / depth)" in comfy.patch_points(workflow)) \
+        == has_control
+
+
+def test_a_14b_lora_stem_resolves_to_its_high_and_low_noise_pair():
+    pairs = clip_stage.resolve_lora_pairs(["pixel_walk_lora_v1:0.7"])
+    assert pairs == {
+        "high": [{"file": "_Wan_14B_i2v/pixel_walk_lora_v1_high_noise.safetensors",
+                  "strength": 0.7}],
+        "low": [{"file": "_Wan_14B_i2v/pixel_walk_lora_v1_low_noise.safetensors",
+                 "strength": 0.7}],
+        "triggers": ["pix3lwalk"]}
+    # No strength: the registry's default.
+    assert clip_stage.resolve_lora_pairs(["pixel_walk_lora_v1"])["high"][0]["strength"] == 0.8
+
+
+def test_a_lora_the_registry_does_not_offer_for_14b_is_refused():
+    from anim import models_lock
+    with pytest.raises(models_lock.RegistryError):
+        clip_stage.resolve_lora_pairs(["pixel_art_style_z_image_turbo:0.8"])
+
+
+def test_the_trigger_is_put_in_front_of_the_prompt_once():
+    assert clip_stage.with_triggers("a walk", ["pix3lwalk"]) == "pix3lwalk, a walk"
+    assert clip_stage.with_triggers("pix3lwalk, a walk", ["pix3lwalk"]) == "pix3lwalk, a walk"
+    assert clip_stage.with_triggers("a walk", []) == "a walk"
+
+
+def test_the_5b_model_refuses_a_lora():
+    with pytest.raises(ValueError, match="14b"):
+        clip_stage.clip("any", model="5b", loras=["pixel_walk_lora_v1"])
+
+
+@pytest.mark.parametrize("model", ["14b-control", "14b-i2v"])
+def test_clip_on_14b_patches_both_experts_and_the_lora_pair(posed_job, batch_pngs,
+                                                            workflow_dir, tmp_path, model):
+    with FakeComfy(batch=batch_pngs) as fake:
+        client = comfy.ComfyClient(fake.url)
+        record = clip_stage.clip(posed_job.name, client=client, control="pose",
+                                 model=model, loras=["pixel_walk_lora_v1:0.75"],
+                                 prompt="side view walk", steps=6,
+                                 workflow_dir=workflow_dir, work_dir=posed_job.root.parent,
+                                 assets_dir=tmp_path / "no-assets",
+                                 reference=Path(posed_job.skeletons()[0]))
+    sent = fake.prompts[0]
+    high = sent[comfy.find_node(sent, "seed")]["inputs"]
+    low = sent[comfy.find_node(sent, "low-noise sampler")]["inputs"]
+    assert high["noise_seed"] == record["seed"]
+    assert (high["steps"], high["end_at_step"]) == (6, 3)
+    assert (low["steps"], low["start_at_step"]) == (6, 3)
+    # ComfyUI lists a library LoRA by its subfolder under the LoRA root.
+    assert sent[comfy.find_node(sent, "style lora high")]["inputs"]["lora_name"] == \
+        "_Wan_14B_i2v/pixel_walk_lora_v1_high_noise.safetensors"
+    files = {m["file"] for m in record["models"]}
+    assert {"pixel_walk_lora_v1_high_noise.safetensors",
+            "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"} <= files
+    assert sent[comfy.find_node(sent, "style lora low")]["inputs"]["strength_model"] == 0.75
+    assert sent[comfy.find_node(sent, "positive prompt")]["inputs"]["text"] == \
+        "pix3lwalk, side view walk"
+    assert record["model"] == model
+    assert record["loras"] == [{"stem": "pixel_walk_lora_v1", "strength": 0.75}]
+    assert record["workflow"] == clip_stage.CLIP_MODELS[model]["workflow"] + ".json"
+    if model == "14b-i2v":
+        assert record["control"] == "none"
+        assert f"anim_{posed_job.name}_control.mp4" not in fake.uploads
+    else:
+        assert record["control"] == "pose"
+
+
+def test_clip_on_14b_without_a_lora_bypasses_both_style_nodes(posed_job, batch_pngs,
+                                                              workflow_dir, tmp_path):
+    with FakeComfy(batch=batch_pngs) as fake:
+        client = comfy.ComfyClient(fake.url)
+        clip_stage.clip(posed_job.name, client=client, model="14b-i2v",
+                        workflow_dir=workflow_dir, work_dir=posed_job.root.parent,
+                        assets_dir=tmp_path / "no-assets",
+                        reference=Path(posed_job.skeletons()[0]))
+    sent = fake.prompts[0]
+    assert "PATCH style lora high" not in comfy.patch_points(sent)
+    assert "PATCH style lora low" not in comfy.patch_points(sent)
+    assert not any("pixel_walk" in json.dumps(node) for node in sent.values())

@@ -65,7 +65,7 @@ def test_the_lora_row_is_locked_and_commercially_usable():
         Path(__file__).resolve().parent.parent / "gpu" / "models.lock")}
     row = rows[config.CONCEPT_LORA["file"]]
     assert row.repo == config.CONCEPT_LORA["repo"]
-    assert row.subdir == "loras"
+    assert row.subdir == "lora/_Z_Image"  # the shared library layout
     assert row.license == "apache-2.0"
     assert len(row.sha256) == 64 and row.size > 100_000_000
 

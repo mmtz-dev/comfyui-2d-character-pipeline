@@ -106,6 +106,44 @@ WANT = [
     ("Comfy-Org/Wan_2.1_ComfyUI_repackaged",
      "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
      "text_encoders", "umt5_xxl_fp8_e4m3fn_scaled.safetensors"),
+
+    # --- the Wan 14B sprite LoRA test feature (#349, 2026-10-10) ---
+    # Two A14B models, each a high-noise + low-noise expert pair, to A/B a
+    # pixel-walk LoRA with and without rig control: I2V (what the LoRA was
+    # trained on) and Fun-Control (our skeleton route at 14B). fp8_scaled, not
+    # GGUF Q8: same 8-bit class, but GGUF needs a new node pack + the `gguf`
+    # package and a restart of the shared ComfyUI; the A5000 (sm_86) gets no
+    # fp8 speed-up either way (docs/research/2026-10-10-sprite-animation-landscape.md).
+    # The 14B line uses the 16-channel Wan 2.1 VAE, not the 5B's wan2.2_vae.
+    ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+     "split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors",
+     "diffusion_models", "wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors"),
+    ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+     "split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors",
+     "diffusion_models", "wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors"),
+    ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+     "split_files/diffusion_models/wan2.2_fun_control_high_noise_14B_fp8_scaled.safetensors",
+     "diffusion_models", "wan2.2_fun_control_high_noise_14B_fp8_scaled.safetensors"),
+    ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+     "split_files/diffusion_models/wan2.2_fun_control_low_noise_14B_fp8_scaled.safetensors",
+     "diffusion_models", "wan2.2_fun_control_low_noise_14B_fp8_scaled.safetensors"),
+    ("Comfy-Org/Wan_2.1_ComfyUI_repackaged",
+     "split_files/vae/wan_2.1_vae.safetensors",
+     "vae", "wan_2.1_vae.safetensors"),
+    # lightx2v 4-step distill LoRAs (Apache-2.0): ~80-140 s a clip instead of ~520 s.
+    ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+     "split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors",
+     "lora/_Wan_14B_i2v", "wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors"),
+    ("Comfy-Org/Wan_2.2_ComfyUI_Repackaged",
+     "split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors",
+     "lora/_Wan_14B_i2v", "wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors"),
+    # pix3lwalk (MIT): side-view pixel walk cycles, trigger "pix3lwalk", 0.7-0.9.
+    ("theamusing/wan2.2_pixel_walk_lora",
+     "pixel_walk_lora_v1_high_noise.safetensors",
+     "lora/_Wan_14B_i2v", "pixel_walk_lora_v1_high_noise.safetensors"),
+    ("theamusing/wan2.2_pixel_walk_lora",
+     "pixel_walk_lora_v1_low_noise.safetensors",
+     "lora/_Wan_14B_i2v", "pixel_walk_lora_v1_low_noise.safetensors"),
 ]
 
 # Hard licence gate: this project ships commercially, so nothing else is allowed.

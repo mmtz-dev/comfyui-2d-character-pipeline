@@ -11,7 +11,9 @@
 #
 # TAB-separated columns:
 #   file             dest_filename in models.lock (the join key)
-#   family           zimage | qwen-edit | wan   - the workflow stack it plugs into
+#   family           zimage | qwen-edit | wan | wan14b - the workflow stack it plugs into
+#                    (wan = the 5B line; wan14b = the A14B two-expert line, whose
+#                    LoRAs come as <stem>_high_noise / <stem>_low_noise pairs)
 #   role             checkpoint | lora | controlnet | te | vae
 #   label            what the picker shows
 #   trigger          a LoRA's trigger phrase ("-" for none)
@@ -34,3 +36,13 @@ Qwen-Image-2512-Master-Pixel-Art-LoRA.safetensors	qwen-edit	lora	Pixel-Art maste
 wan2.2_fun_control_5B_bf16.safetensors	wan	checkpoint	Wan 2.2 Fun-Control 5B	-	-
 umt5_xxl_fp8_e4m3fn_scaled.safetensors	wan	te	umT5-XXL text encoder	-	-
 wan2.2_vae.safetensors	wan	vae	Wan 2.2 VAE	-	-
+wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors	wan14b	checkpoint	Wan 2.2 I2V A14B high-noise (fp8)	-	-
+wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors	wan14b	checkpoint	Wan 2.2 I2V A14B low-noise (fp8)	-	-
+wan2.2_fun_control_high_noise_14B_fp8_scaled.safetensors	wan14b	checkpoint	Wan 2.2 Fun-Control A14B high-noise (fp8)	-	-
+wan2.2_fun_control_low_noise_14B_fp8_scaled.safetensors	wan14b	checkpoint	Wan 2.2 Fun-Control A14B low-noise (fp8)	-	-
+umt5_xxl_fp8_e4m3fn_scaled.safetensors	wan14b	te	umT5-XXL text encoder	-	-
+wan_2.1_vae.safetensors	wan14b	vae	Wan 2.1 VAE (16-channel, A14B line)	-	-
+wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors	wan14b	lora	lightx2v 4-step distill (high)	-	1.0
+wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors	wan14b	lora	lightx2v 4-step distill (low)	-	1.0
+pixel_walk_lora_v1_high_noise.safetensors	wan14b	lora	Pixel walk sprite (pix3lwalk, high)	pix3lwalk	0.8
+pixel_walk_lora_v1_low_noise.safetensors	wan14b	lora	Pixel walk sprite (pix3lwalk, low)	pix3lwalk	0.8

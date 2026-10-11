@@ -2,7 +2,7 @@
 # models.lock - the GPU image service feature
 # =====================================================================
 # RESOLVED LOCKFILE, not hand-written. Regenerate with gpu/relock_models.py.
-# Resolved 2026-09-26 from the Hugging Face API; every sha256 and size was
+# Resolved 2026-10-10 from the Hugging Face API; every sha256 and size was
 # read from BOTH /api/models/<repo>?blobs=true and
 # /api/models/<repo>/paths-info/<revision> and the two reads agreed.
 # Every repo below was confirmed ungated and Apache-2.0 via the same API.
@@ -11,7 +11,7 @@
 # install a file whose size or sha256 does not match a row here.
 # Verify a file by hand with:  sha256sum <file>
 #
-# Total: 62688957374 bytes = 58.38 GiB (62.69 GB)
+# Total: 122885249764 bytes = 114.45 GiB (122.89 GB)
 #
 # TAB-separated columns:
 #   repo_id  repo_revision  repo_file  dest_subdir  dest_filename  size_bytes  sha256  license
@@ -62,3 +62,12 @@ tarn59/pixel_art_style_lora_z_image_turbo	0a5092d1619664d94a5a36784f92db84b3ae62
 Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/diffusion_models/wan2.2_fun_control_5B_bf16.safetensors	diffusion_models	wan2.2_fun_control_5B_bf16.safetensors	10003303280	ace4718a7c87ee3e5606a68ab79142c4395e81aece76b8120bc886f0fbbe1d16	apache-2.0
 Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/vae/wan2.2_vae.safetensors	vae	wan2.2_vae.safetensors	1409400960	e40321bd36b9709991dae2530eb4ac303dd168276980d3e9bc4b6e2b75fed156	apache-2.0
 Comfy-Org/Wan_2.1_ComfyUI_repackaged	123acf1cc74bccbb9bfff8ac1ee72edc08c2341d	split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors	text_encoders	umt5_xxl_fp8_e4m3fn_scaled.safetensors	6735906897	c3355d30191f1f066b26d93fba017ae9809dce6c627dda5f6a66eaa651204f68	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/diffusion_models/wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors	diffusion_models	wan2.2_i2v_high_noise_14B_fp8_scaled.safetensors	14294742832	6122e79d55e0f235698d11d657f3b196c5273c830da00b2b013c5a048d5e6a42	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/diffusion_models/wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors	diffusion_models	wan2.2_i2v_low_noise_14B_fp8_scaled.safetensors	14294742832	5471a457b6ac404202a5fbe6c11595a3d5641fc766b00f38763f72303fffc21e	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/diffusion_models/wan2.2_fun_control_high_noise_14B_fp8_scaled.safetensors	diffusion_models	wan2.2_fun_control_high_noise_14B_fp8_scaled.safetensors	14296064656	aa2f6b6f4cfc8a75a273a075db31730530f93320a996b153b8825205c3a3c498	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/diffusion_models/wan2.2_fun_control_low_noise_14B_fp8_scaled.safetensors	diffusion_models	wan2.2_fun_control_low_noise_14B_fp8_scaled.safetensors	14296064656	0f83c7b1cd6d509ff3504a8f604ca9d9876a8b1ed04f6e05095c4a7ccb9009cd	apache-2.0
+Comfy-Org/Wan_2.1_ComfyUI_repackaged	123acf1cc74bccbb9bfff8ac1ee72edc08c2341d	split_files/vae/wan_2.1_vae.safetensors	vae	wan_2.1_vae.safetensors	253815318	2fc39d31359a4b0a64f55876d8ff7fa8d780956ae2cb13463b0223e15148976b	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors	lora/_Wan_14B_i2v	wan2.2_i2v_lightx2v_4steps_lora_v1_high_noise.safetensors	1226977424	d176c808d6fc461999b68e321efcb7501b20b8c3797523ed0df14f7d1deff11e	apache-2.0
+Comfy-Org/Wan_2.2_ComfyUI_Repackaged	ee6f4a40737a995bf5818954cfce6d59443b0f04	split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors	lora/_Wan_14B_i2v	wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors	1226977424	024f21de095bc8fad9809ded3e9e49a2e170dcf27075da8145ba7d60d8aab7f9	apache-2.0
+theamusing/wan2.2_pixel_walk_lora	306a0d549da139e287b7cdb6d53bc5fc91cb68af	pixel_walk_lora_v1_high_noise.safetensors	lora/_Wan_14B_i2v	pixel_walk_lora_v1_high_noise.safetensors	153453624	16f623f5513d30d665c29f47fb74685dce37413423e0e05a0b7fb6cacbe83b2f	mit
+theamusing/wan2.2_pixel_walk_lora	306a0d549da139e287b7cdb6d53bc5fc91cb68af	pixel_walk_lora_v1_low_noise.safetensors	lora/_Wan_14B_i2v	pixel_walk_lora_v1_low_noise.safetensors	153453624	e83e0d540c3002edf7c97b7a4312dd3fc0af35458978b2dad65883c4e9e6a4f5	mit

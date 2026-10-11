@@ -46,6 +46,18 @@ THE SEED IS DERIVED from the clip hash, action, slug and control mode, so a
 re-run reproduces; the picks cannot be part of it because the clip is rendered
 before `pick` runs. `--seed` re-rolls.
 
+THE 14B MODELS (the Wan 14B sprite LoRA test feature, #349). `--model`
+picks the graph: `5b` (the default, above), `14b-control` (Wan 2.2
+Fun-Control A14B - the same skeleton control and ref_image at 14B) or
+`14b-i2v` (Wan 2.2 I2V A14B - no control video; the reference is the FIRST
+FRAME and the motion comes from the prompt and the LoRA). A14B is two
+experts, high-noise for the first half of the steps and low-noise for the
+rest, both fp8 with the lightx2v 4-step LoRA baked into the graph. The sprite
+LoRAs for it come as pairs, so `--lora STEM[:STRENGTH]` names the pair and
+loads `<STEM>_high_noise` on the high expert and `<STEM>_low_noise` on the
+low one; its trigger goes in front of the prompt. Only the 14B graphs take
+a LoRA - none exists for the 5B (docs/research/2026-10-10-wan22-5b-loras.md).
+
 WHAT IT DOES NOT DO. It does not matte, pick or downscale: `post --input clip`
 mattes the picked frames with the same `--matte` choices the strip route has,
 and everything after that is unchanged.
@@ -74,6 +86,14 @@ HELP = "every rig frame -> one generated clip (Wan 2.2 Fun-Control; a GPU stage)
 CLIP_SCHEMA = "anim.clip/1"
 WORKFLOW = "clip_render"
 CONTROL_MODES = ("auto", "pose", "depth", "blend")
+# --model: which graph renders the clip. `pairs` = the model is a high/low-noise
+# expert pair whose LoRAs come as pairs too (registry family `wan14b`).
+CLIP_MODELS: dict[str, dict[str, Any]] = {
+    "5b": {"workflow": WORKFLOW, "control": True, "pairs": False},
+    "14b-control": {"workflow": "clip_render_14b_control", "control": True, "pairs": True},
+    "14b-i2v": {"workflow": "clip_render_14b_i2v", "control": False, "pairs": True},
+}
+LORA_FAMILY_14B = "wan14b"
 # A skeleton pixel is anything that is not the black ground the renderer uses.
 SKELETON_THRESHOLD = 16
 
@@ -249,6 +269,32 @@ def find_phrases(job: Job, manifest: dict[str, Any]) -> tuple[str | None, str | 
     return concept_stage.base_phrases(slug, job.root.parent)
 
 
+def resolve_lora_pairs(specs: list[str] | None, *, registry_path: Path | None = None,
+                       lock_path: Path | None = None) -> dict[str, list[Any]]:
+    """`["pixel_walk_lora_v1:0.7"]` -> the high- and low-noise files of each
+    pair, at one strength, plus their triggers. Both halves must be in the
+    registry as `wan14b` LoRAs; a missing strength is the registry default."""
+    out: dict[str, list[Any]] = {"high": [], "low": [], "triggers": []}
+    for spec in specs or []:
+        stem, strength = models_lock.parse_lora_spec(spec)
+        stem = stem.removesuffix(".safetensors")
+        for half in ("high", "low"):
+            row = models_lock.resolve_loras(
+                LORA_FAMILY_14B, [(f"{stem}_{half}_noise.safetensors", strength)],
+                path=registry_path, lock_path=lock_path)[0]
+            out[half].append({"file": models_lock.loader_name(row["file"], lock_path),
+                              "strength": row["strength"]})
+            if half == "high" and row["trigger"] and row["trigger"] not in out["triggers"]:
+                out["triggers"].append(row["trigger"])
+    return out
+
+
+def with_triggers(prompt: str, triggers: list[str]) -> str:
+    """Put each LoRA trigger in front of the prompt, unless it is already in it."""
+    missing = [t for t in triggers if t not in prompt]
+    return ", ".join([*missing, prompt]) if missing else prompt
+
+
 def fit_reference(source: Path, cell: tuple[int, int], dest: Path) -> Path:
     """Letterbox the reference onto the clip cell's aspect, on white.
 
@@ -319,10 +365,18 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
          depth_gain: float = 1.0,
          prompt: str | None = None, negative: str | None = None,
          steps: int | None = None, cfg: float | None = None,
-         reference: Path | None = None, client: comfy.ComfyClient | None = None,
+         reference: Path | None = None, model: str = "5b",
+         loras: list[str] | None = None, client: comfy.ComfyClient | None = None,
          workflow_dir: Path | None = None, lock_path: Path | None = None,
          work_dir: Path | None = None, assets_dir: Path | None = None,
          timeout_s: float = 1800.0) -> dict[str, Any]:
+    if model not in CLIP_MODELS:
+        raise ValueError(f"--model {model!r} is not one of {sorted(CLIP_MODELS)}")
+    spec = CLIP_MODELS[model]
+    if loras and not spec["pairs"]:
+        raise ValueError(f"--lora needs a 14b model (--model 14b-control | 14b-i2v): "
+                         f"no LoRA exists for the {model} graph")
+    pairs = resolve_lora_pairs(loras)
     job = Job.open(job_name, work_dir)
     manifest = job.read_manifest()
     skeletons = job.skeletons()
@@ -334,7 +388,7 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
     with Image.open(skeletons[0]) as first:
         cell = first.size
     check_cell(*cell)
-    mode = resolve_control(control, bool(job.depths()))
+    mode = resolve_control(control, bool(job.depths())) if spec["control"] else "none"
     frames = len(skeletons)
     length = padded_length(frames)
     fps = int(manifest.get("fps") or config.EXTRACT_FPS)
@@ -347,21 +401,31 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
         raise comfy.unreachable(client.base_url, exc) from exc
 
     job.clip_dir.mkdir(parents=True, exist_ok=True)
-    control_frames, mapping = build_control_frames(job, mode, length, cell, depth_gain)
-    video = encode_control_video(control_frames[0].parent, job.clip_dir / "control.mp4", fps)
+    if spec["control"]:
+        control_frames, mapping = build_control_frames(job, mode, length, cell, depth_gain)
+        video = encode_control_video(control_frames[0].parent, job.clip_dir / "control.mp4",
+                                     fps)
+    else:
+        # Image-to-video: no control video; the frames still map 1:1 to the rig's.
+        mapping, video = frame_map(frames, length), None
     reference_source, reference_kind = find_reference(job, manifest, reference, assets_dir)
     reference_path = fit_reference(reference_source, cell, job.clip_dir / "reference.png")
 
-    workflow = comfy.load_workflow(WORKFLOW, workflow_dir)
+    workflow_name = spec["workflow"]
+    workflow = comfy.load_workflow(workflow_name, workflow_dir)
     # Both go to the input ROOT under job-unique names: LoadImage and LoadVideo
     # list only the root, and two jobs must not overwrite each other's inputs.
     comfy.patch(workflow, "reference image",
                 image=client.upload_image(reference_path,
                                           name=f"anim_{job.name}_reference.png"))
-    comfy.patch(workflow, "control video",
-                file=client.upload_image(video, name=f"anim_{job.name}_control.mp4"))
+    if video is not None:
+        comfy.patch(workflow, "control video",
+                    file=client.upload_image(video, name=f"anim_{job.name}_control.mp4"))
     comfy.patch(workflow, "clip size", width=cell[0], height=cell[1], length=length)
-    comfy.patch(workflow, "seed", seed=seed)
+    comfy.patch(workflow, "seed", **{"noise_seed" if spec["pairs"] else "seed": seed})
+    if spec["pairs"]:
+        comfy.chain_loras(workflow, "style lora high", pairs["high"])
+        comfy.chain_loras(workflow, "style lora low", pairs["low"])
     comfy.patch(workflow, "output prefix",
                 filename_prefix=f"anim_pipeline/{job.name}/clip/frame")
     # The prompt names the cell's view (the camera direction feature): s0 is the
@@ -375,18 +439,26 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
                          or config.DEFAULT_DIRECTION)
     parts_phrase, avoid_phrase = find_phrases(job, manifest)
     comfy.patch(workflow, "positive prompt",
-                text=prompt or config.clip_prompt(manifest.get("action") or "",
-                                                  direction_cell, parts_phrase))
+                text=with_triggers(prompt or config.clip_prompt(manifest.get("action") or "",
+                                                                direction_cell, parts_phrase),
+                                   pairs["triggers"]))
     if negative:
         comfy.patch(workflow, "negative prompt", text=negative)
     elif parts_phrase:
         template = workflow[comfy.find_node(workflow, "negative prompt")]["inputs"]["text"]
         comfy.patch(workflow, "negative prompt",
                     text=config.clip_negative(template, avoid_phrase))
-    if steps is not None:
+    if steps is not None and spec["pairs"]:
+        # The high-noise expert takes the first half of the steps, the low the rest.
+        half = int(steps) // 2
+        comfy.patch(workflow, "seed", steps=int(steps), end_at_step=half)
+        comfy.patch(workflow, "low-noise sampler", steps=int(steps), start_at_step=half)
+    elif steps is not None:
         comfy.patch(workflow, "seed", steps=int(steps))
     if cfg is not None:
         comfy.patch(workflow, "seed", cfg=float(cfg))
+        if spec["pairs"]:
+            comfy.patch(workflow, "low-noise sampler", cfg=float(cfg))
 
     pngs, run_record = submit_batch(client, workflow, timeout_s=timeout_s)
     if len(pngs) != length:
@@ -407,7 +479,7 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
         written.append(path.name)
 
     models = [m.as_sidecar_entry() for m in models_lock.for_workflow(workflow, lock_path)]
-    run_record |= {"name": "clip_render", "workflow": f"{WORKFLOW}.json", "seed": seed,
+    run_record |= {"name": "clip_render", "workflow": f"{workflow_name}.json", "seed": seed,
                    "file": f"frames/{written[0]}" if written else None, "models": models}
     provenance = render_stage.build_provenance(client.base_url, stats, seed, [run_record])
     provenance["final"] = "frames"
@@ -417,11 +489,15 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
         "schema": CLIP_SCHEMA,
         "job": job.name,
         "created": dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds"),
-        "workflow": f"{WORKFLOW}.json",
+        "workflow": f"{workflow_name}.json",
         "workflow_sha256": run_record["workflow_sha256"],
+        "model": model,
+        "loras": [{"stem": models_lock.parse_lora_spec(s)[0].removesuffix(".safetensors"),
+                   "strength": h["strength"]}
+                  for s, h in zip(loras or [], pairs["high"])],
         "control": mode,
-        "depth_gain": float(depth_gain) if mode != "pose" else None,
-        "control_video": video.name,
+        "depth_gain": float(depth_gain) if mode not in ("pose", "none") else None,
+        "control_video": video.name if video is not None else None,
         "reference": {"file": str(reference_source), "kind": reference_kind,
                       "sent": reference_path.name},
         "cell": list(cell),
@@ -442,7 +518,7 @@ def clip(job_name: str, *, seed: int | None = None, control: str = "auto",
     write_json_in_place(job.clip_path, record)
     # `clip` in the manifest is the CLIP FILE `extract`/`rig` recorded; this
     # stage's block is `clip_render`, like `render` has its own.
-    job.update_manifest(clip_render={"seed": seed, "control": mode,
+    job.update_manifest(clip_render={"seed": seed, "control": mode, "model": model,
                                      "frames": len(written), "length": length,
                                      "cell": list(cell),
                                      "seconds": run_record["seconds"]})
@@ -477,6 +553,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--reference", default=None,
                         help="identity image (default: work/<unit>_base/render/"
                              "base_sprite.png, else the published sprite x8)")
+    parser.add_argument("--model", default="5b", choices=sorted(CLIP_MODELS),
+                        help="which Wan graph: 5b = Fun-Control 5B (default); "
+                             "14b-control = Fun-Control A14B, same skeleton control; "
+                             "14b-i2v = I2V A14B, the reference is the first frame "
+                             "and there is no control video")
+    parser.add_argument("--lora", action="append", default=None, metavar="STEM[:STRENGTH]",
+                        help="a 14B LoRA pair by stem, e.g. pixel_walk_lora_v1:0.8 - "
+                             "loads <stem>_high_noise / <stem>_low_noise on the two "
+                             "experts (repeatable; 14b models only)")
     parser.add_argument("--timeout", type=float, default=1800.0,
                         help="seconds to wait for the /prompt job")
 
@@ -487,8 +572,9 @@ def run_stage(args: argparse.Namespace) -> int:
                   depth_gain=args.depth_gain, prompt=args.prompt,
                   negative=args.negative, steps=args.steps, cfg=args.cfg,
                   reference=Path(args.reference) if args.reference else None,
+                  model=args.model, loras=args.lora,
                   client=client, timeout_s=args.timeout)
-    print(f"clip: {record['frames']} frame(s) ({record['length']} sent, "
+    print(f"clip: {record['frames']} frame(s) ({record['length']} sent, {record['model']}, "
           f"{record['control']} control) at {record['cell'][0]}x{record['cell'][1]}, "
           f"seed {record['seed']}, {record['seconds']} s")
     print(f"  reference: {record['reference']['file']} ({record['reference']['kind']}, "
