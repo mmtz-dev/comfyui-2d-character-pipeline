@@ -108,7 +108,7 @@ The studio panel reads like the pipeline it drives: Concept → Views → Animat
 - [ ] **the pipeline tabs docs feature** *(In progress)* · [#327](http://192.168.1.158:8700/work_packages/327)
   README, DEVLOG, CONTEXT.md and the design doc for the pipeline tabs feature.
 
-### the Wan 14B sprite LoRA test feature · [#349](http://192.168.1.158:8700/work_packages/349)
+### the Wan 14B sprite LoRA test feature *(In progress)* · [#349](http://192.168.1.158:8700/work_packages/349)
 
 Question: does Wan 2.2 image-to-video 14B plus a LoRA trained on pixel-art sprite animations make usable sprite motion on our own GPU, close enough…
 
