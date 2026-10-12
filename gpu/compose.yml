@@ -57,7 +57,7 @@ services:
     # SELinux confinement, which is what lets it open the injected NVIDIA
     # device nodes AND read the bind mounts below without relabelling them.
     # Deliberately NOT `:z` / `:Z` on the volumes: those relabel the host
-    # directory, and "/mnt/private/AI Data/models/Image Models" is a shared
+    # directory, and "/mnt/virt-containers/ai-models/image" is a shared
     # library other services read - relabelling it would be a side effect on
     # their data. This is the same trade clone-studio's compose.gpu.yml makes.
     security_opt:

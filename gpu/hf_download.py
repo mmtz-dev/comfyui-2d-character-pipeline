@@ -5,7 +5,7 @@ Runs INSIDE a throwaway python:3.12-slim container on Docker Desktop
 (the Fedora host has Python 3.14 and no pip). Never run this on the host.
 
 Mounts expected inside the container:
-    /models   -> "/mnt/private/AI Data/models/Image Models"      (rw)
+    /models   -> "/mnt/virt-containers/ai-models/image"      (rw)
     /hf-cache -> "/mnt/private/AI Data/comfyui-basedir/hf-cache" (rw, deletable)
     /spec     -> tools/anim-pipeline/gpu                          (ro)
 

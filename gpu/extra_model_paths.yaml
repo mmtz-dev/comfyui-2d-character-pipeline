@@ -6,7 +6,7 @@
 #   --extra-model-paths-config /extra_model_paths.yaml
 #
 # Purpose: expose the shared image-model library on this host at
-#   /mnt/private/AI Data/models/Image Models/
+#   /mnt/virt-containers/ai-models/image/
 # (mounted read-only at /shared-models). Since 2026-10-02 this pipeline's own
 # locked weights live there too (gpu/download_models.sh installs them there), so
 # every image model on the machine is in one folder with a usage note beside it.

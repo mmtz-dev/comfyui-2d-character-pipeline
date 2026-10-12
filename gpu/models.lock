@@ -17,7 +17,7 @@
 #   repo_id  repo_revision  repo_file  dest_subdir  dest_filename  size_bytes  sha256  license
 #
 # dest_subdir is relative to the shared image-model library
-# ("/mnt/private/AI Data/models/Image Models"), i.e. the GPU container's
+# ("/mnt/virt-containers/ai-models/image"), i.e. the GPU container's
 # /shared-models/<dest_subdir>/<dest_filename>. LoRAs follow the library's
 # lora/_<Base>/ layout.
 #
