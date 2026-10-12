@@ -197,7 +197,9 @@ sudo systemctl stop docker      # TTY again; optional
 │   ├── hf-cache/                    download_models.sh's blob cache (deletable)
 │   ├── custom_nodes/                ComfyUI-nunchaku, ComfyUI-Image-Saver (pinned)
 │   ├── input/  output/  user/
-└── models/Image Models/             -> container /shared-models  (READ-ONLY)
+└── models/Image Models/             old copy of the library; no longer mounted since 2026-10-11
+
+/mnt/virt-containers/ai-models/image/ -> container /shared-models  (READ-ONLY; the NVMe copy of the library)
     ├── diffusion_models/            z_image_turbo_int8_convrot, nunchaku qwen-edit int4, wan2.2 fun control
     ├── text_encoders/               qwen_3_4b_fp8_mixed, qwen_2.5_vl_7b_fp8_scaled, umt5_xxl
     ├── vae/                         z_image_ae, qwen_image_vae, wan2.2_vae (+ Forge's own VAEs)

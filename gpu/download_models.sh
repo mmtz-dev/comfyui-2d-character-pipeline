@@ -18,7 +18,7 @@ set -euo pipefail
 
 GPU_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BASEDIR="${COMFYUI_BASEDIR:-/mnt/private/AI Data/comfyui-basedir}"
-MODELS_DIR="${IMAGE_MODELS_DIR:-/mnt/private/AI Data/models/Image Models}"
+MODELS_DIR="${IMAGE_MODELS_DIR:-/mnt/virt-containers/ai-models/image}"
 # Blob cache outside the library, so it never shows up as models; safe to delete
 # once the weights are verified (see gpu/README.md).
 CACHE_DIR="$BASEDIR/hf-cache"

@@ -90,9 +90,9 @@ services:
       # Pre-populated by gpu/download_models.sh (models) and by the pinned
       # clones listed in gpu/custom_nodes.txt (custom_nodes).
       - "/mnt/private/AI Data/comfyui-basedir:/basedir"
-      # The pre-existing shared checkpoint library, read-only, so nothing is
+      # The shared image-model library (on the NVMe since 2026-10-11), read-only, so nothing is
       # duplicated. Wired in by extra_model_paths.yaml below.
-      - "/mnt/private/AI Data/models/Image Models:/shared-models:ro"
+      - "/mnt/virt-containers/ai-models/image:/shared-models:ro"
       # Repo-owned config, mounted read-only so the repo stays the source of truth.
       - "./extra_model_paths.yaml:/extra_model_paths.yaml:ro"
       # Repo-owned start-up scripts, run by the init in name order inside the
