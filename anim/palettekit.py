@@ -418,6 +418,75 @@ def colours_of_sprite(path: Path) -> list[RGB]:
     return sorted(colours)
 
 
+def _toe(lightness: Any) -> Any:
+    """Oklab L -> Ottosson's Lr (the "toe" of Okhsl/Okhsv): Oklab spreads the
+    darks far wider than the eye does, so #000000 and #060006 sat 0.08 apart -
+    four merge steps - and the wanderer's own-art palette spent six slots on
+    blacks nobody can tell apart. Lr is L made perceptually even near black.
+    https://bottosson.github.io/posts/colorpicker/#intermission---a-new-lightness-estimate-for-oklab"""
+    import numpy as np
+
+    k1, k2 = 0.206, 0.03
+    k3 = (1 + k1) / (1 + k2)
+    x = k3 * np.asarray(lightness) - k1
+    return 0.5 * (x + np.sqrt(x * x + 4 * k2 * k3 * np.asarray(lightness)))
+
+
+# reduce_colours: Oklab merge distance to start from (~1 just-noticeable
+# step), how fast it grows while too many colours remain, and the share of
+# pixels under which a colour is a speck, not a palette entry.
+MERGE_START = 0.02
+MERGE_GROWTH = 1.15
+MERGE_MIN_SHARE = 0.002
+
+
+def reduce_colours(pixels: Any, count: int) -> list[RGB]:
+    """At most `count` colours standing for `pixels` ((N, 3) 0..255), each one a
+    colour that really occurs in them.
+
+    Near-identical colours merge: heaviest first, each colour joins the first
+    kept colour within MERGE_START in Oklab (lightness read as Lr, `_toe`;
+    about one just-noticeable step), else is kept itself; while more than
+    `count` are kept, the distance grows
+    by MERGE_GROWTH and the merge reruns. Colours drawn by under MERGE_MIN_SHARE
+    of the pixels are left out of the count - a model's stray specks, which
+    `post` snaps to their nearest kept colour anyway. A k-means seeded by
+    pixel count was tried first: on the wanderer the dark outline, the
+    heaviest colour, took six of sixteen slots as near-black variants and the
+    coat browns got none (2026-10-11). Deterministic; sorted dark to light."""
+    import numpy as np
+    from anim.partkit import srgb_to_oklab
+
+    pixels = np.asarray(pixels, dtype=np.int64).reshape(-1, 3)
+    if not len(pixels):
+        raise PaletteError("no opaque pixels to take colours from")
+    unique, weights = np.unique(pixels, axis=0, return_counts=True)
+    order = np.lexsort((np.arange(len(unique)), -weights))   # heaviest first, stable
+    unique, weights = unique[order], weights[order]
+    lab = srgb_to_oklab(unique)
+    lab[:, 0] = _toe(lab[:, 0])
+    floor = MERGE_MIN_SHARE * weights.sum()
+    distance = MERGE_START
+    while True:
+        kept: list[int] = []
+        totals: list[int] = []
+        for index in range(len(unique)):
+            if kept:
+                gaps = np.sqrt(((lab[kept] - lab[index]) ** 2).sum(axis=1))
+                near = int(gaps.argmin())
+                if gaps[near] <= distance:
+                    totals[near] += int(weights[index])
+                    continue
+            kept.append(index)
+            totals.append(int(weights[index]))
+        real = [k for k, total in zip(kept, totals) if total >= floor] or kept[:1]
+        if len(real) <= count:
+            break
+        distance *= MERGE_GROWTH
+    return [tuple(int(v) for v in unique[k])
+            for k in sorted(real, key=lambda k: (float(lab[k, 0]), k))]
+
+
 def subset_of(colours: Sequence[RGB], project: Sequence[RGB], *,
               snap: bool) -> tuple[list[RGB], list[RGB]]:
     """(the colours as members of the project palette, the strays).
@@ -439,12 +508,18 @@ def subset_of(colours: Sequence[RGB], project: Sequence[RGB], *,
 
 def write_unit_palette(slug: str, colours: Sequence[RGB], *, source: dict[str, Any],
                        target: Path | None = None,
-                       snap_strays: bool = False) -> dict[str, Any]:
+                       snap_strays: bool = False,
+                       off_palette: bool = False) -> dict[str, Any]:
     """The unit's allowed subset of the project palette, written in place.
 
     Every colour must be a member of the project palette: with `snap_strays`
     an outsider is moved to its nearest member and reported in the record,
     without it the write is refused and the message lists them.
+
+    `off_palette` (a palette taken from the unit's own art, `--from-art`) lifts
+    that rule: the colours are kept as they are and the record says the unit
+    is off-palette, which `post` repeats in every report. Why this is allowed:
+    docs/adr/0001-unit-palettes-may-leave-the-project-palette.md.
     """
     slug = unit_slug(slug)
     record = load(target)
@@ -453,7 +528,10 @@ def write_unit_palette(slug: str, colours: Sequence[RGB], *, source: dict[str, A
         raise PaletteError(f"no project palette at {target_shown} - install one first "
                            f"(`anim palette --lospec <slug>` or `--file <path>`)")
     project = [rgb_of(c) for c in record["colours"]]
-    kept, strays = subset_of(dedupe(colours), project, snap=snap_strays)
+    if off_palette:
+        kept, strays = dedupe(colours), []
+    else:
+        kept, strays = subset_of(dedupe(colours), project, snap=snap_strays)
     if strays and not snap_strays:
         shown = ", ".join(hex_of(c) for c in strays[:8])
         raise PaletteError(f"{len(strays)} colour(s) are not in the project palette "
@@ -470,8 +548,12 @@ def write_unit_palette(slug: str, colours: Sequence[RGB], *, source: dict[str, A
         "source": dict(source),
         "snapped": [hex_of(c) for c in strays] if strays else [],
         "project": {"name": record["name"], "count": record["count"]},
-        "_note": ("The colours this unit may use, a subset of the project palette. "
-                  "`post` remaps the unit's frames to these and narrows the part "
+        "off_palette": bool(off_palette),
+        "_note": (("The colours this unit may use, taken from its own art and NOT "
+                   "a subset of the project palette: the unit is off-palette, by "
+                   "choice (docs/adr/0001). " if off_palette else
+                   "The colours this unit may use, a subset of the project palette. ")
+                  + "`post` remaps the unit's frames to these and narrows the part "
                   "palette lock to them; delete this file and the whole project "
                   "palette applies again."),
     }
@@ -499,8 +581,10 @@ def unit_colours(slug: str, project: Sequence[RGB],
     record = read_unit_palette(slug, target)
     if record is None:
         return list(project), None
-    members = set(project)
     colours = [rgb_of(c) for c in record["colours"]]
+    if record.get("off_palette"):
+        return colours, record      # never a subset, so nothing to go stale
+    members = set(project)
     strays = [c for c in colours if c not in members]
     if strays:
         shown = ", ".join(hex_of(c) for c in strays[:6])

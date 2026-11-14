@@ -112,7 +112,7 @@ The studio panel reads like the pipeline it drives: Concept → Views → Animat
 
 Question: does Wan 2.2 image-to-video 14B plus a LoRA trained on pixel-art sprite animations make usable sprite motion on our own GPU, close enough…
 
-### the pixel grid downscale feature · [#350](http://192.168.1.158:8700/work_packages/350)
+### the pixel grid downscale feature *(In progress)* · [#350](http://192.168.1.158:8700/work_packages/350)
 
 Goal: anim post turns AI "fake pixel art" frames into true pixel sprites without the blur of today's area-average downscale, so a 64 px sprite keeps…
 

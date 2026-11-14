@@ -113,7 +113,7 @@ docker compose run --rm anim export knight              # sheets + atlas + Sprit
 | `strip <job>` | picks + skeletons | `strip/skeleton_strip.png`, `reference_512.png`, `reference_strip.png`, `layout.json` | asserts the strip is non-square and both dimensions are multiples of 16. |
 | `render <job>` | strip | `render/pose_pass.png`, `identity_pass.png`, `provenance.json` | **a GPU stage.** Two `/prompt` jobs, not one graph. Seed is derived from the clip hash + action + picks unless `--seed` is given, so a re-run reproduces. |
 | `clip <job>` | every skeleton (+ `depth/` if `rig` wrote it) | `clip/frames/%04d.png`, `clip/control.mp4`, `clip/clip.json`, `clip/provenance.json` | **a GPU stage — the clip render feature.** Renders the whole rig clip as one Wan 2.2 Fun-Control 5B video with the unit's `base` render as the identity reference and the skeleton PNGs as the control video, one generated frame per rig frame (padded to 4n+1 by holding the last; `clip.json.frame_map`). `--control auto|pose|depth|blend` (auto = blend when `depth/` exists) and `--depth-gain` decide what the control video carries. Rig the job at the clip cell first: `rig … --width 512 --height 768` (768×768 for a lying death). Measured 2026-09-17: 9–55 s of GPU per action. Then `pick` as usual and `post --input clip`. **`--model 14b-control|14b-i2v`** (the Wan 14B sprite LoRA test feature, 2026-10-10) renders on Wan 2.2 A14B instead — Fun-Control with the same skeleton control, or image-to-video with the reference as the first frame and no control video — fp8 experts with the lightx2v 4-step LoRA built in; **`--lora STEM[:STRENGTH]`** loads a 14B LoRA pair (`<stem>_high_noise` / `_low_noise`, registry family `wan14b`, e.g. `pixel_walk_lora_v1:0.8`) and puts its trigger in front of the prompt. Measured: ~524 s for 22 frames at 512×768 on a cold load. See "The clip route" below. |
-| `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → pixeloe → palette snap → recanvas → verify. A frame that fails verification is not written. **The snap is the only quantisation in the pipeline** (the palette feature): `-remap` to the project palette, or to the unit's sub-palette when `palette_units/<slug>.json` exists; `--no-snap` is a raw-colour preview (matted, downscaled, recanvassed, not remapped) that `publish` refuses. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
+| `post <job>` | generated strip, or `--input clip` | `post/<slug>_<action>_<n>.png`, `report.json` | deterministic and entirely outside ComfyUI: matte → slice → grid repair → downscale (`--downscale box`, the default, or `pixeloe`) → palette snap → recanvas → verify. A frame that fails verification is not written. **`--downscale grid`** (the pixel grid downscale feature) instead measures the job's art grid once, takes one colour per art pixel at the sprite's true size, and places every frame with one shared offset; see "The pixel grid downscale" below. **The snap is the only quantisation in the pipeline** (the palette feature): `-remap` to the project palette, or to the unit's sub-palette when `palette_units/<slug>.json` exists; `--no-snap` is a raw-colour preview (matted, downscaled, recanvassed, not remapped) that `publish` refuses. `--matte rembg` (default) is the real cut; `--matte chroma` is a deterministic flat-background key — use it on drawn or fixture strips, where `isnet-anime` has no character to find and returns an empty mask. `--input clip` takes the picked frames from `clip/frames/` one by one instead of slicing a strip; `report.json.route` records which. **`--parts`** (the part palette lock feature, off by default): SAM 2.1 masks each HD cell into the unit's parts (`config.UNIT_PARTS`, prompted from the rig's joints and prop outlines), and after the palette snap every pixel of a part is re-snapped to *that part's* colours on the base sprite. On a base job it EXTRACTS those palettes to `post/parts.json`; on an action it LOCKS to them (`--parts-from FILE` overrides the lookup: published `<slug>.json` sidecar, then `work/<slug>_base/post/parts.json`). `report.json` gets per-frame, per-part pixels / colours / `found` / `drift`, and `post/parts/` the HD overlays and 64 px label maps. See "The part palette lock" below. |
 | `publish <job>` | finished frames | `assets/2d/units/…` + one sidecar | **the game-02 adapter** of the spritesheet export feature — what game-02 reads today, unchanged: copies **in place** (never rename), clears stale numbered frames, writes `contract.timing` + `generation.timing_source` (hand edit > what `pick` recorded > template > uniform, which writes no block; a phased pick adds `fps`, `loop`, `phases` and `durations_ms` to the block), then runs game-02's asset audit and fails loudly on a non-zero exit. `anim export --adapter game02` runs it per job. |
 | `export <unit>` | every `post/` of `<unit>_<action>[_<dir>]` | `work/_export/<unit>/sheets/*.png`, `atlas.json`, `<unit>.tres`, `preview.html` | **the spritesheet export feature** — the generic contract. One sheet per direction with one row per action (`--sheet packed`: one row-major sheet), a schema-versioned atlas (rects, phase tag and `duration_ms` per frame, loop, pivot, source job + commit), and a Godot 4 `SpriteFrames` over the sheets with per-frame durations — checked by reading it back before the stage returns. The cell is `frame_size` from `work/project.json` (`--size N` / `WxH` overrides). Missing cells are listed warnings, not errors. `--adapter game02` (or `export.adapter` in the settings) also runs `publish` per job. See "Export" below. |
 | `base --unit <slug>` | a canned standing skeleton, or `--rig <glb> --clip Idle --frame 0` | `assets/2d/units/<slug>.png` + sidecar | for a unit with no sprite yet: the pose stack alone, one 512×768 portrait cell, `contract.frames [1, 1]`. With `--rig` the standing pose is one sampled frame of a rig clip at the same facing and scale as that rig's action strips, and `--yaw` / `--elevation` view it from any direction cell (job `<slug>_base_<dir>`; the default `<slug>_base` is unchanged); `--skeleton-only` stops before the GPU, and `--repose` re-lays the canned skeleton on a base job that already exists (the front base pose feature — no GPU, and unlike a re-pick it leaves the render and the accepted views alone). `--parts` extracts the unit's part palettes from the finished sprite and publishes them in its sidecar (`generation.parts`), which is where every action of that unit then reads them from. |
@@ -238,6 +238,39 @@ docker compose run --rm anim post knight_strike --parts
 - Read `anim/partkit.py` for the measured reasons behind each choice (why negatives are used
   to choose SAM's candidate rather than fed to it, why no box, why Oklab).
 
+### The pixel grid downscale
+
+`post --downscale grid` turns a model's "fake pixel art" (every art pixel drawn as a block
+several HD pixels wide) back into true pixels, without the blur of `box`.
+[#350](http://192.168.1.158:8700/work_packages/350). Code and the reasoning behind each
+choice: `anim/gridkit.py`.
+
+```bash
+docker compose run --rm anim post wanderer_walk --input clip --downscale grid            # true size
+docker compose run --rm anim post wanderer_walk --input clip --downscale grid --fit band # squeeze to the band
+```
+
+- **One art grid per job.** The pitch (HD pixels per art pixel) is measured once, from
+  every frame together: each frame's edge profile, autocorrelated, summed over the job,
+  read to 0.01 px. Every frame is then sampled on that one grid, taking the dominant colour
+  of each block's central half. Re-measuring per frame changes the scale per frame.
+- **One offset per job.** The union of every frame's figure is placed bottom-centre, so
+  a figure that moves in the clip still moves on the canvas.
+- **True size.** `--fit true` (default) keeps the art grid's own size: a warning when it
+  misses the unit's band by more than `GRID_HEIGHT_TOLERANCE` (4 px), and a refusal, with
+  the HD height to render at, when the figure doesn't fit the 64×64 canvas. `--fit band`
+  re-samples on a coarser grid that makes the figure exactly the band height: it fits, but
+  each output pixel stands for more than one art pixel, so detail is lost.
+- **Fallback.** A job with no measurable grid posts with `box`, and
+  `report.json.grid.fallback` says so. `--parts` is refused with grid for now.
+- **The report.** `report.json.grid`: `pitch`, `origin`, `per_frame` pitches, `spread`
+  and `flagged` (frames disagreeing by over 10%), `true_height`, `native_height` (as
+  posted), `sampled_pitch`, `fit`, `warnings`.
+- **Measured on the wanderer walk** (22 Wan 14B i2v frames, 2026-10-11): pitch 5.65
+  (checked by eye on an 8× crop), so the figure is 39×84 art pixels and too tall for 64×64
+  at true size. The fix is rendering it at ~300 HD px tall; until then, `--fit band` posts
+  it at 53 px. Comparison page: http://192.168.1.158:8090/wanderer/grid-downscale/
+
 ### The project palette — the palette feature
 
 One project palette, from Lospec, per-unit sub-palettes, **snapped at export**: `concept`,
@@ -249,6 +282,9 @@ is remapped (sprite-studio.md §2). [#282](http://192.168.1.158:8700/work_packag
 docker compose run --rm anim palette --lospec lospec-2000
 docker compose run --rm anim palette --file /assets_src/palette_candidates/grim32/grim32.gpl
 docker compose run --rm anim palette --list
+
+# a unit's own colours, taken from its art - may leave the project palette (off-palette)
+docker compose run --rm anim palette --unit wanderer --from-art wanderer_walk --max-colours 16
 
 # a unit's sub-palette: what the knight may use, out of the project's colours
 docker compose run --rm anim palette --unit knight --from-sprite /assets/2d/units/knight.png
@@ -278,6 +314,17 @@ docker compose run --rm anim post knight_strike --no-snap
   a sprite's outsider snaps to its nearest member and the record says which. A unit with
   no file gets the whole project palette — exactly the path every job took before the
   feature, byte for byte.
+- **Off-palette units** (`--from-art JOB`, the pixel grid downscale feature, #350). The one
+  exception to "a subset": the colours the unit's own art drew — JOB's frames (its clip
+  picks when it has a clip, else its strip; default `<unit>_base`) matted with `--matte`,
+  sampled one colour per art pixel on the job's art grid, merged to at most
+  `--max-colours` (default 16). Near-identical colours merge heaviest-first in Oklab, with
+  Ottosson's Lr lightness so the darks don't eat the palette. The record carries
+  `"off_palette": true`, it never goes stale when the project palette changes, and every
+  `post` of the unit says `OFF-PALETTE` and sets `report.json.palette.unit_palette.off_palette`.
+  Why it's allowed: [ADR 0001](docs/adr/0001-unit-palettes-may-leave-the-project-palette.md)
+  — snapping the wanderer to the nearest project colour turned its hair maroon, and a
+  subset can't fix that.
 - **What `post` does with it.** The `-remap` palette becomes the unit's subset, the
   verification checks against the same subset, and the part palette lock (which runs
   *after* the remap, order unchanged) is narrowed to it — a base sprite posted before the
@@ -1288,7 +1335,7 @@ human-editable source and the PNG `magick -remap` needs is derived from it.
 ## Tests
 
 ```bash
-docker compose run --rm anim-pipeline pytest        # 695 passed, 4 skipped (2026-09-27)
+docker compose run --rm anim-pipeline pytest        # 729 passed, 4 skipped (2026-10-11)
 cd web && npm test                                  # 88 passed in 7 files - the editor panel's pure parts
 ```
 

@@ -1,0 +1,41 @@
+# What open-source tools convert AI "fake pixel art" into true-resolution sprites (grid detection + one colour per cell + palette)?
+
+## Short answer
+Several MIT-licensed tools detect the grid and sample one colour per cell: proper-pixel-art (Python, Hough lines), unfake.py (Python + Rust, runs/edge scale), perfectPixel (Python, FFT + Sobel), Pixel Snapper (Rust), and unfake.js. For a CPU Python Docker pipeline with a fixed Lospec palette and frame consistency, use proper-pixel-art (it already shares one grid and palette across GIF/video frames) or, better for control, detect the grid once per animation yourself (via proper-pixel-art or perfectPixel) and then sample every frame on that single grid, mapping to the fixed palette afterwards. PixelOE and pixeldetector are weaker fits (user-set pixel size / JPEG-repair focus).
+
+## Findings
+Dates are GitHub `pushed_at` fetched 2026-10-10.
+
+- **proper-pixel-art** (KennethJAllen) · MIT · Python, `pip install proper-pixel-art`, CLI `ppa`, library `pixelate()`/`pixelate_video()`, CPU only (OpenCV/numpy) · last push 2026-10-10 · 562 stars. Grid: upscale 2x, Canny edges, morphological close, probabilistic Hough for near-horizontal/vertical lines, snap to gradient-profile peaks; pixel width from median line gap, validated by within-cell colour variance. Colour per cell: `dominant` (default, original colours, offset binning, merges near-duplicates) or `palette` mode (quantise to N colours then most common per cell). Video/GIF: frames share one grid and palette. Weaknesses: works best when the image is already roughly grid-aligned; round/low-quality subjects can fail; colour count needs trial and error; no documented fixed-palette (Lospec) input, only a colour count; PyAV wheels bundle GPL FFmpeg (only matters if you use video features and redistribute). [README](https://github.com/KennethJAllen/proper-pixel-art)
+- **unfake.py** (painebenjamin) · MIT · Python 3.8+ with Rust-accelerated core (`pip install unfake`, source build needs Rust), CLI `unfake`, API `process_image_sync()`, CPU, no GPU · last push 2026-07-30 · 63 stars. Scale detection: runs-based (GCD of colour run lengths) or edge-aware (Sobel), `auto` tries runs first; then grid snapping. Colour per cell: `dominant` (default; falls back to mean), `median`, `mode`, `mean`, `content-adaptive` (Kopf and Lischinski 2011). Quantisation: Wu's algorithm, and a fixed palette is supported (`--palette` hex file or `fixed_palette=[...]`). Weaknesses: runs-based detection suits clean pixel art, not noisy blobs; edge-aware is slower; `mean` creates new colours; no per-animation shared-grid feature documented. [README](https://github.com/painebenjamin/unfake.py)
+- **unfake.js** (jenissimo) · MIT · Rust compiled to WASM (browser/JS) plus native CLI (`detect`, `snap`, `downscale`, `quantize`) · last push 2026-09-29 · 929 stars. Same family of methods (runs-based/edge-aware, fractional and "elastic" grids; dominant/median/mode/mean/qvote/content-adaptive; libimagequant with custom fixed palettes). Weakness: browser tool needs a local HTTP server; README lists few limitations. Origin write-up: [dev.to](https://dev.to/jenissimo/how-to-tame-your-ai-pixel-art-3pk5). [README](https://github.com/jenissimo/unfake.js)
+- **Sprite Fusion Pixel Snapper** (Hugo-Dz) · MIT · Rust CLI (Homebrew/Cargo) and WASM, CPU · last push 2026-07-16 · 3.3k stars. Source shows gradient profiles on each axis, a step-size estimate, then a "walker" that places row/column cuts (so it tolerates drift), plus k-means palette (default 16 colours, custom hex palette allowed, `--pixel-size` override). Per-cell colour rule is not stated in the README and I did not read it in the source. Weakness: per its README, not for art that does not fit a grid; no Python API (call the binary via subprocess). [README](https://github.com/Hugo-Dz/spritefusion-pixel-snapper) · [src/lib.rs](https://github.com/Hugo-Dz/spritefusion-pixel-snapper/blob/main/src/lib.rs)
+- **perfectPixel** (theamusing) · MIT per pyproject/README badge (GitHub shows no licence file, so confirm before commercial use) · Python 3.8+, numpy plus optional opencv, library `get_perfect_pixel(rgb)` (no CLI), CPU; ComfyUI node in repo · last push 2026-02-01 · 2.2k stars. Grid: FFT magnitude to estimate size, Sobel edges to align grids; sampling `center`/`median`/`majority`. Weaknesses: input expected 512-1024 px; no palette quantisation (do it after); manual `grid_size` override exists, useful for fixing the grid across frames. [README](https://github.com/theamusing/perfectPixel)
+- **PixelOE** (KohakuBlueleaf) · Apache-2.0 · Python (numpy/cv2 and torch; optional Slang GPU backend), CLI plus ComfyUI nodes, GPU optional · last push 2026-09-29 · 523 stars. No grid detection: you give patch/pixel size; per-patch colour via center/contrast/k-centroid/bicubic/nearest, optional k-means palette. Weaknesses: needs the size supplied (fine for your known 768 to 64 = 12 px), CLI uses a legacy API slated for deprecation; it is a stylising downscaler more than a grid snapper. [README](https://github.com/KohakuBlueleaf/PixelOE)
+- **pixeldetector** (Astropulse) · MIT · Python script (Pillow, numpy, scipy), CPU · last push 2024-04-04 (stale) · 368 stars. Downscales and restores resized or JPEG-corrupted pixel art, predicts a palette (`-m` max colours); the README gives no grid-detection detail. Weakness: aimed at JPEG damage on genuine pixel art, unmaintained. [README](https://github.com/Astropulse/pixeldetector)
+- **Retro Diffusion**: its public GitHub repos are an API-examples repo and an MCP server for the paid hosted generator; I found no open-source post-processing tool. [api-examples](https://github.com/Retro-Diffusion/api-examples)
+- **Others seen, not verified at source**: ComfyUI-Unfake-Pixels (a ComfyUI wrapper of unfake; listing only, [RunComfy](https://www.runcomfy.com/comfyui-nodes/ComfyUI-Unfake-Pixels/pixel-art-scaler)); DeAI PixelKit and PixelFixer (closed source/paid, not usable); "pixel-art-fixer" returned no matching repository.
+
+## Recommendation (Python, Docker, CPU, 64x64, fixed Lospec palette, consistent frames)
+1. Primary: **proper-pixel-art** as the library. MIT, pure Python, actively maintained (pushed today), and its Hough grid detection plus shared grid/palette across frames matches your consistency need. Pin the version in the Dockerfile.
+2. Consistency pattern: detect the grid once per animation (e.g. on the median or first frame, or pass `pixel width` explicitly; at 768 to 64 it is 12 px), then sample every frame on that same grid, so frames cannot drift. Because tools differ on per-frame detection, test this on your `adventurer_idle` frames.
+3. Fixed palette: after cell sampling, map each cell colour to the nearest Lospec colour yourself (CIELAB or OKLab distance, no dithering) rather than relying on a colour count. Use `dominant`/mode sampling first, then snap, so edge anti-aliasing blends vote away. If you want it built in, unfake.py accepts a fixed palette file.
+4. Fallbacks to benchmark: unfake.py (fixed palette built in, Rust wheel), perfectPixel (FFT is robust to irregular blobs; set `grid_size` manually for stability). Pixel Snapper is good but needs a Rust binary and has no Python API.
+5. Not tested: I did not run any tool on your frames; all behaviour above is from READMEs and source headers. Benchmark 2-3 candidates on real frames before committing.
+
+## Sources
+- https://github.com/KennethJAllen/proper-pixel-art
+- https://github.com/painebenjamin/unfake.py
+- https://github.com/jenissimo/unfake.js
+- https://dev.to/jenissimo/how-to-tame-your-ai-pixel-art-3pk5
+- https://github.com/Hugo-Dz/spritefusion-pixel-snapper
+- https://github.com/Hugo-Dz/spritefusion-pixel-snapper/blob/main/src/lib.rs
+- https://github.com/theamusing/perfectPixel
+- https://github.com/KohakuBlueleaf/PixelOE
+- https://github.com/Astropulse/pixeldetector
+- https://github.com/Retro-Diffusion/api-examples
+- https://www.runcomfy.com/comfyui-nodes/ComfyUI-Unfake-Pixels/pixel-art-scaler
+- GitHub API repo metadata (pushed_at, licence, stars) via `gh api`, 2026-10-10
+
+## Blocked
+None. (Gaps: Pixel Snapper per-cell colour rule not confirmed; perfectPixel has no GitHub licence file; no tool was run.)

@@ -15,6 +15,14 @@ stays free. Two ways in, one set of files out:
     anim palette --unit knight --colours '#141415,#444443,#c9c2a3,...'
     anim palette --unit knight --from-sprite assets/2d/units/knight.png
     anim palette --unit knight --list | --clear
+    anim palette --unit wanderer --from-art wanderer_walk [--max-colours 16]
+
+    `--from-art` (the pixel grid downscale feature) takes the colours the
+    unit's own art drew - a job's frames sampled on its art grid, before any
+    snap - merged down to at most --max-colours. Unlike the other two it may
+    leave the project palette: the unit becomes **off-palette**, the file says
+    so and every post report repeats it (docs/adr/0001). Default job: the
+    unit's base, `<slug>_base`.
 
     -> palette_units/knight.json, the subset of the project palette the knight
        may use. `post` then remaps the knight's frames to that subset and
@@ -68,6 +76,46 @@ def set_unit(slug: str, *, colours: str | None = None, from_sprite: Path | None 
         snap_strays=True)
 
 
+def from_art(slug: str, job_name: str | None = None, *,
+             max_colours: int = config.ART_PALETTE_COLOURS, matte: str = "rembg",
+             target: Path | None = None, work_dir: Path | None = None,
+             grid_measure: Any = None) -> dict[str, Any]:
+    """A unit palette from the colours the unit's own art drew: the job's
+    frames (the clip's picks when it has a clip, else its strip) matted,
+    sampled on the job's art grid, merged to at most `max_colours`. Written
+    off-palette - see the module docstring."""
+    from anim import gridkit
+    from anim.job import Job
+    from anim.stages import post as post_stage
+
+    slug = palettekit.unit_slug(slug)
+    name = job_name or f"{slug}_base"
+    job = Job.open(name, work_dir)
+    if matte not in post_stage.MATTES:
+        raise palettekit.PaletteError(f"unknown matte {matte!r}; known: "
+                                      f"{sorted(post_stage.MATTES)}")
+    source = post_stage.CLIP_SOURCE if (job.clip_frames() and job.picks_path.exists()) \
+        else None
+    cells, _label, route = post_stage.job_cells(job, job.read_manifest(), source,
+                                                post_stage.MATTES[matte])
+    grid = (grid_measure or gridkit.measure)([hd for _, _, hd in cells])
+    if grid is None:
+        raise palettekit.PaletteError(
+            f"no art grid found in {name}'s frames - --from-art samples one colour "
+            f"per art pixel, so it needs pixel art; use --from-sprite instead")
+    import numpy as np
+
+    pixels = []
+    for _meta, cell, _hd in cells:
+        small = np.asarray(gridkit.sample(cell, grid))
+        pixels.append(small[small[..., 3] > 0][:, :3])
+    colours = palettekit.reduce_colours(np.concatenate(pixels), max_colours)
+    return palettekit.write_unit_palette(
+        slug, colours, target=target, off_palette=True,
+        source={"kind": "art", "job": name, "route": route, "frames": len(cells),
+                "pitch": round(grid.pitch, 3), "max_colours": int(max_colours)})
+
+
 def _print_palette(record: dict[str, Any], *, indent: str = "") -> None:
     source = record.get("source") or {}
     where = (f"lospec {source.get('slug')}" if source.get("kind") == "lospec"
@@ -104,6 +152,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="with --unit: take the colours the sprite actually "
                              "uses (a colour outside the palette snaps to its "
                              "nearest member, and the record says so)")
+    parser.add_argument("--from-art", dest="from_art", metavar="JOB", nargs="?",
+                        const="", default=None,
+                        help="with --unit: take the colours the unit's own art "
+                             "drew in JOB (default <unit>_base), one per art "
+                             "pixel. May leave the project palette: the unit "
+                             "becomes off-palette, and every post report says so")
+    parser.add_argument("--max-colours", "--max-colors", dest="max_colours", type=int,
+                        default=config.ART_PALETTE_COLOURS, metavar="N",
+                        help=f"with --from-art: at most N colours (default "
+                             f"{config.ART_PALETTE_COLOURS})")
+    parser.add_argument("--matte", default="rembg",
+                        help="with --from-art: how the frames are cut, as for "
+                             "`anim post` (rembg, chroma, none)")
     parser.add_argument("--clear", action="store_true",
                         help="with --unit: remove the sub-palette; the whole "
                              "project palette applies again")
@@ -123,14 +184,30 @@ def run_stage(args: argparse.Namespace) -> int:
                                              "palette applies" if gone else
                                              "had no sub-palette"))
                 return 0
+            if args.from_art is not None:
+                record = from_art(slug, args.from_art or None,
+                                  max_colours=args.max_colours, matte=args.matte,
+                                  target=target)
+                path = palettekit.unit_palette_path(slug, target)
+                print(f"palette: {slug}: {record['count']} colour(s) from "
+                      f"{record['source']['job']}'s art (pitch "
+                      f"{record['source']['pitch']}) -> {path}")
+                print("  off-palette: these need not be in the project palette, "
+                      "and every `post` of this unit will say so")
+                print("  " + " ".join(record["colours"]))
+                return 0
             if args.list or not (args.colours or args.from_sprite):
                 record = palettekit.read_unit_palette(slug, target)
                 if record is None:
                     print(f"palette: {slug} has no sub-palette (the whole project "
                           f"palette applies). Set one with --colours or --from-sprite.")
                     return 0
-                print(f"palette: {slug}: {record['count']} of the project palette's "
-                      f"{record['project']['count']} ({record['project']['name']})")
+                if record.get("off_palette"):
+                    print(f"palette: {slug}: {record['count']} colour(s), OFF-PALETTE "
+                          f"(from {record['source'].get('job', 'its art')})")
+                else:
+                    print(f"palette: {slug}: {record['count']} of the project palette's "
+                          f"{record['project']['count']} ({record['project']['name']})")
                 colours = list(record["colours"])
                 for start in range(0, len(colours), 8):
                     print("  " + " ".join(colours[start:start + 8]))

@@ -90,28 +90,6 @@ def test_the_seed_is_derived_from_the_clip_unit_action_and_control():
 # ---------------------------------------------------------------------------
 # The drive
 # ---------------------------------------------------------------------------
-@pytest.fixture
-def batch_pngs(posed_job):
-    """One canned frame per padded position, sized like the skeleton cell."""
-    frames = len(posed_job.skeletons())
-    length = clip_stage.padded_length(frames)
-    with Image.open(posed_job.skeletons()[0]) as first:
-        cell = first.size
-    pngs = []
-    for i in range(length):
-        img = Image.new("RGB", cell, (255, 255, 255))
-        draw = ImageDraw.Draw(img)
-        cx = cell[0] // 2
-        draw.rectangle([cx - 40, 120, cx + 40, 300], fill=(60, 78, 128))
-        draw.ellipse([cx - 36, 40, cx + 36, 120], fill=(196, 152, 118))
-        draw.text((4, 4), str(i), fill=(0, 0, 0))
-        from io import BytesIO
-        buffer = BytesIO()
-        img.save(buffer, format="PNG")
-        pngs.append(buffer.getvalue())
-    return pngs
-
-
 def test_the_shipped_clip_workflow_declares_its_patch_points(workflow_dir):
     workflow = comfy.load_workflow("clip_render", workflow_dir)
     points = comfy.patch_points(workflow)
@@ -216,17 +194,6 @@ def test_clip_without_the_gpu_says_how_to_start_it(posed_job, workflow_dir):
 # ---------------------------------------------------------------------------
 # Downstream: post --input clip, publish route
 # ---------------------------------------------------------------------------
-@pytest.fixture
-def clipped_job(posed_job, batch_pngs, workflow_dir):
-    with FakeComfy(batch=batch_pngs) as fake:
-        clip_stage.clip(posed_job.name, client=comfy.ComfyClient(fake.url),
-                        control="pose", workflow_dir=workflow_dir,
-                        work_dir=posed_job.root.parent,
-                        reference=Path(posed_job.skeletons()[0]))
-    pick_stage.pick(posed_job.name, work_dir=posed_job.root.parent)
-    return posed_job
-
-
 def test_post_takes_the_picked_frames_from_the_clip(clipped_job, palette):
     report = post_stage.post(clipped_job.name, palette=palette, matte="chroma",
                              source="clip", work_dir=clipped_job.root.parent)

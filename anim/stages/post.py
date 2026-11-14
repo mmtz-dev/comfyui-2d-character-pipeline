@@ -101,7 +101,7 @@ from typing import Any, Callable
 import numpy as np
 from PIL import Image
 
-from anim import config, imaging, palettekit, partkit, posekit
+from anim import config, gridkit, imaging, palettekit, partkit, posekit
 from anim.job import Job
 from anim.util import have, read_json, tool_version, write_json_in_place
 from anim.util import run as run_tool
@@ -250,6 +250,15 @@ DOWNSCALES: dict[str, Callable[[Image.Image, int], tuple[Image.Image, str]]] = {
     "pixeloe": pixel_downscale,
 }
 DEFAULT_DOWNSCALE = "box"
+# The pixel grid downscale feature: not a per-cell function like the two above,
+# because its grid is measured once over the whole job (anim/gridkit.py).
+GRID = "grid"
+DOWNSCALE_CHOICES = sorted([*DOWNSCALES, GRID])
+# How the grid route sizes the sprite: its true size, or (opt-in) the band.
+FIT_TRUE = "true"
+FIT_BAND = "band"
+FITS = (FIT_TRUE, FIT_BAND)
+GridMeasure = Callable[[list[Image.Image]], "gridkit.ArtGrid | None"]
 
 
 def palette_snap(img: Image.Image, palette_png: Path) -> Image.Image:
@@ -545,13 +554,111 @@ def clip_cells(job: Job, cut: Callable[[Image.Image], Image.Image]
     return cells, str(job.clip_frames_dir)
 
 
+def job_cells(job: Job, manifest: dict[str, Any], source: Path | str | None,
+              cut: Callable[[Image.Image], Image.Image]
+              ) -> tuple[list[Cell], str, str]:
+    """(cells, source label, route) for either route - what `post` chains, and
+    what `anim palette --from-art` reads its colours from."""
+    if is_clip_source(source):
+        return (*clip_cells(job, cut), "clip")
+    return (*strip_cells(job, manifest, source, cut), "strip")
+
+
+def grid_frames(cells: list[Cell], *, palette_png: Path,
+                chroma: tuple[int, int, int], target_height: int,
+                canvas: tuple[int, int] = config.CANVAS, snap: bool = True,
+                fit: str = FIT_TRUE, grid_measure: GridMeasure | None = None
+                ) -> tuple[list[tuple[Image.Image, list[str]]] | None, dict[str, Any]]:
+    """The grid route over a whole job: one art grid measured over every HD
+    frame, every matted cell sampled on it, one shared box placed bottom-centre.
+
+    `fit` "true" keeps the art grid's own size and refuses a figure the canvas
+    cannot hold; "band" (opt-in) re-samples on a coarser grid that makes the
+    figure exactly `target_height` tall, losing detail to do it.
+
+    Returns (frames, grid report), or (None, report) when the job has no grid,
+    so the caller can fall back to `box` and say why.
+    """
+    grid = (grid_measure or gridkit.measure)([hd for _, _, hd in cells])
+    if grid is None:
+        return None, {"fallback": "box", "reason": "no art grid found on any frame"}
+    smalls: list[Image.Image] = []
+    steps_of: list[list[str]] = []
+    for _meta, cell, _hd in cells:
+        if imaging.opaque_box(cell) is None:
+            raise ValueError("cell is fully transparent after matting - nothing to "
+                             "publish. Check the background prompt or --matte.")
+        steps: list[str] = []
+        cell, dropped = imaging.keep_main_blobs(cell)
+        if dropped:
+            steps.append(f"dropped {dropped} stray island(s)")
+        small = gridkit.sample(cell, grid)
+        steps.append(f"grid sample, pitch {grid.pitch:.2f} -> "
+                     f"{small.width}x{small.height}")
+        smalls.append(small)
+        steps_of.append(steps)
+    box = gridkit.shared_box(smalls)
+    true_height = box[3] - box[1]
+    sampled_on = grid
+    if fit == FIT_BAND:
+        sampled_on = gridkit.fit_to_height(grid, box, target_height)
+        smalls = [gridkit.sample(imaging.keep_main_blobs(cell)[0], sampled_on)
+                  for _meta, cell, _hd in cells]
+        for steps in steps_of:
+            steps.append(f"--fit band: re-sampled at pitch {sampled_on.pitch:.2f} "
+                         f"to make {true_height} art px {target_height}")
+        box = gridkit.shared_box(smalls)
+    elif box[2] - box[0] > canvas[0] or true_height > canvas[1]:
+        raise ValueError(
+            f"at its true pitch ({grid.pitch:.2f}) the figure is "
+            f"{box[2] - box[0]}x{true_height} art pixels and does not fit the "
+            f"{canvas[0]}x{canvas[1]} canvas. Render the figure smaller (about "
+            f"{grid.pitch * target_height:.0f} px tall at this pitch), or post "
+            f"with --fit band to sample a coarser grid (loses detail).")
+    native_height = box[3] - box[1]
+    frames: list[tuple[Image.Image, list[str]]] = []
+    for small, steps in zip(smalls, steps_of):
+        alpha = small.getchannel("A")
+        if snap:
+            flat = Image.new("RGB", small.size, chroma)
+            flat.paste(small.convert("RGB"), (0, 0), alpha)
+            rgba = palette_snap(flat, palette_png).convert("RGBA")
+            steps.append("magick -dither None -remap")
+        else:
+            rgba = small.copy()
+            steps.append("palette snap off (--no-snap): raw colours")
+        rgba.putalpha(alpha)
+        rgba = imaging.binarise_alpha(rgba)
+        frames.append((gridkit.place(rgba, box, canvas), steps
+                       + [f"place the shared {box[2] - box[0]}x{native_height} box "
+                          f"bottom-center on {canvas[0]}x{canvas[1]}"]))
+    warnings: list[str] = []
+    if fit == FIT_TRUE and abs(native_height - target_height) > config.GRID_HEIGHT_TOLERANCE:
+        warnings.append(f"true height {native_height}px misses the unit's "
+                        f"{target_height}px band by more than "
+                        f"{config.GRID_HEIGHT_TOLERANCE}px - frame the figure "
+                        f"accordingly at generation")
+    if grid.flagged:
+        warnings.append(f"frames disagree on the pitch by {grid.spread:.0%} "
+                        f"(over {config.GRID_SPREAD_TOLERANCE:.0%}); the job's "
+                        f"{grid.pitch:.2f}, measured over every frame together, "
+                        f"was used")
+    return frames, {**grid.report(), "fit": fit,
+                    "sampled_pitch": round(sampled_on.pitch, 3),
+                    "true_height": true_height, "native_height": native_height,
+                    "target_height": target_height, "box": list(box),
+                    "warnings": warnings, "fallback": None}
+
+
 def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
          source: Path | str | None = None, use_pixelfixer: bool = True,
          downscale: str = DEFAULT_DOWNSCALE,
          parts: bool | None = None, parts_from: Path | None = None,
          segmenter: partkit.Segmenter | None = None,
          assets_dir: Path | None = None,
-         work_dir: Path | None = None, snap: bool = True) -> dict[str, Any]:
+         work_dir: Path | None = None, snap: bool = True,
+         fit: str = FIT_TRUE,
+         grid_measure: GridMeasure | None = None) -> dict[str, Any]:
     job = Job.open(job_name, work_dir)
     manifest = job.read_manifest()
     if matte not in MATTES:
@@ -559,11 +666,13 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
     if not snap and parts:
         raise ValueError("--no-snap is a raw-colour preview; there is no palette "
                          "to lock parts to. Drop --parts or --no-snap.")
-    route = "clip" if is_clip_source(source) else "strip"
-    if route == "clip":
-        cells, source_label = clip_cells(job, MATTES[matte])
-    else:
-        cells, source_label = strip_cells(job, manifest, source, MATTES[matte])
+    if downscale not in DOWNSCALE_CHOICES:
+        raise ValueError(f"unknown downscale {downscale!r}; known: {DOWNSCALE_CHOICES}")
+    if fit not in FITS:
+        raise ValueError(f"unknown fit {fit!r}; known: {list(FITS)}")
+    if fit != FIT_TRUE and downscale != GRID:
+        raise ValueError("--fit is the grid route's sizing; use it with --downscale grid")
+    cells, source_label, route = job_cells(job, manifest, source, MATTES[matte])
 
     slug = manifest.get("slug", "unit")
     action = manifest.get("action") or ""
@@ -588,6 +697,10 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
 
     # The part palette lock feature. `parts` None -> the unit's config default.
     lock_on = parts if parts is not None else config.part_lock_default(slug)
+    if downscale == GRID and lock_on:
+        raise ValueError("--downscale grid does not take the part lock (--parts) "
+                         "yet: the lock's masks follow the box route's per-frame "
+                         "trim. Drop --parts or post with --downscale box.")
     part_masks: list[partkit.PartMasks] | None = None
     part_names: list[str] = []
     part_palettes: dict[str, list[list[int]]] | None = None
@@ -608,18 +721,25 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         for stale in (job.post_dir / "parts").glob(f"{stem}_*.png"):
             stale.unlink()
 
+    gridded: list[tuple[Image.Image, list[str]]] | None = None
+    grid_report: dict[str, Any] | None = None
+    if downscale == GRID:
+        gridded, grid_report = grid_frames(cells, palette_png=palette_png,
+                                           chroma=chroma, target_height=target_height,
+                                           snap=snap, fit=fit, grid_measure=grid_measure)
     records: list[dict[str, Any]] = []
     problems_total = 0
     for cell_index, (cell_meta, cell, hd_rgb) in enumerate(cells):
         parts_out: dict[str, Any] = {}
-        frame, steps = process_cell(cell, target_height=target_height,
-                                    palette_png=palette_png, chroma=chroma,
-                                    use_pixelfixer=use_pixelfixer,
-                                    downscale=downscale,
-                                    part_masks=(part_masks[cell_index]
-                                                if part_masks else None),
-                                    part_palettes=part_palettes,
-                                    parts_out=parts_out, snap=snap)
+        if gridded is not None:
+            frame, steps = gridded[cell_index]
+        else:
+            frame, steps = process_cell(
+                cell, target_height=target_height, palette_png=palette_png,
+                chroma=chroma, use_pixelfixer=use_pixelfixer,
+                downscale=DEFAULT_DOWNSCALE if downscale == GRID else downscale,
+                part_masks=(part_masks[cell_index] if part_masks else None),
+                part_palettes=part_palettes, parts_out=parts_out, snap=snap)
         problems = imaging.verify_frame(frame, colours if snap else None)
         problems_total += len(problems)
         name = f"{stem}_{cell_meta['index']}.png"
@@ -658,12 +778,14 @@ def post(job_name: str, *, palette: Path | None = None, matte: str = "rembg",
         "matte": matte,
         "downscale": downscale,
         "target_height": target_height,
+        "grid": grid_report,
         "palette": {"path": str(palette_path), "colours": len(colours),
                     "chroma_key": list(chroma), "snap": snap,
                     "project_colours": len(project_colours),
                     "unit_palette": ({"path": str(palettekit.unit_palette_path(
                                           slug, palette_path)),
-                                      "colours": len(colours)}
+                                      "colours": len(colours),
+                                      "off_palette": bool(unit_palette.get("off_palette"))}
                                      if unit_palette is not None else None)},
         "tools": {
             "magick": tool_version("magick", "-version"),
@@ -762,10 +884,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "remapped to the palette (and no part lock). "
                              "`publish` refuses a job posted this way")
     parser.add_argument("--downscale", default=DEFAULT_DOWNSCALE,
-                        choices=sorted(DOWNSCALES),
+                        choices=DOWNSCALE_CHOICES,
                         help="box = area-average straight to the target height "
-                             "(default); pixeloe = contrast-aware pixelize, "
-                             "noisier on real renders (anchor gate, 2026-09-15)")
+                             "(default); grid = the pixel grid downscale "
+                             "feature: measure the art grid once for the job, "
+                             "one colour per art pixel, true size, one shared "
+                             "offset (falls back to box when no grid is found); "
+                             "pixeloe = contrast-aware pixelize, noisier on "
+                             "real renders (anchor gate, 2026-09-15)")
+    parser.add_argument("--fit", default=FIT_TRUE, choices=FITS,
+                        help="with --downscale grid: true = the art grid's own "
+                             "size, refused when the canvas cannot hold it "
+                             "(default); band = re-sample on a coarser grid "
+                             "sized to the unit's band - fits, but loses detail")
     parser.add_argument("--parts", dest="parts", action="store_true",
                         default=None,
                         help="the part palette lock feature: mask each frame "
@@ -788,14 +919,27 @@ def run_stage(args: argparse.Namespace) -> int:
                   source=args.source, use_pixelfixer=args.pixelfixer,
                   downscale=args.downscale, parts=args.parts,
                   parts_from=Path(args.parts_from) if args.parts_from else None,
-                  snap=args.snap)
+                  snap=args.snap, fit=args.fit)
     unit = report["palette"]["unit_palette"]
-    which = (f"{report['palette']['colours']}-colour unit sub-palette of "
+    which = (f"{report['palette']['colours']}-colour OFF-PALETTE unit palette "
+             f"(its own art's colours, not the project palette)"
+             if unit and unit.get("off_palette") else
+             f"{report['palette']['colours']}-colour unit sub-palette of "
              f"{report['palette']['project_colours']}" if unit
              else f"{report['palette']['colours']}-colour palette")
     print(f"post: {len(report['frames'])} frame(s) at "
           f"{config.CANVAS[0]}x{config.CANVAS[1]}, "
           + (which if report["palette"]["snap"] else "NO palette snap (preview)"))
+    grid = report.get("grid")
+    if grid and grid.get("fallback"):
+        print(f"  grid: {grid['reason']}; fell back to {grid['fallback']}")
+    elif grid:
+        print(f"  grid: pitch {grid['pitch']} px over {grid['measured']} frame(s), "
+              f"true height {grid['true_height']} px, posted "
+              f"{grid['native_height']} px (band {grid['target_height']} px, "
+              f"fit {grid['fit']})")
+        for warning in grid["warnings"]:
+            print(f"  WARNING: {warning}")
     for record in report["frames"]:
         print(f"  {record['file']}  {record['colours']} colour(s)")
         for name, info in (record.get("parts") or {}).items():

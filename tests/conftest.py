@@ -17,6 +17,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fixtures import synthetic  # noqa: E402
+from fixtures.fakecomfy import FakeComfy  # noqa: E402
+from PIL import Image, ImageDraw  # noqa: E402
+
+from anim import comfy  # noqa: E402
+from anim.stages import clip as clip_stage  # noqa: E402
+from anim.stages import pick as pick_stage  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -205,3 +211,37 @@ def gatekeeper(monkeypatch):
     monkeypatch.setattr(gpu, "ACQUIRE", fake.acquire)
     yield fake
     gpu.release()
+
+
+# The clip route, shared by test_clip.py and test_gridkit.py.
+@pytest.fixture
+def batch_pngs(posed_job):
+    """One canned frame per padded position, sized like the skeleton cell."""
+    frames = len(posed_job.skeletons())
+    length = clip_stage.padded_length(frames)
+    with Image.open(posed_job.skeletons()[0]) as first:
+        cell = first.size
+    pngs = []
+    for i in range(length):
+        img = Image.new("RGB", cell, (255, 255, 255))
+        draw = ImageDraw.Draw(img)
+        cx = cell[0] // 2
+        draw.rectangle([cx - 40, 120, cx + 40, 300], fill=(60, 78, 128))
+        draw.ellipse([cx - 36, 40, cx + 36, 120], fill=(196, 152, 118))
+        draw.text((4, 4), str(i), fill=(0, 0, 0))
+        from io import BytesIO
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        pngs.append(buffer.getvalue())
+    return pngs
+
+
+@pytest.fixture
+def clipped_job(posed_job, batch_pngs, workflow_dir):
+    with FakeComfy(batch=batch_pngs) as fake:
+        clip_stage.clip(posed_job.name, client=comfy.ComfyClient(fake.url),
+                        control="pose", workflow_dir=workflow_dir,
+                        work_dir=posed_job.root.parent,
+                        reference=Path(posed_job.skeletons()[0]))
+    pick_stage.pick(posed_job.name, work_dir=posed_job.root.parent)
+    return posed_job

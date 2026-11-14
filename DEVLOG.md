@@ -4,6 +4,52 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-10-11 — the pixel grid downscale feature (#350): `post --downscale grid`, own-art palettes
+
+**What.** `post --downscale grid` (new `anim/gridkit.py`) measures a job's art grid once,
+samples every frame on it (the dominant colour of each block's central half), and places
+every frame with one shared offset. `--fit true` (default) keeps the true size and refuses
+a figure the 64×64 canvas can't hold; `--fit band` re-samples on a coarser grid that hits
+the unit's band. `anim palette --unit X --from-art JOB` builds a unit palette from the
+unit's own art, which may leave the project palette. Such a unit is **off-palette**, and
+every `post` says so. New glossary terms in CONTEXT.md (art grid, pitch, project/unit
+palette, off-palette, still pixel, flicker, loop window) and ADR 0001. The clip fixtures
+moved from `test_clip.py` to `conftest.py` so the grid tests share them.
+
+**Why, decided in a grilling session with the owner.** Measure per post job, not per unit
+(a clip can be framed at a different zoom). Keep the true size and warn, rather than
+squeezing to the band and blurring again. `grid` stays opt-in until the owner has
+compared it with `box`. Own-art palettes may leave the project palette: a subset still
+snaps to the nearest project colour, which is what turned the wanderer's hair maroon (ADR 0001).
+
+**Two agreed choices did not survive the real frames, and were changed with the owner:**
+- *proper-pixel-art, median over frames.* On the wanderer walk its per-frame widths ran
+  5–13.5, so the median (6.3) was wrong too. Replaced by our own job-level measure, with no
+  new dependency: each frame's edge profile autocorrelated, summed over the job, and the
+  best period found to 0.01 px. Two fixes were needed. Block edges of a 7.5 grid fall 7 and
+  8 px apart, which splits each peak and let 15 outscore 7.5; a 1 px blur of the
+  autocorrelation merges it back, and the smallest whole fraction of the best pitch that
+  scores ≥ 60% of it wins. Pitches under 4 px were half-pitch echoes.
+- *The wanderer is not ~54 px.* The previous entry's ~7.5 px pitch was proper-pixel-art's
+  reading of frame 1. The measure gives **5.65**, confirmed by eye on an 8× crop, and
+  sampling at 7.5 drops the eye, belt buckle and coat seams. At true size the figure is
+  39×84 art pixels, too tall for 64×64. The owner chose both remedies: refuse with the HD
+  height to render at (~300 px), and `--fit band` as an opt-in escape hatch.
+
+**The own-art palette took two tries.** A k-means seeded by pixel count spent 6 of 16
+slots on near-black outline variants and left out the coat browns. It's now a heaviest-first
+merge in Oklab that widens its distance until ≤ N colours remain, with lightness read as
+Ottosson's Lr (Oklab spreads the darks far wider than the eye does). On the wanderer that
+gives 14 colours: 4 darks, hair and coat browns, skin, and the eye highlight.
+
+**Left for the owner.** Compare box / grid --fit band / own-art palette / true size at
+http://192.168.1.158:8090/wanderer/grid-downscale/ (jobs `wanderer_walk_cmp_box` and
+`_cmp_grid`, copies of `wanderer_walk_14bi2v`; the own-art palette went to a scratch
+`work/_grid_cmp/pal/`, not the game's `palette_units/`). Whether `grid` becomes the default
+waits on that, and so does a re-render of the wanderer at ~300 px for true size.
+
+---
+
 ## 2026-10-11 — downscale tool test and two research passes: three gaps opened
 
 **What.** No pipeline code changed. The owner judged the wanderer's 22 HD frames (#349, route #1)

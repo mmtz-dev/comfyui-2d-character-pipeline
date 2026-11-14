@@ -422,6 +422,16 @@ UNIT_HEIGHT: dict[str, int] = {
 }
 
 
+# The pixel grid downscale feature (anim/gridkit.py). The grid route keeps the
+# sprite's true height, so it can miss the band above; past this many pixels
+# the post report warns. Frames whose measured pitches spread wider than this
+# fraction of the chosen pitch are flagged (the grid is still the median).
+GRID_HEIGHT_TOLERANCE = 4
+GRID_SPREAD_TOLERANCE = 0.10
+# `anim palette --from-art`: how many colours a unit's own-art palette keeps.
+ART_PALETTE_COLOURS = 16
+
+
 def height_for_unit(slug: str) -> int:
     """Target sprite height in the 64px canvas for one unit slug."""
     return UNIT_HEIGHT.get(slug.strip().lower(), DEFAULT_UNIT_HEIGHT)

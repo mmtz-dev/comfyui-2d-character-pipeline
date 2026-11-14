@@ -128,3 +128,29 @@ blocked direction is never quietly substituted with a fallback.
 **warm / cold** — whether the GPU already holds the model. A cold run pays a one-off load of
 roughly three minutes on its first render; every render after that is warm. Any duration quoted
 to a person says which of the two it means.
+
+## Pixel words
+
+**art grid** — the lattice of fake pixels a model draws into a full-resolution frame: AI "pixel
+art" is drawn as blocks several screen pixels wide, and the art grid is where those blocks sit.
+Not the Animate tab's **grid** of animations; the two share nothing but the word.
+
+**pitch** — the size of one art-grid block, in full-resolution pixels (the wanderer walk's is
+about 5.65). The pitch decides how tall a sprite comes out: the figure's height divided by the
+pitch. One post job has one pitch, measured once and shared by every frame in it, so no frame
+comes out at a different scale from its neighbours.
+
+**project palette** — the shared colour set every unit's sprites are snapped to by default, so
+units drawn at different times still look like one game.
+
+**unit palette** — the colours one unit may use. Normally a subset of the project palette. A
+unit palette taken **from the unit's own art** may hold colours the project palette lacks; such
+a unit is **off-palette**, a choice a person makes for that one unit and that is always
+reported, never hidden.
+
+**still pixel** — a pixel of a posted animation that shows the same colour in most frames, and
+whose neighbours do too: part of the body that is not moving (the head and torso of a walk).
+A still pixel that changes colour from frame to frame is **flicker**.
+
+**loop window** — the run of frames in a looping animation whose last frame flows most cleanly
+back into its first. Judged on the frames as drawn, not on the skeleton that drove them.

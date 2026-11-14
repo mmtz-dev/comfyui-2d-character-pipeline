@@ -405,3 +405,114 @@ def test_post_has_a_no_snap_flag():
     args = parser.parse_args(["post", "x", "--no-snap"])
     assert args.snap is False
     assert parser.parse_args(["post", "x"]).snap is True
+
+
+# ---------------------------------------------------------------------------
+# The unit's own palette, from its art (the pixel grid downscale feature, #350)
+# ---------------------------------------------------------------------------
+# Hair, skin, coat, boot: none of them in Endesga 32, so a snap to the project
+# palette would move every one - the wanderer's hair-to-maroon problem.
+ART = [(92, 40, 30), (236, 196, 160), (132, 84, 52), (52, 30, 26)]
+
+
+def paint_art_frames(job, *, pitch: float = 8.0, noise: int = 5) -> None:
+    """Overwrite a clipped job's frames with fake pixel art in the ART colours,
+    with colour noise like a model's."""
+    import numpy as np
+
+    picks = json.loads(job.picks_path.read_text())["picks"]
+    with Image.open(job.clip_frames_dir / f"{picks[0] + 1:04d}.png") as first:
+        width, height = first.size
+    rng = np.random.default_rng(350)
+    native = np.array(ART, dtype=np.int32)[rng.integers(0, len(ART), size=(40, 24))]
+    for frame_index in picks:
+        hd = np.full((height, width, 3), 255, dtype=np.int32)
+        for r in range(40):
+            for c in range(24):
+                y, x = int(40 + r * pitch), int(40 + c * pitch)
+                hd[y:int(40 + (r + 1) * pitch), x:int(40 + (c + 1) * pitch)] = native[r, c]
+        figure = hd < 255
+        hd = np.where(figure, hd + rng.integers(-noise, noise + 1, size=hd.shape), hd)
+        Image.fromarray(np.clip(hd, 0, 255).astype(np.uint8), "RGB").save(
+            job.clip_frames_dir / f"{frame_index + 1:04d}.png")
+
+
+def test_reduce_colours_merges_noise_and_keeps_real_colours():
+    import numpy as np
+
+    rng = np.random.default_rng(1)
+    pixels = np.repeat(np.array(ART), 200, axis=0) + rng.integers(-4, 5, size=(800, 3))
+    reduced = palettekit.reduce_colours(np.clip(pixels, 0, 255), 4)
+    assert len(reduced) == 4
+    for want in ART:
+        assert min(sum(abs(a - b) for a, b in zip(want, got)) for got in reduced) <= 12
+    assert palettekit.reduce_colours(np.clip(pixels, 0, 255), 4) == reduced, "deterministic"
+    present = {tuple(int(v) for v in row) for row in np.clip(pixels, 0, 255)}
+    assert set(reduced) <= present, "every colour is one the art really drew"
+
+
+def test_an_off_palette_unit_palette_may_leave_the_project_palette(installed, target):
+    record = palettekit.write_unit_palette("knight", ART, source={"kind": "art"},
+                                           target=target, off_palette=True)
+    assert record["off_palette"] is True
+    assert record["colours"] == [palettekit.hex_of(c) for c in ART]
+    project = imaging.read_palette(target)
+    colours, unit = palettekit.unit_colours("knight", project, target)
+    assert colours == ART and unit["off_palette"] is True
+    # a later project palette change does not invalidate it: it never was a subset
+    palettekit.install(project[1:], name="Smaller", source={"kind": "file", "file": "x"},
+                       target=target)
+    assert palettekit.unit_colours("knight", imaging.read_palette(target), target)[0] == ART
+
+
+def test_from_art_writes_the_units_own_colours_off_palette(clipped_job, installed, target):
+    paint_art_frames(clipped_job)
+    record = palette_stage.from_art("knight", clipped_job.name, max_colours=16,
+                                    matte="chroma", target=target,
+                                    work_dir=clipped_job.root.parent)
+    assert record["off_palette"] is True
+    assert record["source"]["kind"] == "art" and record["source"]["job"] == clipped_job.name
+    assert record["source"]["pitch"] == pytest.approx(8.0, abs=0.1)
+    got = [palettekit.rgb_of(c) for c in record["colours"]]
+    assert len(got) <= 16
+    for want in ART:
+        assert min(sum(abs(a - b) for a, b in zip(want, g)) for g in got) <= 15
+
+
+def test_from_art_honours_max_colours(clipped_job, installed, target):
+    paint_art_frames(clipped_job)
+    record = palette_stage.from_art("knight", clipped_job.name, max_colours=2,
+                                    matte="chroma", target=target,
+                                    work_dir=clipped_job.root.parent)
+    assert record["count"] == 2
+
+
+def test_post_snaps_to_an_off_palette_unit_and_says_so(clipped_job, installed, target):
+    paint_art_frames(clipped_job)
+    palette_stage.from_art("knight", clipped_job.name, matte="chroma", target=target,
+                           work_dir=clipped_job.root.parent)
+    report = post_stage.post(clipped_job.name, palette=target, matte="chroma",
+                             source="clip", downscale="grid",
+                             work_dir=clipped_job.root.parent)
+    unit = report["palette"]["unit_palette"]
+    assert unit["off_palette"] is True
+    allowed = {palettekit.rgb_of(c) for c in
+               palettekit.read_unit_palette("knight", target)["colours"]}
+    for record in report["frames"]:
+        assert not record["problems"]
+        with Image.open(clipped_job.post_dir / record["file"]) as img:
+            assert imaging.opaque_colours(img.convert("RGBA")) <= allowed
+
+
+def test_the_cli_builds_a_unit_palette_from_art(clipped_job, installed, target, capsys,
+                                               monkeypatch):
+    from anim import config
+
+    paint_art_frames(clipped_job)
+    monkeypatch.setattr(config, "WORK_DIR", clipped_job.root.parent)
+    code = cli.main(["palette", "--unit", "knight", "--from-art", clipped_job.name,
+                     "--max-colours", "4", "--matte", "chroma", "--into", str(target)])
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "off-palette" in out
+    assert palettekit.read_unit_palette("knight", target)["count"] == 4
