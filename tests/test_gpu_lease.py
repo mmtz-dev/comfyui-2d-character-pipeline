@@ -77,6 +77,17 @@ def test_cpu_stages_and_code_outside_a_stage_book_nothing(gatekeeper):
     assert gatekeeper.leases == []
 
 
+def test_anim_gpu_service_overrides_default(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("ANIM_GPU_SERVICE", "image-generator-comfyui")
+    importlib.reload(gpu)
+    assert gpu.SERVICE == "image-generator-comfyui"
+    monkeypatch.delenv("ANIM_GPU_SERVICE", raising=False)
+    importlib.reload(gpu)
+    assert gpu.SERVICE == "anim-pipeline-comfyui"
+
+
 def test_cli_wraps_the_stage(gatekeeper, monkeypatch):
     from anim import curation
     from anim.stages import base

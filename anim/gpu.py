@@ -48,7 +48,9 @@ STAGE_PROFILES: dict[str, str] = {
     "clip": "anim-wan",
     "bakeoff": "anim-wan",
 }
-SERVICE = "anim-pipeline-comfyui"  # its name on the gatekeeper's allowlist
+# The gatekeeper allowlist name of the ComfyUI this pipeline talks to; set it
+# when COMFYUI_URL points at a different ComfyUI (e.g. a shared one).
+SERVICE = os.environ.get("ANIM_GPU_SERVICE", "anim-pipeline-comfyui")
 
 # Swapped in tests for a fake; the real one is the synced gatekeeper client.
 ACQUIRE: Callable[..., gpu_lease.Lease] = gpu_lease.acquire

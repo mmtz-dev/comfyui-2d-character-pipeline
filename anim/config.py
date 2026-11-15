@@ -24,15 +24,6 @@ COMFYUI_URL: str = os.environ.get(
     "COMFYUI_URL", "http://host.docker.internal:8188"
 ).rstrip("/")
 
-# Where ComfyUI reads LoadImage filenames from and writes SaveImage output to,
-# as seen from THIS container. The GPU container's /basedir/input and
-# /basedir/output are bind-mounted here read-write by compose.yml so a strip can
-# be handed over without an HTTP upload. `render` prefers the HTTP /upload/image
-# endpoint (it works even when the share is not mounted) and falls back to a
-# file copy here; both are exercised by the fake-server tests.
-COMFY_INPUT_DIR = Path(os.environ.get("COMFY_INPUT_DIR", "/comfy/input"))
-COMFY_OUTPUT_DIR = Path(os.environ.get("COMFY_OUTPUT_DIR", "/comfy/output"))
-
 # ---------------------------------------------------------------------------
 # Pipeline directories (mounted by compose.yml)
 # ---------------------------------------------------------------------------

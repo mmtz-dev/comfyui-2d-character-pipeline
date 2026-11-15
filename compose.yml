@@ -26,6 +26,9 @@ x-anim-common: &anim-common
     # Docker Desktop container reaches a port published on the host, which is
     # why gpu/compose.yml binds 0.0.0.0:8188 and not 127.0.0.1:8188.
     - COMFYUI_URL=${COMFYUI_URL:-http://host.docker.internal:8188}
+    # The gatekeeper allowlist name of the ComfyUI this pipeline talks to; set
+    # it when COMFYUI_URL points at a different ComfyUI (e.g. a shared one).
+    - ANIM_GPU_SERVICE=${ANIM_GPU_SERVICE:-anim-pipeline-comfyui}
     # The shared GPU gatekeeper (~/Repos/gpu-gatekeeper). A GPU stage books its
     # memory there before its first prompt (anim/gpu.py). Same host.docker.internal
     # route as ComfyUI; a Podman container would use host.containers.internal.
@@ -40,8 +43,6 @@ x-anim-common: &anim-common
     #   ANIM_PALETTE=/assets_src/palette_candidates/grim32/grim32.gpl
     - ANIM_PALETTE=${ANIM_PALETTE:-/assets_src/palette.gpl}
     - ANIM_API_PORT=8720
-    - COMFY_INPUT_DIR=/comfy/input
-    - COMFY_OUTPUT_DIR=/comfy/output
   volumes:
     # The repo itself: source (editable install), workflows, capture/, work/.
     - .:/work
@@ -55,11 +56,6 @@ x-anim-common: &anim-common
     # host. The audit is stdlib-only and only ever reads. Writes still go
     # through the read-write /assets mount above, which is the same bytes.
     - ../../game-02-tactical-rpg:/game02:ro
-    # ComfyUI's input/output, shared with the GPU container's basedir, so a strip
-    # is handed over as a file instead of an HTTP upload. These resolve even when
-    # the GPU service is stopped; they are just directories on /mnt/private.
-    - /mnt/private/AI Data/comfyui-basedir/input:/comfy/input
-    - /mnt/private/AI Data/comfyui-basedir/output:/comfy/output
   # host.docker.internal is automatic on Docker Desktop; declared explicitly so
   # the file also works on a plain Linux engine.
   extra_hosts:

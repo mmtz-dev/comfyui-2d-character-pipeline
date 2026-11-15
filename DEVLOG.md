@@ -4,6 +4,24 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-11-14 — ANIM_GPU_SERVICE: run against a shared ComfyUI without code changes
+
+**What.** `anim/gpu.py`'s `SERVICE` (the gatekeeper allowlist name of the ComfyUI
+this pipeline talks to) is now read from `ANIM_GPU_SERVICE`, defaulting to
+`anim-pipeline-comfyui`. `compose.yml` passes it through next to `COMFYUI_URL`, so
+the owner can set both in a gitignored `.env` and point the pipeline at a shared
+ComfyUI on another port with no code edits. `gpu/compose.yml` is unchanged and stays
+the standalone default and rollback. The unused `COMFY_INPUT_DIR` / `COMFY_OUTPUT_DIR`
+mounts and config values were removed.
+
+**Why.** The owner's machine now uses a shared ComfyUI elsewhere; the pipeline's own
+standalone ComfyUI stays the public default. Keeping the gatekeeper service name
+overridable means a GPU stage books its memory under the right allowlist name when
+`COMFYUI_URL` points somewhere else, and removing the dead input/output mounts drops
+a private-path dependency from the public repo.
+
+---
+
 ## 2026-10-11 — the pixel grid downscale feature (#350): `post --downscale grid`, own-art palettes
 
 **What.** `post --downscale grid` (new `anim/gridkit.py`) measures a job's art grid once,

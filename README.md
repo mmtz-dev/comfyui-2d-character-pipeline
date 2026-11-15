@@ -1269,6 +1269,7 @@ stage hardcodes one. They all live in [`anim/config.py`](anim/config.py), and
 | Variable | Default | What it is |
 |---|---|---|
 | `COMFYUI_URL` | `http://host.docker.internal:8188` | the GPU image service. From the host or the Mac: `http://192.168.1.158:8188` |
+| `ANIM_GPU_SERVICE` | `anim-pipeline-comfyui` | the gatekeeper allowlist name of the ComfyUI this pipeline talks to; set it with `COMFYUI_URL` when pointing at a shared ComfyUI |
 | `GPU_GATEKEEPER_URL` | `http://host.docker.internal:7886` | the shared GPU gatekeeper a GPU stage books its memory from (see "The shared GPU gatekeeper"). A Podman container would use `http://host.containers.internal:7886` |
 | `ANIM_CAPTURE_DIR` | `/work/capture` | the watched drop folder for filmed clips |
 | `ANIM_WORK_DIR` | `/work/work` | per-job scratch; everything regenerable |
@@ -1412,6 +1413,25 @@ host. That is also why `gpu/compose.yml` publishes `0.0.0.0:8188` and not `127.0
 a loopback bind would be invisible from the Docker Desktop VM.
 
 Do not reintroduce a hardcoded URL. `grep -rn '127.0.0.1:8000' .` should stay empty.
+
+### Using a shared ComfyUI instead
+
+To run the pipeline against a shared ComfyUI that lives elsewhere (on another port,
+another host, or a separate image service), set both knobs in a `.env` next to
+`compose.yml`:
+
+```bash
+COMFYUI_URL=http://host.docker.internal:7882
+ANIM_GPU_SERVICE=image-generator-comfyui
+```
+
+`COMFYUI_URL` is where the pipeline sends its prompts; `ANIM_GPU_SERVICE` is the
+name that ComfyUI is registered under on the shared GPU gatekeeper's allowlist, so a
+GPU stage still books its memory from the right service. The shared ComfyUI must have
+this pipeline's custom nodes and see its models — `models.lock` / `download_models.sh`
+still install them into the shared image library, they are just not in this repo's own
+`gpu/compose.yml` container. `gpu/compose.yml` stays the standalone way to run
+ComfyUI, and it remains the public default and the rollback.
 
 ## Two engines — the rule that matters most
 
