@@ -134,5 +134,5 @@ Goal: a looping action (walk, run, idle) is checked for a clean loop on the fram
 
 ---
 
-*40 open · 21 closed. Counts and contents come straight from
+*40 open · 22 closed. Counts and contents come straight from
 OpenProject — if something here looks wrong, fix it there, not here.*
