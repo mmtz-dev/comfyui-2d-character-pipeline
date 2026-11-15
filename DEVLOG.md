@@ -4,6 +4,29 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 ---
 
+## 2026-11-15 — This machine renders on the shared ComfyUI
+
+- `.env` override in place: `COMFYUI_URL=http://host.docker.internal:7882`,
+  `ANIM_GPU_SERVICE=image-generator-comfyui`. `anim-api` was recreated on it.
+- The pipeline's own ComfyUI (`gpu/compose.yml`, `:8188`) is stopped. It stays as
+  the standalone setup and the rollback.
+- The knight strike/hit/death re-render on ComfyUI 0.37 matched the September
+  0.35 renders once it was run with the inputs the September renders used — the
+  knight pose prompt and ControlNet strength 1.0, as `anim/stages/bakeoff.py`
+  records. The bare `pose_pass.json` prompt returns black silhouettes on either
+  ComfyUI. Same figures and poses; pose pass mean abs pixel difference
+  0.0 / 3.3 / 1.5, identity pass 25 / 25 / 19.
+- The shared ComfyUI needed `lora/_Z_Image` and `lora/_Qwen_Image` as LoRA roots
+  for this pipeline's bare LoRA filenames (fixed there).
+- A throwaway unit then ran concept 4.4 s, left view 15 s, rig, and a 19-frame
+  Wan 5B clip in 28.5 s.
+- Rollback: delete the two `.env` lines, recreate `anim-api`
+  (`docker compose up -d anim-api`), and `podman start anim-pipeline-comfyui`;
+  the gatekeeper keeps `anim-pipeline-comfyui` on its allowlist so that still
+  books.
+
+---
+
 ## 2026-11-14 — ANIM_GPU_SERVICE: run against a shared ComfyUI without code changes
 
 **What.** `anim/gpu.py`'s `SERVICE` (the gatekeeper allowlist name of the ComfyUI

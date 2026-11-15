@@ -1431,7 +1431,8 @@ GPU stage still books its memory from the right service. The shared ComfyUI must
 this pipeline's custom nodes and see its models — `models.lock` / `download_models.sh`
 still install them into the shared image library, they are just not in this repo's own
 `gpu/compose.yml` container. `gpu/compose.yml` stays the standalone way to run
-ComfyUI, and it remains the public default and the rollback.
+ComfyUI, and it remains the public default and the rollback. This machine has
+used the shared ComfyUI since 2026-11-15.
 
 ## Two engines — the rule that matters most
 
