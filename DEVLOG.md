@@ -8,8 +8,10 @@ What changed and *why*. Status lives in OpenProject, never here.
 
 - `.env` override in place: `COMFYUI_URL=http://host.docker.internal:7882`,
   `ANIM_GPU_SERVICE=image-generator-comfyui`. `anim-api` was recreated on it.
-- The pipeline's own ComfyUI (`gpu/compose.yml`, `:8188`) is stopped. It stays as
-  the standalone setup and the rollback.
+- The pipeline's own ComfyUI container (`gpu/compose.yml`, `:8188`) was stopped,
+  then removed the same day. `gpu/compose.yml` stays as the standalone setup and
+  the rollback; its image and data folders were kept, so bringing it back needs
+  no download.
 - The knight strike/hit/death re-render on ComfyUI 0.37 matched the September
   0.35 renders once it was run with the inputs the September renders used — the
   knight pose prompt and ControlNet strength 1.0, as `anim/stages/bakeoff.py`
@@ -21,7 +23,8 @@ What changed and *why*. Status lives in OpenProject, never here.
 - A throwaway unit then ran concept 4.4 s, left view 15 s, rig, and a 19-frame
   Wan 5B clip in 28.5 s.
 - Rollback: delete the two `.env` lines, recreate `anim-api`
-  (`docker compose up -d anim-api`), and `podman start anim-pipeline-comfyui`;
+  (`docker compose up -d anim-api`), and start the pipeline's own ComfyUI again
+  (`podman-compose -f tools/anim-pipeline/gpu/compose.yml up -d`);
   the gatekeeper keeps `anim-pipeline-comfyui` on its allowlist so that still
   books.
 
